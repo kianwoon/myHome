@@ -642,9 +642,9 @@ public final class DeviceStore: ObservableObject {
         do {
             let reply = try await bridge.request(payload, timeout: 30)
             guard reply["ok"] as? Bool == true else {
-                statusErrors[device.id] = reply["error"] as? String ?? "Briturn set failed."
-                briturnIntent.removeValue(forKey: device.id)
-                briturnStatus[device.id] = prev
+                await fallbackToBLEOrFail(device, on: on, color: color, brightness: brightness,
+                                          white: white, prev: prev,
+                                          message: reply["error"] as? String ?? "Briturn set failed.")
                 return
             }
             statusErrors[device.id] = nil
@@ -652,10 +652,32 @@ public final class DeviceStore: ObservableObject {
                 applyBriturnWireState(device.id, state, authoritative: true)
             }
         } catch {
-            statusErrors[device.id] = error.localizedDescription
-            briturnIntent.removeValue(forKey: device.id)
-            briturnStatus[device.id] = prev
+            await fallbackToBLEOrFail(device, on: on, color: color, brightness: brightness,
+                                      white: white, prev: prev,
+                                      message: error.localizedDescription)
         }
+    }
+
+    /// General rule: when the WiFi transport fails for a dual-mode light that
+    /// Bluetooth has seen, the same command is retried over BLE transparently
+    /// — the user asked for the light to change, not for a transport lecture.
+    /// Only when Bluetooth cannot address it either does the error surface.
+    private func fallbackToBLEOrFail(
+        _ device: Device, on: Bool?, color: (red: Int, green: Int, blue: Int)?,
+        brightness: Int?, white: Bool, prev: BriturnState?, message: String
+    ) async {
+        if bleFallbackIDs.contains(device.id), let key = bleKey(for: device) {
+            let ble = BLEManager.shared
+            if let on = on { ble.setPower(id: key, on: on) }
+            if let color = color { ble.setColor(id: key, red: color.red, green: color.green, blue: color.blue) }
+            if let brightness = brightness { ble.setBrightness(id: key, percent: brightness) }
+            if white { ble.setWhite(id: key, level: 128) }
+            statusErrors[device.id] = nil
+            return
+        }
+        statusErrors[device.id] = message + " (Bluetooth not in range for this light.)"
+        briturnIntent.removeValue(forKey: device.id)
+        briturnStatus[device.id] = prev
     }
 
     /// Transport availability for a briturn device: WiFi (has a routable IP)
