@@ -207,7 +207,7 @@ struct DeviceCard: View {
 
     private var isBriturn: Bool { device.category.lowercased() == "briturn" }
 
-    private var isEnabled: Bool { device.hasAddress }
+    private var isEnabled: Bool { device.hasAddress || device.isBLE }
 
     private var power: Bool? {
         if isBriturn { return store.briturnStatus[device.id]?.on }
@@ -244,13 +244,14 @@ struct DeviceCard: View {
         if !isEnabled { return "Offline" }
         if isBriturn {
             // Group membership is part of the card's at-a-glance identity —
-            // you grouped lights precisely so they read as a set.
+            // you grouped lights precisely so they read as a set. BLE lights
+            // are flagged so their transport is obvious.
             let state = store.briturnStatus[device.id]
             let powerText = state.map { $0.on ? "On" : "Off" } ?? "Briturn"
-            if let name = device.group, !name.isEmpty {
-                return powerText + " · " + name
-            }
-            return powerText
+            var parts: [String] = [powerText]
+            if let name = device.group, !name.isEmpty { parts.append(name) }
+            if device.isBLE { parts.append("🔵") }
+            return parts.joined(separator: " · ")
         }
         switch device.kind {
         case .plug:
@@ -803,7 +804,7 @@ struct DeviceDetailView: View {
                             .font(.caption.monospaced())
                             .foregroundStyle(.tertiary)
                             .textSelection(.enabled)
-                        Text(device.hasAddress ? device.ip : "No IP")
+                        Text(device.hasAddress ? device.ip : (device.isBLE ? "Bluetooth (BLE)" : "No IP"))
                             .font(.caption.monospaced())
                             .foregroundStyle(.secondary)
                     }
@@ -1242,25 +1243,30 @@ struct BriturnControlsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Picker("Group", selection: groupBinding) {
-                Text("None").tag("")
-                ForEach(store.briturnGroups, id: \.self) { name in
-                    Text(name).tag(name)
+            // Groups live in the roster; BLE-only lights have no roster entry
+            // yet, so the picker is hidden rather than presenting a control
+            // that cannot persist.
+            if !device.isBLE {
+                Picker("Group", selection: groupBinding) {
+                    Text("None").tag("")
+                    ForEach(store.briturnGroups, id: \.self) { name in
+                        Text(name).tag(name)
+                    }
+                    Text("New Group…").tag("__new__")
                 }
-                Text("New Group…").tag("__new__")
-            }
-            .pickerStyle(.menu)
-            .alert("New Group", isPresented: $showingNewGroup) {
-                TextField("Name", text: $newGroupName)
-                Button("Create") {
-                    let name = newGroupName.trimmingCharacters(in: .whitespaces)
-                    guard !name.isEmpty else { return }
-                    newGroupName = ""
-                    Task { await store.setBriturnGroup(device, to: name) }
+                .pickerStyle(.menu)
+                .alert("New Group", isPresented: $showingNewGroup) {
+                    TextField("Name", text: $newGroupName)
+                    Button("Create") {
+                        let name = newGroupName.trimmingCharacters(in: .whitespaces)
+                        guard !name.isEmpty else { return }
+                        newGroupName = ""
+                        Task { await store.setBriturnGroup(device, to: name) }
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("Lights sharing a group can be switched and coloured together.")
                 }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text("Lights sharing a group can be switched and coloured together.")
             }
         }
         .onAppear { syncPicker(from: store.briturnStatus[device.id]) }

@@ -1,4 +1,5 @@
 // baseline-guard:allow rewrite of existing store for live polling and confirmed writes
+import Combine
 import Foundation
 import SwiftUI
 
@@ -91,6 +92,68 @@ public final class DeviceStore: ObservableObject {
         self.bridge = bridge
         self.pollInterval = AppSettings.pollInterval(from: defaults)
         self.scanWindow = AppSettings.scanWindow(from: defaults)
+        bindBLE()
+    }
+
+    // MARK: - BLE transport
+
+    private var cancellables = Set<AnyCancellable>()
+    /// Roster device ids (briturn-<mac>) that BLE has confirmed in range.
+    /// These are DUAL-MODE lights: BLE enriches the WiFi entry as a fallback
+    /// transport — it never creates a duplicate card.
+    private var bleFallbackIDs: Set<String> = []
+    /// bleKey ("ble-<mac>") per roster id, for addressing BLEManager.
+    private var bleKeysByDeviceID: [String: String] = [:]
+
+    /// The BLE key for a device: its own entry if BLE-only, else the matched
+    /// WiFi roster id's MAC-derived key.
+    private func bleKey(for device: Device) -> String? {
+        if device.isBLE { return device.id }
+        if let key = bleKeysByDeviceID[device.id] { return key }
+        guard device.id.hasPrefix("briturn-") else { return nil }
+        let mac = String(device.id.dropFirst("briturn-".count))
+        return mac.count == 12 ? "ble-" + mac : nil
+    }
+
+    private func bindBLE() {
+        let ble = BLEManager.shared
+        ble.$lights
+            .receive(on: RunLoop.main)
+            .sink { [weak self] lights in
+                guard let self else { return }
+                // Dedupe by MAC: a light already in the roster (briturn-<mac>)
+                // gains BLE as a FALLBACK transport; only never-seen MACs get
+                // a BLE-only card.
+                var bleOnly: [Device] = []
+                for light in lights {
+                    guard light.id.hasPrefix("ble-") else { continue }
+                    let mac = String(light.id.dropFirst("ble-".count))
+                    let tuyaID = "briturn-" + mac
+                    if self.devices.contains(where: { $0.id == tuyaID }) {
+                        self.bleFallbackIDs.insert(tuyaID)
+                        self.bleKeysByDeviceID[tuyaID] = light.id
+                    } else {
+                        bleOnly.append(Device(id: light.id, name: light.name, ip: "",
+                                              version: "BLE", category: "briturn", online: true))
+                    }
+                }
+                let roster = self.devices.filter { !$0.id.hasPrefix("ble-") }
+                self.devices = roster + bleOnly
+            }
+            .store(in: &cancellables)
+        ble.$states
+            .receive(on: RunLoop.main)
+            .sink { [weak self] states in
+                guard let self else { return }
+                for (bleID, state) in states {
+                    // Route the state to the canonical roster id when the
+                    // light is dual-mode, so ONE card tracks it.
+                    let tuyaID = "briturn-" + String(bleID.dropFirst("ble-".count))
+                    let targetID = bleKeysByDeviceID[tuyaID] != nil || devices.contains { $0.id == tuyaID } ? tuyaID : bleID
+                    applyBriturnWireState(targetID, state)
+                }
+            }
+            .store(in: &cancellables)
     }
 
     // MARK: - Derived state
@@ -301,6 +364,8 @@ public final class DeviceStore: ObservableObject {
 
     public func loadBriturnStatus(for device: Device) async {
         guard isBriturn(device) else { return }
+        // BLE lights state-source from advertisements via BLEManager.
+        guard !device.isBLE else { return }
         guard device.hasAddress else {
             statusErrors[device.id] = "Briturn device has no IP yet — run a Briturn scan."
             return
@@ -335,6 +400,12 @@ public final class DeviceStore: ObservableObject {
     ) async {
         guard isBriturn(device) else { return }
         guard on != nil || color != nil || brightness != nil || white else { return }
+        // Transport routing: BLE-only lights, and dual-mode lights that lost
+        // WiFi (no IP), go over Bluetooth.
+        if device.isBLE || (bleFallbackIDs.contains(device.id) && !device.hasAddress) {
+            await setBriturnViaBLE(device, on: on, color: color, brightness: brightness, white: white)
+            return
+        }
         guard device.hasAddress else {
             statusErrors[device.id] = "Briturn device has no IP yet — run a Briturn scan."
             return
@@ -390,6 +461,47 @@ public final class DeviceStore: ObservableObject {
     }
 
     // MARK: - Briturn groups
+
+    /// BLE-transport set: same optimistic paint + intent rules as the WiFi
+    /// path; reconciliation comes from BLE advertisements instead of a bridge
+    /// readback, so a failed command self-corrects on the next advert.
+    private func setBriturnViaBLE(
+        _ device: Device,
+        on: Bool?,
+        color: (red: Int, green: Int, blue: Int)?,
+        brightness: Int?,
+        white: Bool
+    ) async {
+        guard let key = bleKey(for: device) else {
+            statusErrors[device.id] = "Bluetooth not seen for this light yet — is it powered and in range?"
+            return
+        }
+        let ble = BLEManager.shared
+        if let on = on { ble.setPower(id: key, on: on) }
+        if let color = color { ble.setColor(id: key, red: color.red, green: color.green, blue: color.blue) }
+        if let brightness = brightness { ble.setBrightness(id: key, percent: brightness) }
+        if white { ble.setWhite(id: key, level: 128) }
+
+        let prev = briturnStatus[device.id]
+        let nextOn = on ?? (prev?.on ?? false)
+        let paintedWhite = white || (color == nil && (prev?.isWhiteMode ?? false) && brightness != nil)
+        briturnStatus[device.id] = BriturnState(
+            on: nextOn,
+            rawPower: nextOn ? 0x23 : 0x24,
+            mode: prev?.mode ?? 97,
+            r: paintedWhite ? 0 : (color?.red ?? prev?.r ?? 255),
+            g: paintedWhite ? 0 : (color?.green ?? prev?.g ?? 255),
+            b: paintedWhite ? 0 : (color?.blue ?? prev?.b ?? 255),
+            w: prev?.w ?? 0
+        )
+        if let on = on { recordBriturnIntent([device.id], on: on) }
+        // Advertised state reconciles; force a delayed re-read of the cache.
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard let self, let s = ble.state(for: key) else { return }
+            self.applyBriturnWireState(device.id, s)
+        }
+    }
 
     /// Sorted distinct group names across the briturn roster. Derived, never
     /// stored: a group with no members simply stops existing.
@@ -542,7 +654,7 @@ public final class DeviceStore: ObservableObject {
     private func refreshBriturnStatuses(limitingTo devices: [Device]? = nil) async {
         let targets = (devices ?? self.devices)
             .filter { $0.hasAddress && !statusLoading.contains($0.id) }
-            .filter { $0.category.lowercased() == "briturn" }
+            .filter { $0.category.lowercased() == "briturn" && !$0.isBLE }
         var batch: [String: BriturnState] = [:]
         var errors: [String: String] = [:]
         for device in targets {
@@ -692,6 +804,8 @@ public final class DeviceStore: ObservableObject {
     /// loadAllStatuses, so the on-count and chips are right immediately.
     public func loadAllBriturnStatuses() async {
         for device in devices where device.category.lowercased() == "briturn" {
+            // BLE lights state-source from advertisements, not the bridge.
+            guard !device.isBLE else { continue }
             await loadBriturnStatus(for: device)
         }
     }

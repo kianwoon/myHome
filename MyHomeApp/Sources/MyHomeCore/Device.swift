@@ -124,6 +124,10 @@ public enum DeviceKind: String, Equatable {
 }
 
 extension Device {
+    /// BLE-transport lights live only on the app side (discovered over
+    /// CoreBluetooth); they have no WiFi address and no bridge roster entry.
+    public var isBLE: Bool { id.hasPrefix("ble-") }
+
     public var kind: DeviceKind {
         DeviceKind.classify(category: category, name: name)
     }
