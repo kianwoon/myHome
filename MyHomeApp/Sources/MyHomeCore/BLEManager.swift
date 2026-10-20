@@ -15,7 +15,7 @@
 @preconcurrency import CoreBluetooth
 import Foundation
 
-public struct BLELight: Identifiable, Equatable {
+public struct BLELight: Identifiable, Equatable, Codable {
     public let id: String            // "ble-<mac>"
     public let name: String
     public let rssi: Int

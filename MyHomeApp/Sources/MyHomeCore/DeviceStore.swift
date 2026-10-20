@@ -45,8 +45,13 @@ public final class DeviceStore: ObservableObject {
 
     /// Bridge roster (Tuya + WiFi briturn devices).
     @Published public private(set) var roster: [Device] = []
-    /// Raw BLE discoveries (from BLEManager advertisements).
+    /// Raw BLE discoveries currently being heard (from BLEManager).
     @Published public private(set) var bleLights: [BLELight] = []
+    /// Every BLE light ever discovered, persisted. BLE bulbs advertise in
+    /// bursts — a BLE-only light must NOT vanish from the dashboard just
+    /// because its current advert window closed.
+    private var bleSeen: [String: BLELight] = [:]
+    private static let bleSeenStorageKey = "briturn.bleSeen"
     /// Uniform view: roster + BLE-only lights. The dedupe is DERIVED here.
     /// Identity rule: a BLE light belongs to a roster entry when the
     /// manufacturer-data MAC matches, or — these lights advertise no MAC —
@@ -55,7 +60,7 @@ public final class DeviceStore: ObservableObject {
     /// BLE-only lights carry their group from app-local persistence (they
     /// have no roster entry to store it in).
     public var devices: [Device] {
-        let bleOnlyDevices = bleLights.compactMap { light -> Device? in
+        let bleOnlyDevices = bleSeen.values.sorted { $0.name < $1.name }.compactMap { light -> Device? in
             guard matchRosterID(for: light) == nil else { return nil }
             guard light.id.hasPrefix("ble-") else { return nil }
             return Device(id: light.id, name: light.name, ip: "",
@@ -141,7 +146,17 @@ public final class DeviceStore: ObservableObject {
            let stored = try? JSONDecoder().decode([String: String].self, from: data) {
             bleGroups = stored
         }
+        if let data = defaults.data(forKey: Self.bleSeenStorageKey),
+           let stored = try? JSONDecoder().decode([BLELight].self, from: data) {
+            for light in stored { bleSeen[light.id] = light }
+        }
         bindBLE()
+    }
+
+    private func persistBLESeen() {
+        if let data = try? JSONEncoder().encode(Array(bleSeen.values)) {
+            UserDefaults.standard.set(data, forKey: Self.bleSeenStorageKey)
+        }
     }
 
     // MARK: - BLE transport
@@ -176,6 +191,15 @@ public final class DeviceStore: ObservableObject {
             .sink { [weak self] lights in
                 guard let self else { return }
                 self.bleLights = lights
+                // Cumulative memory: once seen, a BLE light stays on the
+                // dashboard (persisted across launches) even when its advert
+                // window closes.
+                var changed = false
+                for light in lights where self.bleSeen[light.id] != light {
+                    self.bleSeen[light.id] = light
+                    changed = true
+                }
+                if changed { self.persistBLESeen() }
                 // Side effects only — the dedupe itself is derived in
                 // `devices` via matchRosterID.
                 for light in lights {
