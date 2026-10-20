@@ -899,20 +899,37 @@ public final class DeviceStore: ObservableObject {
             .filter { $0.category.lowercased() == "briturn" && !$0.isBLE }
         var batch: [String: BriturnState] = [:]
         var errors: [String: String] = [:]
-        for device in targets {
-            if Task.isCancelled { break }
-            statusLoading.insert(device.id)
-            // NATIVE TRANSPORT: direct TCP query, no bridge round-trip.
-            if let state = await FluxClient.query(ip: device.ip) {
-                batch[device.id] = state
-            } else if briturnStatus[device.id] == nil {
-                errors[device.id] = "Light unreachable."
+        // Concurrent in chunks of 6 (same pattern as group control): a
+        // sequential sweep of 25 lights took 15-25s at launch, leaving chips
+        // on their placeholder colour the whole time. Chunking protects the
+        // bulbs from dozens of simultaneous handshakes.
+        let knownStates = briturnStatus
+        let CHUNK = 6
+        for start in stride(from: 0, to: targets.count, by: CHUNK) {
+            let chunk = Array(targets[start..<min(start + CHUNK, targets.count)])
+            let results = await withTaskGroup(
+                of: (String, BriturnState?, String?).self,
+                returning: [(String, BriturnState?, String?)].self
+            ) { group in
+                for device in chunk {
+                    if Task.isCancelled { break }
+                    let hadState = knownStates[device.id] != nil
+                    group.addTask {
+                        let state = await FluxClient.query(ip: device.ip)
+                        let error = state == nil && !hadState ? "Light unreachable." : nil
+                        return (device.id, state, error)
+                    }
+                }
+                var collected: [(String, BriturnState?, String?)] = []
+                for await result in group { collected.append(result) }
+                return collected
             }
-            statusLoading.remove(device.id)
-            do {
-                try await Task.sleep(nanoseconds: UInt64(Self.statusPollPacing * 1_000_000_000))
-            } catch {
-                return
+            for (id, state, error) in results {
+                if let state = state {
+                    batch[id] = state
+                } else if let error = error {
+                    errors[id] = error
+                }
             }
         }
         if !batch.isEmpty {

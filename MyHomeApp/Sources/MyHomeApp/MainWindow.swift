@@ -1474,7 +1474,7 @@ struct BriturnGroupScheduleSheet: View {
 struct BriturnControlsView: View {
     @EnvironmentObject private var store: DeviceStore
     let device: Device
-    @State private var color = Color(red: 1, green: 0, blue: 0)
+    @State private var color = Color.white
     @State private var brightness: Double = 100
     @State private var isDraggingBrightness = false
     @State private var applyTask: Task<Void, Never>?
