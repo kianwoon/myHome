@@ -1174,8 +1174,12 @@ struct BriturnGroupCard: View {
         if Date().timeIntervalSince(lastColorEdit) < Self.colorSyncHoldOff { return }
         guard let member = members.first,
               let state = store.briturnStatus[member.id] else { return }
+        // rgb all-zero with a non-zero warm level means a WHITE light,
+        // powered or not — the readback has no colour information for it.
+        let white = state.isWhiteMode
+            || (state.r == 0 && state.g == 0 && state.b == 0 && state.w > 0)
         isSyncingPicker = true
-        if state.isWhiteMode {
+        if white {
             color = .white
         } else if state.r == 0 && state.g == 0 && state.b == 0 {
             // No colour set: leave the picker alone rather than paint black.
@@ -1188,7 +1192,7 @@ struct BriturnGroupCard: View {
                 blue: Double(state.b) / 255
             )
         }
-        brightness = state.isWhiteMode ? Double(state.w) * 100.0 / 255.0
+        brightness = white ? Double(state.w) * 100.0 / 255.0
             : Double(max(state.r, state.g, state.b)) * 100.0 / 255.0
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 150_000_000)
