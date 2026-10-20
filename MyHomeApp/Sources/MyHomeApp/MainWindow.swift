@@ -1021,7 +1021,6 @@ struct BriturnGroupCard: View {
     @State private var isDraggingBrightness = false
     @State private var applyTask: Task<Void, Never>?
     @State private var brightnessTask: Task<Void, Never>?
-    @State private var syncedGroup: String?
     /// Same anti-echo rule as the single-light picker: never let a stale wire
     /// colour repaint the well and get sent back as a user command.
     @State private var lastColorEdit = Date.distantPast
@@ -1114,7 +1113,6 @@ struct BriturnGroupCard: View {
         if Date().timeIntervalSince(lastColorEdit) < Self.colorSyncHoldOff { return }
         guard let member = members.first,
               let state = store.briturnStatus[member.id] else { return }
-        syncedGroup = group
         isSyncingPicker = true
         if state.isWhiteMode {
             color = .white
