@@ -1172,28 +1172,34 @@ struct BriturnGroupCard: View {
     private func syncPicker() {
         if isDraggingBrightness { return }
         if Date().timeIntervalSince(lastColorEdit) < Self.colorSyncHoldOff { return }
-        guard let member = members.first,
-              let state = store.briturnStatus[member.id] else { return }
-        // rgb all-zero with a non-zero warm level means a WHITE light,
-        // powered or not — the readback has no colour information for it.
-        let white = state.isWhiteMode
-            || (state.r == 0 && state.g == 0 && state.b == 0 && state.w > 0)
+        // The chip mirrors the LIGHTS, not one arbitrarily chosen member:
+        // first member with a real colour wins; otherwise the first white
+        // member (rgb all-zero with a warm level means white, powered or
+        // not); only all-zero checks with no warm level are no-information,
+        // where the user's persisted colour stays.
+        let statuses = members.compactMap { store.briturnStatus[$0.id] }
+        guard !statuses.isEmpty else { return }
+        let colored = statuses.first { $0.r > 0 || $0.g > 0 || $0.b > 0 }
+        let white = statuses.first {
+            $0.isWhiteMode || ($0.r == 0 && $0.g == 0 && $0.b == 0 && $0.w > 0)
+        }
         isSyncingPicker = true
-        if white {
+        if let colored = colored {
+            color = Color(
+                red: Double(colored.r) / 255,
+                green: Double(colored.g) / 255,
+                blue: Double(colored.b) / 255
+            )
+            brightness = Double(max(colored.r, colored.g, colored.b)) * 100.0 / 255.0
+        } else if let white = white {
             color = .white
-        } else if state.r == 0 && state.g == 0 && state.b == 0 {
-            // No colour set: leave the picker alone rather than paint black.
+            brightness = Double(white.w) * 100.0 / 255.0
+        } else {
+            // No colour set on any reachable member: leave the picker alone
+            // rather than paint black.
             clearSyncFlagSoon()
             return
-        } else {
-            color = Color(
-                red: Double(state.r) / 255,
-                green: Double(state.g) / 255,
-                blue: Double(state.b) / 255
-            )
         }
-        brightness = white ? Double(state.w) * 100.0 / 255.0
-            : Double(max(state.r, state.g, state.b)) * 100.0 / 255.0
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 150_000_000)
             isSyncingPicker = false
