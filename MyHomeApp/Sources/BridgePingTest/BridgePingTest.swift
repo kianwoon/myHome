@@ -24,6 +24,18 @@ struct BridgePingTest {
             return
         }
 
+        if mode == "fluxoff" {
+            let ip = arguments.count > 2 ? arguments[2] : "192.168.4.62"
+            print("BEFORE", await FluxClient.query(ip: ip).map { "on=\($0.on) raw=\($0.rawPower)" } ?? "nil")
+            print("SET_OFF", await FluxClient.setPower(ip: ip, on: false))
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            print("AFTER_2S", await FluxClient.query(ip: ip).map { "on=\($0.on) raw=\($0.rawPower)" } ?? "nil")
+            print("SET_ON", await FluxClient.setPower(ip: ip, on: true))
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            print("AFTER_ON", await FluxClient.query(ip: ip).map { "on=\($0.on) raw=\($0.rawPower)" } ?? "nil")
+            return
+        }
+
         if mode == "fanspeed" {
             proveFanSpeed()
             return
