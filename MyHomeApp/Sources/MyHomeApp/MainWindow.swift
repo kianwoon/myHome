@@ -303,14 +303,12 @@ struct DeviceCard: View {
                     HStack(spacing: 6) {
                         Text(device.name)
                             .font(.callout.weight(.semibold))
-                            .lineLimit(1)
                         CloudStatusBadge(online: store.cloudOnline[device.id])
                     }
                     HStack(spacing: 6) {
                         Text(summary(state))
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                            .lineLimit(1)
                         BatteryChip(percent: state.batteryPercent)
                     }
                 }
@@ -1106,7 +1104,6 @@ struct BriturnGroupCard: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(group)
                             .font(.callout.weight(.semibold))
-                            .lineLimit(1)
                             .multilineTextAlignment(.leading)
                         Text("\(members.count) light\(members.count == 1 ? "" : "s")")
                             .font(.caption)
