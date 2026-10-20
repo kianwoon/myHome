@@ -678,6 +678,14 @@ public final class DeviceStore: ObservableObject {
         }
     }
 
+    /// Loads every briturn device's wire state once — launch-time parity with
+    /// loadAllStatuses, so the on-count and chips are right immediately.
+    public func loadAllBriturnStatuses() async {
+        for device in devices where device.category.lowercased() == "briturn" {
+            await loadBriturnStatus(for: device)
+        }
+    }
+
     public func loadAllStatuses() async {
         for device in devices where device.hasAddress {
             await loadStatus(for: device)

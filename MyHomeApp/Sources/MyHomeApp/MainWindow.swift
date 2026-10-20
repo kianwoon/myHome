@@ -132,6 +132,9 @@ struct DashboardView: View {
                 await store.refresh()
             }
             await store.loadAllStatuses()
+            // Briturn statuses otherwise wait for the first poll cycle
+            // (~10s), leaving the on-count and chips wrong at launch.
+            await store.loadAllBriturnStatuses()
         }
         .onAppear { store.startPolling() }
         .onDisappear { store.stopPolling() }
