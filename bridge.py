@@ -118,6 +118,11 @@ def load_devices():
     return data if isinstance(data, list) else []
 
 
+# Serializes the whole load-modify-write: apply_to_disk is now reachable from
+# concurrent worker threads, and an unguarded read/rewrite would drop updates.
+_DISK_LOCK = threading.Lock()
+
+
 def apply_to_disk(mutator):
     """Read-modify-write devices.json and refresh the serving cache.
 
@@ -128,29 +133,30 @@ def apply_to_disk(mutator):
     in the same directory followed by os.replace.
     """
     global _devices
-    fresh = load_devices()
-    mutator(fresh)
+    with _DISK_LOCK:
+        fresh = load_devices()
+        mutator(fresh)
 
-    directory = os.path.dirname(DEVICES_PATH) or "."
-    descriptor, temp_path = tempfile.mkstemp(
-        prefix=".devices-", suffix=".json", dir=directory
-    )
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            json.dump(fresh, handle, indent=2)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temp_path, DEVICES_PATH)
-    except Exception:
+        directory = os.path.dirname(DEVICES_PATH) or "."
+        descriptor, temp_path = tempfile.mkstemp(
+            prefix=".devices-", suffix=".json", dir=directory
+        )
         try:
-            os.unlink(temp_path)
-        except OSError:
-            pass
-        raise
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                json.dump(fresh, handle, indent=2)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_path, DEVICES_PATH)
+        except Exception:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+            raise
 
-    _devices = fresh
-    return fresh
+        _devices = fresh
+        return fresh
 
 
 def find_device(device_id):
@@ -2272,9 +2278,34 @@ def dispatch(request):
     return {"ok": False, "error": "unknown command"}
 
 
+_RESPOND_LOCK = threading.Lock()
+# Cap concurrent workers: these are cheap embedded firmwares and serial-port
+# style readers, but a batch of requests must not fork unbounded threads.
+_WORKER_SEM = threading.Semaphore(8)
+
+
 def respond(payload):
-    sys.stdout.write(json.dumps(payload, separators=(",", ":")) + "\n")
-    sys.stdout.flush()
+    line = json.dumps(payload, separators=(",", ":")) + "\n"
+    with _RESPOND_LOCK:
+        sys.stdout.write(line)
+        sys.stdout.flush()
+
+
+def _run_request(request, request_id):
+    """Dispatch one id-stamped request on a worker thread.
+
+    Concurrent requests interleave safely: stdout writes are locked and every
+    reply carries its reqId so the client can match out-of-order answers.
+    """
+    try:
+        with _WORKER_SEM:
+            reply = dispatch(request)
+    except Exception as exc:
+        reply = {"ok": False, "error": str(exc) or "request failed"}
+    if not isinstance(reply, dict):
+        reply = {"ok": False, "error": "request failed"}
+    reply["reqId"] = request_id
+    respond(reply)
 
 
 def main():
@@ -2296,6 +2327,16 @@ def main():
                 continue
             if not isinstance(request, dict):
                 respond({"ok": False, "error": "bad request"})
+                continue
+            request_id = request.get("reqId")
+            if isinstance(request_id, int) and not isinstance(request_id, bool):
+                # Id-stamped requests run concurrently; un-stamped ones keep
+                # the legacy synchronous path.
+                threading.Thread(
+                    target=_run_request,
+                    args=(request, request_id),
+                    daemon=True,
+                ).start()
                 continue
             try:
                 respond(dispatch(request))

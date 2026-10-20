@@ -23,9 +23,11 @@ public enum BridgeError: LocalizedError {
 
 /// Spawns the Python bridge as a subprocess and speaks its JSON-lines protocol.
 ///
-/// The protocol is strictly serial, so replies are correlated with requests by
-/// order. Every request has a 6 second timeout; a timeout tears the process
-/// down so the next request starts from a clean protocol state.
+/// Requests are stamped with an incrementing reqId and replies are matched by
+/// that id, so the bridge can answer out of order. Replies without a reqId
+/// (a legacy bridge) fall back to FIFO correlation. Every request has a
+/// timeout; a timeout tears the process down so the next request starts from
+/// a clean protocol state.
 public final class BridgeClient: @unchecked Sendable {
     public static let shared = BridgeClient()
 
@@ -37,12 +39,15 @@ public final class BridgeClient: @unchecked Sendable {
     private var output: FileHandle?
     private var buffer = Data()
     private var pending: [Pending] = []
+    private var nextRequestId = 1
 
     private final class Pending {
+        let id: Int
         let continuation: CheckedContinuation<[String: Any], Error>
         var finished = false
 
-        init(_ continuation: CheckedContinuation<[String: Any], Error>) {
+        init(id: Int, _ continuation: CheckedContinuation<[String: Any], Error>) {
+            self.id = id
             self.continuation = continuation
         }
     }
@@ -91,22 +96,26 @@ public final class BridgeClient: @unchecked Sendable {
     }
 
     public func request(_ payload: [String: Any], timeout: TimeInterval = 6) async throws -> [String: Any] {
-        let body = try JSONSerialization.data(withJSONObject: payload)
-        var line = body
-        line.append(0x0A)
-
         return try await withCheckedThrowingContinuation { continuation in
             queue.async {
                 do {
                     try self.ensureRunningLocked()
-                    let entry = Pending(continuation)
+                    let reqId = self.nextRequestId
+                    self.nextRequestId = reqId >= Int.max ? 1 : reqId + 1
+                    var stamped = payload
+                    stamped["reqId"] = reqId
+                    var line = try JSONSerialization.data(withJSONObject: stamped)
+                    line.append(0x0A)
+                    let entry = Pending(id: reqId, continuation)
                     self.pending.append(entry)
                     try self.input?.write(contentsOf: line)
                     self.queue.asyncAfter(deadline: .now() + timeout) {
                         guard !entry.finished else { return }
-                        self.log("request timed out after \(timeout)s — resetting bridge")
+                        // A hung handler is now isolated to its own request:
+                        // the bridge stays responsive for the other in-flight
+                        // requests, so never tear the process down here.
+                        self.log("request timed out after \(timeout)s — failing that request only")
                         self.completeLocked(entry, .failure(BridgeError.timeout))
-                        self.resetLocked()
                     }
                 } catch {
                     continuation.resume(throwing: error)
@@ -292,15 +301,19 @@ public final class BridgeClient: @unchecked Sendable {
             buffer.removeSubrange(buffer.startIndex...newline)
             guard !lineData.isEmpty else { continue }
 
-            guard let entry = pending.first else { continue }
-            pending.removeFirst()
-
             do {
                 guard let object = try JSONSerialization.jsonObject(with: lineData) as? [String: Any] else {
                     throw BridgeError.badResponse("expected a JSON object")
                 }
+                // Id-matched completion: replies may land out of order.
+                // Legacy bridges omit reqId; those still complete FIFO.
+                let entry = (object["reqId"] as? Int).flatMap { reqId in
+                    pending.first { $0.id == reqId }
+                } ?? (object["reqId"] == nil ? pending.first : nil)
+                guard let entry = entry else { continue }
                 completeLocked(entry, .success(object))
             } catch {
+                guard let entry = pending.first else { continue }
                 completeLocked(entry, .failure(BridgeError.badResponse(error.localizedDescription)))
             }
         }

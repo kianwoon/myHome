@@ -1017,21 +1017,32 @@ public final class DeviceStore: ObservableObject {
         var onBatch: [String: Bool] = [:]
         var errorBatch: [String: String] = [:]
 
-        for id in targets {
-            if Task.isCancelled { break }
-            switch await fetchStatus(for: id) {
-            case .success(let decoded):
-                dpsBatch[id] = decoded
-                if let power = decoded["1"]?.boolValue {
-                    onBatch[id] = power
-                }
-            case .failure(let message):
-                errorBatch[id] = message
+        // Sliding window of 6: devices overlap instead of walking one at a
+        // time (the old 0.15s pacing made fans/curtains sweep serially). The
+        // window is bounded to protect the bridge's device sockets, and the
+        // coalesced batch write above is unchanged.
+        let MAX_IN_FLIGHT = 6
+        await withTaskGroup(of: (String, StatusFetch).self, returning: Void.self) { group in
+            var next = 0
+            while next < targets.count && next < MAX_IN_FLIGHT && !Task.isCancelled {
+                let id = targets[next]
+                next += 1
+                group.addTask { (id, await self.fetchStatus(for: id)) }
             }
-            do {
-                try await Task.sleep(nanoseconds: UInt64(Self.statusPollPacing * 1_000_000_000))
-            } catch {
-                return
+            while let pair = await group.next() {
+                switch pair.1 {
+                case .success(let decoded):
+                    dpsBatch[pair.0] = decoded
+                    if let power = decoded["1"]?.boolValue {
+                        onBatch[pair.0] = power
+                    }
+                case .failure(let message):
+                    errorBatch[pair.0] = message
+                }
+                guard !Task.isCancelled, next < targets.count else { continue }
+                let id = targets[next]
+                next += 1
+                group.addTask { (id, await self.fetchStatus(for: id)) }
             }
         }
 
