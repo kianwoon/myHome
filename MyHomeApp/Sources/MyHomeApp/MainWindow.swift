@@ -941,6 +941,7 @@ struct BriturnGroupCard: View {
     /// colour repaint the well and get sent back as a user command.
     @State private var lastColorEdit = Date.distantPast
     private static let colorSyncHoldOff: TimeInterval = 4
+    @State private var isSyncingPicker = false
 
     private var members: [Device] { store.members(of: group) }
     private var anyOn: Bool { members.contains { store.briturnStatus[$0.id]?.on == true } }
@@ -1004,15 +1005,21 @@ struct BriturnGroupCard: View {
         guard let member = members.first,
               let state = store.briturnStatus[member.id] else { return }
         syncedGroup = group
+        isSyncingPicker = true
         color = Color(
             red: Double(state.r) / 255,
             green: Double(state.g) / 255,
             blue: Double(state.b) / 255
         )
         brightness = Double(max(state.r, state.g, state.b)) * 100.0 / 255.0
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            isSyncingPicker = false
+        }
     }
 
     private func scheduleColorApply(_ newValue: Color) {
+        guard !isSyncingPicker else { return }
         lastColorEdit = Date()
         applyTask?.cancel()
         guard let rgb = BriturnColorUtil.extractRGB(newValue) else { return }
@@ -1024,6 +1031,7 @@ struct BriturnGroupCard: View {
     }
 
     private func scheduleBrightnessApply() {
+        guard !isSyncingPicker else { return }
         brightnessTask?.cancel()
         let value = Int(brightness.rounded())
         brightnessTask = Task {
@@ -1071,6 +1079,10 @@ struct BriturnControlsView: View {
     /// After any user edit the picker stops syncing until the hold-off ends.
     @State private var lastColorEdit = Date.distantPast
     private static let colorSyncHoldOff: TimeInterval = 4
+    /// True while the picker is being seeded from a device readback — the
+    /// resulting onChange is an ECHO, not a user edit, and must never reach
+    /// the apply path (that is what made tab switches flip the lights).
+    @State private var isSyncingPicker = false
     @State private var newGroupName = ""
 
     private var groupBinding: Binding<String> {
@@ -1179,18 +1191,30 @@ struct BriturnControlsView: View {
         // after the drag ends wins instead.
         if isDraggingBrightness { return }
         if Date().timeIntervalSince(lastColorEdit) < Self.colorSyncHoldOff { return }
+        isSyncingPicker = true
         color = Color(
             red: Double(state.r) / 255,
             green: Double(state.g) / 255,
             blue: Double(state.b) / 255
         )
         brightness = Double(max(state.r, state.g, state.b)) * 100.0 / 255.0
+        clearSyncFlagSoon()
+    }
+
+    /// The onChange handlers fire during the same update pass; a short delay
+    /// before clearing the flag guarantees the echo change is swallowed.
+    private func clearSyncFlagSoon() {
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            isSyncingPicker = false
+        }
     }
 
     /// Debounced apply: the picker fires continuously while dragging, but the
     /// bridge is serial and the bulb acks slowly, so only the settled value
     /// is sent.
     private func scheduleColorApply(_ newValue: Color) {
+        guard !isSyncingPicker else { return }
         lastColorEdit = Date()
         applyTask?.cancel()
         guard let rgb = BriturnColorUtil.extractRGB(newValue) else { return }
@@ -1204,6 +1228,7 @@ struct BriturnControlsView: View {
     /// Debounced like colour, and coarser (300ms): dragging fires continuously
     /// and each step would otherwise be a full wire round-trip + readback.
     private func scheduleBrightnessApply() {
+        guard !isSyncingPicker else { return }
         brightnessTask?.cancel()
         let value = Int(brightness.rounded())
         brightnessTask = Task {
