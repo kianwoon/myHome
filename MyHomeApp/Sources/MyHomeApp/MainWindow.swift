@@ -531,7 +531,7 @@ struct BriturnCardControls: View {
             Image(systemName: "sun.max")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Slider(value: $brightness, in: 0...100, step: 1) { dragging in
+            Slider(value: $brightness, in: 0...100) { dragging in
                 isDragging = dragging
                 if !dragging {
                     applyTask?.cancel()
@@ -1138,7 +1138,7 @@ struct BriturnGroupCard: View {
                 Image(systemName: "sun.max")
                     .foregroundStyle(.secondary)
                     .font(.caption2)
-                Slider(value: $brightness, in: 0...100, step: 1) { dragging in
+                Slider(value: $brightness, in: 0...100) { dragging in
                     isDraggingBrightness = dragging
                     if !dragging { scheduleBrightnessApply() }
                 }
@@ -1580,7 +1580,7 @@ struct BriturnControlsView: View {
                     Image(systemName: "sun.max")
                         .foregroundStyle(.secondary)
                         .font(.caption)
-                    Slider(value: $brightness, in: 0...100, step: 1) { dragging in
+                    Slider(value: $brightness, in: 0...100) { dragging in
                         isDraggingBrightness = dragging
                         if !dragging { scheduleBrightnessApply() }
                     }
