@@ -1100,7 +1100,10 @@ struct BriturnGroupCard: View {
         )
         .onAppear { syncPicker() }
         .onChange(of: store.briturnStatus) { _ in
-            if syncedGroup != group { syncPicker() }
+            // Always re-track the members' live colour: the chip is a MIRROR
+            // of the group, not a memory of the first readback. User edits are
+            // protected by the lastColorEdit hold-off inside syncPicker.
+            syncPicker()
         }
     }
 
