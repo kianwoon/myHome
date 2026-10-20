@@ -1278,30 +1278,27 @@ struct BriturnControlsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            // Groups live in the roster; BLE-only lights have no roster entry
-            // yet, so the picker is hidden rather than presenting a control
-            // that cannot persist.
-            if !device.isBLE {
-                Picker("Group", selection: groupBinding) {
-                    Text("None").tag("")
-                    ForEach(store.briturnGroups, id: \.self) { name in
-                        Text(name).tag(name)
-                    }
-                    Text("New Group…").tag("__new__")
+            // Groups work for both transports: roster-backed for WiFi lights,
+            // app-local persistence for BLE-only lights.
+            Picker("Group", selection: groupBinding) {
+                Text("None").tag("")
+                ForEach(store.briturnGroups, id: \.self) { name in
+                    Text(name).tag(name)
                 }
-                .pickerStyle(.menu)
-                .alert("New Group", isPresented: $showingNewGroup) {
-                    TextField("Name", text: $newGroupName)
-                    Button("Create") {
-                        let name = newGroupName.trimmingCharacters(in: .whitespaces)
-                        guard !name.isEmpty else { return }
-                        newGroupName = ""
-                        Task { await store.setBriturnGroup(device, to: name) }
-                    }
-                    Button("Cancel", role: .cancel) {}
-                } message: {
-                    Text("Lights sharing a group can be switched and coloured together.")
+                Text("New Group…").tag("__new__")
+            }
+            .pickerStyle(.menu)
+            .alert("New Group", isPresented: $showingNewGroup) {
+                TextField("Name", text: $newGroupName)
+                Button("Create") {
+                    let name = newGroupName.trimmingCharacters(in: .whitespaces)
+                    guard !name.isEmpty else { return }
+                    newGroupName = ""
+                    Task { await store.setBriturnGroup(device, to: name) }
                 }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Lights sharing a group can be switched and coloured together.")
             }
         }
         .onAppear { syncPicker(from: store.briturnStatus[device.id]) }

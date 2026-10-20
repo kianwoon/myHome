@@ -52,12 +52,15 @@ public final class DeviceStore: ObservableObject {
     /// manufacturer-data MAC matches, or — these lights advertise no MAC —
     /// when the BLE name suffix matches the roster id's tail
     /// (IOTWF577 ↔ briturn-…8577). One physical light = one card.
+    /// BLE-only lights carry their group from app-local persistence (they
+    /// have no roster entry to store it in).
     public var devices: [Device] {
         let bleOnlyDevices = bleLights.compactMap { light -> Device? in
             guard matchRosterID(for: light) == nil else { return nil }
             guard light.id.hasPrefix("ble-") else { return nil }
             return Device(id: light.id, name: light.name, ip: "",
-                          version: "BLE", category: "briturn", online: true)
+                          version: "BLE", category: "briturn",
+                          group: bleGroups[light.id], online: true)
         }
         return roster + bleOnlyDevices
     }
@@ -134,6 +137,10 @@ public final class DeviceStore: ObservableObject {
         self.bridge = bridge
         self.pollInterval = AppSettings.pollInterval(from: defaults)
         self.scanWindow = AppSettings.scanWindow(from: defaults)
+        if let data = defaults.data(forKey: Self.bleGroupsStorageKey),
+           let stored = try? JSONDecoder().decode([String: String].self, from: data) {
+            bleGroups = stored
+        }
         bindBLE()
     }
 
@@ -146,6 +153,11 @@ public final class DeviceStore: ObservableObject {
     private var bleFallbackIDs: Set<String> = []
     /// bleKey ("ble-<mac>") per roster id, for addressing BLEManager.
     private var bleKeysByDeviceID: [String: String] = [:]
+    /// Group assignment for BLE-only lights. The roster can't hold these (no
+    /// bridge entry), so the app persists them locally — same feature surface,
+    /// different storage.
+    @Published public private(set) var bleGroups: [String: String] = [:]
+    private static let bleGroupsStorageKey = "briturn.bleGroups"
 
     /// The BLE key for a device: its own entry if BLE-only, else the matched
     /// WiFi roster id's MAC-derived key.
@@ -566,6 +578,17 @@ public final class DeviceStore: ObservableObject {
     /// Assigns one device to a group (nil clears) and re-lists so the roster
     /// and every derived view update together.
     public func setBriturnGroup(_ device: Device, to group: String?) async {
+        // BLE-only lights persist their group app-side.
+        if device.isBLE {
+            var groups = bleGroups
+            if let group = group, !group.isEmpty { groups[device.id] = group }
+            else { groups.removeValue(forKey: device.id) }
+            bleGroups = groups
+            if let data = try? JSONEncoder().encode(groups) {
+                UserDefaults.standard.set(data, forKey: Self.bleGroupsStorageKey)
+            }
+            return
+        }
         do {
             let reply = try await bridge.request([
                 "cmd": "briturngroup",

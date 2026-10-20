@@ -33,6 +33,10 @@ public final class BLEManager: NSObject, ObservableObject {
 
     private var central: CBCentralManager!
     private var peripherals: [String: CBPeripheral] = [:]   // id -> peripheral
+    /// CoreBluetooth hides the MAC; our ids come from advertisement decoding.
+    /// Every per-characteristic lookup must go through this map, or the
+    /// write-char lookup misses and commands silently never send.
+    private var bleIDByPeripheralUUID: [UUID: String] = [:]
     private var rawStates: [String: DeviceStore.BriturnState] = [:]
     private var connectRequests: [String: [(Result<Void, NSError>) -> Void]] = [:]
     private var writeChars: [String: CBCharacteristic] = [:]
@@ -217,6 +221,7 @@ extension BLEManager: CBCentralManagerDelegate {
 
         let isNew = peripherals[id] == nil
         peripherals[id] = peripheral
+        bleIDByPeripheralUUID[peripheral.identifier] = id
         if isNew || lights.first(where: { $0.id == id }) == nil {
             lights.append(BLELight(id: id, name: name, rssi: RSSI.intValue))
             lights.sort { $0.name < $1.name }
@@ -240,9 +245,10 @@ extension BLEManager: CBPeripheralDelegate {
     }
 
     public func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
+        let bleID = bleIDByPeripheralUUID[peripheral.identifier] ?? peripheral.identifier.uuidString
         for characteristic in service.characteristics ?? [] {
             switch characteristic.uuid.uuidString.suffix(4).uppercased() {
-            case "FF01": writeChars[peripheral.identifier.uuidString] = characteristic
+            case "FF01": writeChars[bleID] = characteristic
             case "FF02":
                 peripheral.setNotifyValue(true, for: characteristic)
             default: break
@@ -252,9 +258,10 @@ extension BLEManager: CBPeripheralDelegate {
 
     public func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
         guard characteristic.uuid.uuidString.suffix(4).uppercased() == "FF02", error == nil else { return }
-        notifyReady[peripheral.identifier.uuidString] = true
-        let callbacks = connectRequests[peripheral.identifier.uuidString] ?? []
-        connectRequests[peripheral.identifier.uuidString] = []
+let ownerID = bleIDByPeripheralUUID[peripheral.identifier] ?? peripheral.identifier.uuidString
+        notifyReady[ownerID] = true
+        let callbacks = connectRequests[ownerID] ?? []
+        connectRequests[ownerID] = []
         callbacks.forEach { $0(.success(())) }
     }
 
