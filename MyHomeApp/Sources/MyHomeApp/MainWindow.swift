@@ -233,10 +233,14 @@ struct DeviceCard: View {
     private func summary(_ state: DeviceState) -> String {
         if !isEnabled { return "Offline" }
         if isBriturn {
-            if let on = store.briturnStatus[device.id]?.on {
-                return on ? "On" : "Off"
+            // Group membership is part of the card's at-a-glance identity —
+            // you grouped lights precisely so they read as a set.
+            let state = store.briturnStatus[device.id]
+            let powerText = state.map { $0.on ? "On" : "Off" } ?? "Briturn"
+            if let name = device.group, !name.isEmpty {
+                return powerText + " · " + name
             }
-            return "Briturn"
+            return powerText
         }
         switch device.kind {
         case .plug:
