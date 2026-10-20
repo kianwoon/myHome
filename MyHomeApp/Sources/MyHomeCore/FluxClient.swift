@@ -87,8 +87,13 @@ public enum FluxClient {
         await withCheckedContinuation { continuation in
             queue.async {
                 for _ in 0..<2 {
-                    if let sock = connect(ip: ip), let result = body(sock) {
-                        close(sock)
+                    // Close the attempt socket on EVERY path: a body that
+                    // returns nil must not leak an ESTABLISHED session, or
+                    // the bulb's single session slot wedges until restart.
+                    guard let sock = connect(ip: ip) else { continue }
+                    let result = body(sock)
+                    close(sock)
+                    if let result = result {
                         continuation.resume(returning: result)
                         return
                     }
