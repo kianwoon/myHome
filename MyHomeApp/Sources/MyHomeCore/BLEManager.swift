@@ -54,37 +54,54 @@ public final class BLEManager: NSObject, ObservableObject {
 
     // MARK: - Public control API (called by DeviceStore)
 
-    public func setPower(id: String, on: Bool) {
-        // Legacy 0x71 power works across observed firmware; 0x3B is the v5+
-        // variant if 0x71 is ever ignored.
-        send(id: id, command: [0x71, on ? 0x23 : 0x24, 0x0F])
+    /// LEDnetWF transport wrapper (version 0, single segment): every command
+    /// to FF01 MUST be wrapped — raw bytes are ignored by this profile.
+    /// [0x00 header][seq][0x80 0x00 frag][len BE][len+1][cmdId 10/11][payload]
+    private func transport(_ command: [UInt8], expectsResponse: Bool = false) -> [UInt8] {
+        seq = seq &+ 1
+        let len = command.count
+        return [0x00, seq, 0x80, 0x00,
+                UInt8((len >> 8) & 0xFF), UInt8(len & 0xFF),
+                UInt8((len + 1) & 0xFF), expectsResponse ? 10 : 11] + command
     }
 
+    private func checksummed(_ command: [UInt8]) -> [UInt8] {
+        command + [command.reduce(0, +) & 0xFF]
+    }
+
+    private func clamped(_ v: Int) -> UInt8 { UInt8(min(max(v, 0), 255)) }
+
+    public func setPower(id: String, on: Bool) {
+        // Both power variants, wrapped: legacy 0x71 (older fw) and 0x3B mode
+        // 0x23 (v5+). Sending both is harmless — the profile ignores unknowns.
+        let p: UInt8 = on ? 0x23 : 0x24
+        send(id: id, command: checksummed([0x71, p, 0x0F]))
+        var modern: [UInt8] = [0x3B, p, 0x00, 0x00, 0x64, 0x00, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+        modern.append(modern.reduce(0, +) & 0xFF)
+        send(id: id, command: modern)
+    }
+
+    /// Pure colour: mode 0x5A (RGBCW) with white channels zeroed — same
+    /// white-off rule as the WiFi path.
     public func setColor(id: String, red: Int, green: Int, blue: Int) {
-        // 0x5A = RGBCW channels active, w/cw = 0 (pure colour — same
-        // white-off rule as the WiFi path), 0x0F persist flag, checksum last.
-        var cmd: [UInt8] = [0x31, clamped(red), clamped(green), clamped(blue), 0, 0, 0x5A, 0x0F]
-        cmd.append(cmd.reduce(0, +) & 0xFF)
-        send(id: id, command: cmd)
+        send(id: id, command: checksummed(
+            [0x31, clamped(red), clamped(green), clamped(blue), 0, 0, 0x5A, 0x0F]))
+    }
+
+    /// Warm-white mode at the given level (0-255 on the white channel):
+    /// mode 0x0F selects white-only.
+    public func setWhite(id: String, level: Int) {
+        send(id: id, command: checksummed(
+            [0x31, 0, 0, 0, clamped(level), 0, 0x0F, 0x0F]))
     }
 
     public func setBrightness(id: String, percent: Int) {
-        // Standalone brightness: legacy 0x47 takes 0-255; modern 0x3B takes
-        // percent. Send 0x3B primary (v9+), fall back harmless elsewhere.
         let p = clamped(percent)
-        var modern: [UInt8] = [0x3B, 0x01, 0x00, 0x00, UInt8(p), 0x00, UInt8(p), 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+        // Modern percent brightness (0x3B mode 0x01) + legacy 0x47 (0-255).
+        var modern: [UInt8] = [0x3B, 0x01, 0x00, 0x00, p, 0x00, p, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
         modern.append(modern.reduce(0, +) & 0xFF)
         send(id: id, command: modern)
-        var legacy: [UInt8] = [0x47, UInt8(max(1, Int(Double(p) * 2.55)))]
-        legacy.append(legacy.reduce(0, +) & 0xFF)
-        send(id: id, command: legacy)
-    }
-
-    /// Warm-white mode at the given level (0-255 on the white channel).
-    public func setWhite(id: String, level: Int) {
-        var cmd: [UInt8] = [0x31, 0, 0, 0, clamped(level), 0, 0x5A, 0x0F]
-        cmd.append(cmd.reduce(0, +) & 0xFF)
-        send(id: id, command: cmd)
+        send(id: id, command: checksummed([0x47, UInt8(max(1, Int(Double(percent) * 2.55)))]))
     }
 
     /// Local echo suppression is the STORE's job; this reports the latest
@@ -95,26 +112,16 @@ public final class BLEManager: NSObject, ObservableObject {
 
     // MARK: - Internals
 
-    private func clamped(_ v: Int) -> UInt8 { UInt8(min(max(v, 0), 255)) }
-
-    /// LEDnetWF transport wrapper (version 0, single segment, no-response).
-    private func transport(_ command: [UInt8]) -> [UInt8] {
-        seq = seq &+ 1
-        let len = command.count
-        return [0x00, seq, 0x80, 0x00,
-                UInt8((len >> 8) & 0xFF), UInt8(len & 0xFF),
-                UInt8((len + 1) & 0xFF), 11] + command
-    }
-
     private func send(id: String, command: [UInt8]) {
+        let wrapped = transport(command)
         guard let peripheral = peripherals[id] else { return }
         scheduleDisconnect(id: id)
         if notifyReady[id] == true, let writeChar = writeChars[id] {
-            peripheral.writeValue(Data(transport(command)), for: writeChar, type: .withoutResponse)
+            peripheral.writeValue(Data(wrapped), for: writeChar, type: .withoutResponse)
         } else {
             connectAndThen(id: id) { [weak self] in
                 guard let self, let writeChar = self.writeChars[id] else { return }
-                peripheral.writeValue(Data(self.transport(command)), for: writeChar, type: .withoutResponse)
+                peripheral.writeValue(Data(wrapped), for: writeChar, type: .withoutResponse)
             }
         }
     }
