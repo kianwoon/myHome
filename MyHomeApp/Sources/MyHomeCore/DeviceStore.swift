@@ -43,7 +43,12 @@ public final class DeviceStore: ObservableObject {
     /// the same slow cycle as cloudsync, never on the 10s status cycle.
     public static let cloudStatusPollCycles = cloudSyncInterval
 
-    @Published public private(set) var devices: [Device] = []
+    /// Bridge roster (Tuya + WiFi briturn devices).
+    @Published public private(set) var roster: [Device] = []
+    /// BLE-only lights (no roster entry — discovered over Bluetooth).
+    @Published public private(set) var bleOnly: [Device] = []
+    /// Uniform view: everything the dashboard shows, roster first.
+    public var devices: [Device] { roster + bleOnly }
     @Published public private(set) var isOn: [String: Bool] = [:]
     @Published public private(set) var dpsById: [String: [String: DPSValue]] = [:]
     @Published public private(set) var cloudOnline: [String: Bool] = [:]
@@ -124,21 +129,20 @@ public final class DeviceStore: ObservableObject {
                 // Dedupe by MAC: a light already in the roster (briturn-<mac>)
                 // gains BLE as a FALLBACK transport; only never-seen MACs get
                 // a BLE-only card.
-                var bleOnly: [Device] = []
+                var bleOnlyDevices: [Device] = []
                 for light in lights {
                     guard light.id.hasPrefix("ble-") else { continue }
                     let mac = String(light.id.dropFirst("ble-".count))
                     let tuyaID = "briturn-" + mac
-                    if self.devices.contains(where: { $0.id == tuyaID }) {
+                    if self.roster.contains(where: { $0.id == tuyaID }) {
                         self.bleFallbackIDs.insert(tuyaID)
                         self.bleKeysByDeviceID[tuyaID] = light.id
                     } else {
-                        bleOnly.append(Device(id: light.id, name: light.name, ip: "",
-                                              version: "BLE", category: "briturn", online: true))
+                        bleOnlyDevices.append(Device(id: light.id, name: light.name, ip: "",
+                                                     version: "BLE", category: "briturn", online: true))
                     }
                 }
-                let roster = self.devices.filter { !$0.id.hasPrefix("ble-") }
-                self.devices = roster + bleOnly
+                self.bleOnly = bleOnlyDevices
             }
             .store(in: &cancellables)
         ble.$states
@@ -210,7 +214,7 @@ public final class DeviceStore: ObservableObject {
             }
             let data = try JSONSerialization.data(withJSONObject: rawDevices)
             let decoded = try JSONDecoder().decode([Device].self, from: data)
-            devices = decoded
+            roster = decoded
             // Deliberately no isOn default: unknown power stays indeterminate
             // until status arrives.
             errorText = nil

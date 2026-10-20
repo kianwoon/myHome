@@ -137,15 +137,13 @@ struct DashboardView: View {
         }
         .task {
             // The bridge spawn can transiently fail (slow host, killed
-            // process). A single failed fetch left a BLE-only roster that
-            // looked like "all other devices disappeared" — retry until the
-            // roster lands, then load statuses.
-            if store.devices.isEmpty {
-                for _ in 0..<3 {
-                    await store.refresh()
-                    if !store.devices.isEmpty { break }
-                    try? await Task.sleep(nanoseconds: 2_000_000_000)
-                }
+            // process). Always fetch the roster at launch — BLE lights make
+            // `devices` non-empty even when the roster never loaded, so an
+            // emptiness check would skip the fetch entirely.
+            for _ in 0..<3 {
+                await store.refresh()
+                if !store.roster.isEmpty { break }
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
             await store.loadAllStatuses()
             // Briturn statuses otherwise wait for the first poll cycle
@@ -154,10 +152,10 @@ struct DashboardView: View {
         }
         .onAppear {
             store.startPolling()
-            // Same resilience on re-appear: if the roster is empty because an
+            // Same resilience on re-appear: if the ROSTER is empty because an
             // earlier fetch failed, try again instead of showing a hole.
             Task {
-                if store.devices.isEmpty { await store.refresh() }
+                if store.roster.isEmpty { await store.refresh() }
             }
         }
         .onDisappear { store.stopPolling() }
