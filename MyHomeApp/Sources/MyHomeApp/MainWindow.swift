@@ -1133,10 +1133,18 @@ struct BriturnControlsView: View {
                     )
                 )
 
-                ColorPicker("Color", selection: $color, supportsOpacity: false)
-                    .onChange(of: color) { newValue in
-                        scheduleColorApply(newValue)
+                HStack {
+                    ColorPicker("Color", selection: $color, supportsOpacity: false)
+                        .onChange(of: color) { newValue in
+                            scheduleColorApply(newValue)
+                        }
+                    // Explicit warm-white mode — rgb reads zero in this mode,
+                    // so without this button the only way back is the app.
+                    Button(state.isWhiteMode ? "White ✓" : "White") {
+                        Task { await store.setBriturn(device, white: true) }
                     }
+                    .controlSize(.small)
+                }
 
                 // General rule: colour and brightness commands work regardless
                 // of power state — the 2014 protocol applies colour while off
@@ -1195,11 +1203,15 @@ struct BriturnControlsView: View {
         if isDraggingBrightness { return }
         if Date().timeIntervalSince(lastColorEdit) < Self.colorSyncHoldOff { return }
         isSyncingPicker = true
-        color = Color(
-            red: Double(state.r) / 255,
-            green: Double(state.g) / 255,
-            blue: Double(state.b) / 255
-        )
+        if state.isWhiteMode {
+            color = .white
+        } else {
+            color = Color(
+                red: Double(state.r) / 255,
+                green: Double(state.g) / 255,
+                blue: Double(state.b) / 255
+            )
+        }
         brightness = Double(max(state.r, state.g, state.b)) * 100.0 / 255.0
         clearSyncFlagSoon()
     }

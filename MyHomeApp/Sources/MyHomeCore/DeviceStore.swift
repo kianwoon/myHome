@@ -224,6 +224,13 @@ public final class DeviceStore: ObservableObject {
             self.w = w
         }
 
+        public var isWhiteMode: Bool {
+            // The 2014 state frame reads rgb all-zero when the warm-white
+            // element is active — physically lit, but rgb-black. Display and
+            // picker logic must treat that as WHITE, not black.
+            on && r == 0 && g == 0 && b == 0
+        }
+
         init?(reply: [String: Any]) {
             guard let on = reply["on"] as? Bool,
                   let rawPower = reply["raw_power"] as? Int,
@@ -323,10 +330,11 @@ public final class DeviceStore: ObservableObject {
         _ device: Device,
         on: Bool? = nil,
         color: (red: Int, green: Int, blue: Int)? = nil,
-        brightness: Int? = nil
+        brightness: Int? = nil,
+        white: Bool = false
     ) async {
         guard isBriturn(device) else { return }
-        guard on != nil || color != nil || brightness != nil else { return }
+        guard on != nil || color != nil || brightness != nil || white else { return }
         guard device.hasAddress else {
             statusErrors[device.id] = "Briturn device has no IP yet — run a Briturn scan."
             return
@@ -339,6 +347,7 @@ public final class DeviceStore: ObservableObject {
             payload["b"] = color.blue
         }
         if let brightness = brightness { payload["brightness"] = brightness }
+        if white { payload["w"] = 128 }
         if let on = on {
             recordBriturnIntent([device.id], on: on)
         }
@@ -348,13 +357,14 @@ public final class DeviceStore: ObservableObject {
         // authority and overwrites this — a rejected set reverts on its own.
         let prev = briturnStatus[device.id]
         let nextOn = on ?? (prev?.on ?? false)
+        let paintedWhite = white || (color == nil && (prev?.isWhiteMode ?? false) && brightness != nil)
         briturnStatus[device.id] = BriturnState(
             on: nextOn,
             rawPower: nextOn ? 0x23 : 0x24,
             mode: prev?.mode ?? 97,
-            r: color?.red ?? prev?.r ?? 255,
-            g: color?.green ?? prev?.g ?? 255,
-            b: color?.blue ?? prev?.b ?? 255,
+            r: paintedWhite ? 0 : (color?.red ?? prev?.r ?? 255),
+            g: paintedWhite ? 0 : (color?.green ?? prev?.g ?? 255),
+            b: paintedWhite ? 0 : (color?.blue ?? prev?.b ?? 255),
             w: prev?.w ?? 0
         )
         do {

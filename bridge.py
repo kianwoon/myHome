@@ -603,27 +603,45 @@ def handle_briturnset(request=None):
     # strongest channel 50% (127), preserving hue. Explicit r/g/b wins as the
     # base; otherwise the device's current colour is the base.
     brightness = request.get("brightness")
+    pct = None
     color_packet = None
     if want_color or brightness is not None:
-        red, green, blue = channel("r"), channel("g"), channel("b")
         if brightness is not None:
             try:
                 pct = min(max(float(brightness), 0), 100)
             except (TypeError, ValueError):
                 return {"ok": False, "error": "brightness must be 0-100"}
-            if not want_color:
-                base = _briturn_read_rgb(config)
-                if base is None:
-                    return {"ok": False, "error": "device unreachable for brightness read"}
-                red, green, blue = base
-            peak = max(red, green, blue, 1)
-            factor = (pct * 255.0 / 100.0) / peak
-            red = min(int(red * factor + 0.5), 255)
-            green = min(int(green * factor + 0.5), 255)
-            blue = min(int(blue * factor + 0.5), 255)
-        warm = channel("w")
-        color_packet = bytes([0x31, red, green, blue, warm,
-                              0xF0 if warm else 0x0F, 0xAA])
+
+        red, green, blue = channel("r"), channel("g"), channel("b")
+        if not want_color:
+            # brightness-only: base on the device's current colour
+            base = _briturn_read_rgb(config)
+            if base is None:
+                return {"ok": False, "error": "device unreachable for brightness read"}
+            red, green, blue = base
+            if red == green == blue == 0 and pct is not None:
+                # White mode: rgb channels read zero — brightness IS the warm
+                # white level, so scale the warm byte (scaling zeros would be
+                # a no-op and a stuck slider).
+                warm_level = int(pct * 255.0 / 100.0 + 0.5)
+                color_packet = bytes([0x31, 0, 0, 0, warm_level, 0xF0, 0xAA])
+            elif pct is not None:
+                peak = max(red, green, blue, 1)
+                factor = (pct * 255.0 / 100.0) / peak
+                red = min(int(red * factor + 0.5), 255)
+                green = min(int(green * factor + 0.5), 255)
+                blue = min(int(blue * factor + 0.5), 255)
+
+        if color_packet is None:
+            # A colour set means PURE colour — the bulb's warm-white channel
+            # must be driven to 0, or whatever white level a previous set
+            # left keeps blending in and the rendered colour looks nothing
+            # like the picker. White only stays/applies when explicitly
+            # requested via the "w" field. 0xF0 always APPLIES the white byte
+            # (with warm=0 that actively zeroes the channel; the 0x0F variant
+            # leaves the old white level blending in).
+            warm = channel("w") if "w" in request else 0
+            color_packet = bytes([0x31, red, green, blue, warm, 0xF0, 0xAA])
 
     sent = 0
     if want_power:
@@ -738,8 +756,11 @@ def handle_briturnsetgroup(request):
                 red = min(int(red * factor + 0.5), 255)
                 green = min(int(green * factor + 0.5), 255)
                 blue = min(int(blue * factor + 0.5), 255)
-            pk.append(bytes([0x31, red, green, blue, warm,
-                             0xF0 if warm else 0x0F, 0xAA]))
+            # Same pure-colour rule as the single set: a colour set drives the
+            # white channel to 0 (0xF0 applies the white byte) unless the
+            # request explicitly carries "w".
+            warm = channel("w") if "w" in request else 0
+            pk.append(bytes([0x31, red, green, blue, warm, 0xF0, 0xAA]))
         return pk
 
     members = [
