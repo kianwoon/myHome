@@ -416,7 +416,7 @@ public final class DeviceStore: ObservableObject {
             return
         }
         do {
-            let reply = try await bridge.request(["cmd": "briturnstatus", "id": device.id])
+            let reply = try await bridge.request(["cmd": "briturnstatus", "id": device.id], timeout: 15)
             guard reply["ok"] as? Bool == true else {
                 statusErrors[device.id] = reply["error"] as? String ?? "Briturn status failed."
                 return
@@ -428,7 +428,13 @@ public final class DeviceStore: ObservableObject {
             applyBriturnWireState(device.id, state)
             statusErrors[device.id] = nil
         } catch {
-            statusErrors[device.id] = error.localizedDescription
+            // General rule: a poll timeout on a light we already have a state
+            // for is NOT worth alarming on — the serial bridge was just busy.
+            // Keep the last known state, stay quiet; only a light we know
+            // nothing about surfaces the failure.
+            if briturnStatus[device.id] == nil {
+                statusErrors[device.id] = error.localizedDescription
+            }
         }
     }
 
@@ -728,7 +734,7 @@ public final class DeviceStore: ObservableObject {
             if Task.isCancelled { break }
             statusLoading.insert(device.id)
             do {
-                let reply = try await bridge.request(["cmd": "briturnstatus", "id": device.id])
+                let reply = try await bridge.request(["cmd": "briturnstatus", "id": device.id], timeout: 15)
                 if reply["ok"] as? Bool == true, let state = BriturnState(reply: reply) {
                     batch[device.id] = state
                 } else {
@@ -753,8 +759,12 @@ public final class DeviceStore: ObservableObject {
             statusErrors = merged
         }
         if !errors.isEmpty {
+            // Poll timeouts on lights with a known state stay quiet (serial
+            // bridge congestion, not a real fault); only unknown lights alarm.
             var merged = statusErrors
-            for (id, message) in errors { merged[id] = message }
+            for (id, message) in errors where briturnStatus[id] == nil {
+                merged[id] = message
+            }
             statusErrors = merged
         }
     }
@@ -854,7 +864,7 @@ public final class DeviceStore: ObservableObject {
 
     private func fetchStatus(for id: String) async -> StatusFetch {
         do {
-            let reply = try await bridge.request(["cmd": "status", "id": id])
+            let reply = try await bridge.request(["cmd": "status", "id": id], timeout: 15)
             guard reply["ok"] as? Bool == true else {
                 return .failure(reply["error"] as? String ?? "Status failed.")
             }
