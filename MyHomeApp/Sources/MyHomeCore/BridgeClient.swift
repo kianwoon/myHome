@@ -214,6 +214,11 @@ public final class BridgeClient: @unchecked Sendable {
     private func log(_ message: String) {
         let line = "\(Date())  \(message)\n"
         let fm = FileManager.default
+        // FileHandle(forWritingAtPath:) returns nil for a missing file, so the
+        // log never existed. Create it before the cap check opens it.
+        if !fm.fileExists(atPath: logURL.path) {
+            fm.createFile(atPath: logURL.path, contents: Data())
+        }
         if let data = fm.contents(atPath: logURL.path), data.count > logMaxBytes {
             let tail = data.suffix(logMaxBytes / 2)
             try? tail.write(to: logURL)
@@ -235,6 +240,10 @@ public final class BridgeClient: @unchecked Sendable {
             }
             let logURL = self.logURL
             let logMaxBytes = self.logMaxBytes
+            let fm = FileManager.default
+            if !fm.fileExists(atPath: logURL.path) {
+                fm.createFile(atPath: logURL.path, contents: Data())
+            }
             if let existing = try? Data(contentsOf: logURL), existing.count > logMaxBytes {
                 try? existing.suffix(logMaxBytes / 2).write(to: logURL)
             }
