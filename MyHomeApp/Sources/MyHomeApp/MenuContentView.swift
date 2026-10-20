@@ -30,15 +30,16 @@ struct MenuContentView: View {
             } else {
                 ScrollView {
                     LazyVStack(spacing: 2) {
-                        // ON devices first, then alphabetical — a glance at
-                        // the panel shows what is running without hunting.
-                        ForEach(store.devices.sorted {
-                            let l = store.state(for: $0).power ?? false
-                            let r = store.state(for: $1).power ?? false
-                            if l != r { return l && !r }
-                            return $0.name.lowercased() < $1.name.lowercased()
-                        }) { device in
-                            DeviceRow(device: device)
+                        // One row per level-1 unit: a briturn GROUP, an
+                        // ungrouped briturn light, or any other device. ON
+                        // rows first, then alphabetical.
+                        ForEach(menuRows, id: \.id) { row in
+                            switch row {
+                            case .group(let group):
+                                BriturnGroupMenuRow(group: group)
+                            case .device(let device):
+                                DeviceRow(device: device)
+                            }
                         }
                     }
                 }
@@ -83,6 +84,57 @@ struct MenuContentView: View {
         .onAppear { store.startPolling() }
         .onDisappear { store.stopPolling() }
     }
+
+    /// Level-1 menu row: briturn is controlled per group.
+    private enum MenuRow: Identifiable {
+        case group(String)
+        case device(Device)
+
+        var id: String {
+            switch self {
+            case .group(let name): return "group:\(name)"
+            case .device(let device): return "device:\(device.id)"
+            }
+        }
+    }
+
+    private var menuRows: [MenuRow] {
+        var rows: [MenuRow] = store.briturnGroups.map { MenuRow.group($0) }
+        for device in store.devices {
+            if device.category.lowercased() == "briturn" {
+                // Grouped lights are represented by their group row; only
+                // ungrouped (incl. BLE-only) lights stand alone.
+                if let group = device.group, !group.isEmpty, store.briturnGroups.contains(group) {
+                    continue
+                }
+            }
+            rows.append(.device(device))
+        }
+        return rows.sorted { lhs, rhs in
+            let l = isOn(lhs)
+            let r = isOn(rhs)
+            if l != r { return l && !r }
+            return displayName(lhs).lowercased() < displayName(rhs).lowercased()
+        }
+    }
+
+    private func isOn(_ row: MenuRow) -> Bool {
+        switch row {
+        case .group(let group):
+            return store.members(of: group).contains {
+                store.briturnStatus[$0.id]?.on == true
+            }
+        case .device(let device):
+            return store.state(for: device).power ?? false
+        }
+    }
+
+    private func displayName(_ row: MenuRow) -> String {
+        switch row {
+        case .group(let group): return group
+        case .device(let device): return device.name
+        }
+    }
 }
 
 /// Opens the native Settings scene from the menu panel.
@@ -101,6 +153,87 @@ struct SettingsLauncher: View {
                 NSApp.activate(ignoringOtherApps: true)
             }
         }
+    }
+}
+
+/// One briturn group as a level-1 menu row: colour, honest member counts,
+/// and a switch that drives the whole group.
+struct BriturnGroupMenuRow: View {
+    @EnvironmentObject private var store: DeviceStore
+    let group: String
+
+    private var members: [Device] { store.members(of: group) }
+
+    private var onCount: Int {
+        members.filter { store.briturnStatus[$0.id]?.on == true }.count
+    }
+
+    private var anyOn: Bool { onCount > 0 }
+
+    /// Mirrors DeviceRow: no address and no BLE sighting means unreachable.
+    private var isEnabled: Bool {
+        members.contains { $0.hasAddress || $0.isBLE }
+    }
+
+    private var subtitle: String {
+        "\(members.count) light\(members.count == 1 ? "" : "s") · \(onCount) on"
+    }
+
+    private var swatch: Color? {
+        guard let rgb = store.groupColours[group] else { return nil }
+        return Color(
+            red: Double(rgb.red) / 255,
+            green: Double(rgb.green) / 255,
+            blue: Double(rgb.blue) / 255
+        )
+    }
+
+    private var toggleBinding: Binding<Bool> {
+        Binding(
+            get: { anyOn },
+            set: { newValue in
+                Task { await store.setBriturnGroupState(group, on: newValue) }
+            }
+        )
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            if let swatch = swatch {
+                Circle()
+                    .fill(swatch)
+                    .frame(width: 15, height: 15)
+                    .overlay(Circle().strokeBorder(Color.secondary.opacity(0.3), lineWidth: 0.5))
+                    .frame(width: 22)
+            } else {
+                Image(systemName: "square.grid.2x2")
+                    .font(.system(size: 15, weight: .medium))
+                    .frame(width: 22)
+                    .foregroundStyle(isEnabled ? Color.accentColor : Color.secondary)
+            }
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(group)
+                    .font(.callout)
+                    .lineLimit(1)
+                Text(subtitle)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 8)
+
+            Toggle("", isOn: toggleBinding)
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .disabled(!isEnabled)
+        }
+        .padding(.vertical, 4)
+        .padding(.horizontal, 4)
+        .contentShape(Rectangle())
+        .opacity(isEnabled ? 1 : 0.45)
     }
 }
 
