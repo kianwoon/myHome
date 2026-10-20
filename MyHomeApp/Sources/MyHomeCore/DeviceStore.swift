@@ -244,6 +244,48 @@ public final class DeviceStore: ObservableObject {
     /// Latest wire-read state per briturn device id.
     @Published public private(set) var briturnStatus: [String: BriturnState] = [:]
 
+    /// General rule: USER INTENT OUTRANKS A STALE WIRE READ. These bulbs apply
+    /// power/colour with visible lag; a poll that lands mid-transition returns
+    /// the OLD state and, if painted, visually bounces the user's toggle back.
+    /// An intent records the last user command per device; wire reads that
+    /// contradict a fresh intent are dropped (not painted), reads that agree
+    /// confirm and clear it, and only the set command's own readback — taken
+    /// after the bulb's settle delay — may overturn a fresh intent (the
+    /// command was genuinely lost).
+    private struct BriturnIntent {
+        let on: Bool
+        let at: Date
+    }
+
+    private var briturnIntent: [String: BriturnIntent] = [:]
+    private static let briturnIntentGrace: TimeInterval = 8
+
+    /// Paints a wire-read state unless it fights a fresh user intent.
+    private func applyBriturnWireState(_ id: String, _ state: BriturnState, authoritative: Bool = false) {
+        if let intent = briturnIntent[id],
+           Date().timeIntervalSince(intent.at) < Self.briturnIntentGrace {
+            if state.on == intent.on {
+                // Device confirmed the user's instruction.
+                briturnIntent.removeValue(forKey: id)
+            } else if !authoritative {
+                // Mid-transition poll: keep showing the user's instruction.
+                return
+            } else {
+                // Authoritative readback says the command never took: the
+                // device state is the truth, stop defending the intent.
+                briturnIntent.removeValue(forKey: id)
+            }
+        }
+        briturnStatus[id] = state
+    }
+
+    private func recordBriturnIntent(_ ids: [String], on: Bool) {
+        let intent = BriturnIntent(on: on, at: Date())
+        for id in ids {
+            briturnIntent[id] = intent
+        }
+    }
+
     private func isBriturn(_ device: Device) -> Bool {
         device.category.lowercased() == "briturn"
     }
@@ -264,7 +306,7 @@ public final class DeviceStore: ObservableObject {
                 statusErrors[device.id] = "Unexpected briturn status reply."
                 return
             }
-            briturnStatus[device.id] = state
+            applyBriturnWireState(device.id, state)
             statusErrors[device.id] = nil
         } catch {
             statusErrors[device.id] = error.localizedDescription
@@ -295,6 +337,9 @@ public final class DeviceStore: ObservableObject {
             payload["b"] = color.blue
         }
         if let brightness = brightness { payload["brightness"] = brightness }
+        if let on = on {
+            recordBriturnIntent([device.id], on: on)
+        }
         // Optimistic paint from the request: without this the toggle binding
         // re-reads the stale cached state and visually snaps back ON until
         // the ~1s wire readback lands. The bridge's readback remains the
@@ -314,17 +359,21 @@ public final class DeviceStore: ObservableObject {
             let reply = try await bridge.request(payload, timeout: 30)
             guard reply["ok"] as? Bool == true else {
                 statusErrors[device.id] = reply["error"] as? String ?? "Briturn set failed."
+                briturnIntent.removeValue(forKey: device.id)
+                briturnStatus[device.id] = prev
                 return
             }
             statusErrors[device.id] = nil
             if let raw = reply["status"] as? [String: Any], let state = BriturnState(reply: raw) {
-                briturnStatus[device.id] = state
+                applyBriturnWireState(device.id, state, authoritative: true)
             } else {
                 // No usable readback (device dropped mid-command): re-query.
                 await loadBriturnStatus(for: device)
             }
         } catch {
             statusErrors[device.id] = error.localizedDescription
+            briturnIntent.removeValue(forKey: device.id)
+            briturnStatus[device.id] = prev
         }
     }
 
@@ -400,6 +449,9 @@ public final class DeviceStore: ObservableObject {
                 b: color?.blue ?? prev?.b ?? 255,
                 w: prev?.w ?? 0
             )
+        }
+        if let on = on {
+            recordBriturnIntent(memberIDs, on: on)
         }
         do {
             let reply = try await bridge.request(payload, timeout: 30)
@@ -485,7 +537,9 @@ public final class DeviceStore: ObservableObject {
             }
         }
         if !batch.isEmpty {
-            briturnStatus.merge(batch) { _, new in new }
+            for (id, state) in batch {
+                applyBriturnWireState(id, state)
+            }
             var merged = statusErrors
             for id in batch.keys { merged[id] = nil }
             statusErrors = merged
