@@ -104,6 +104,7 @@ public final class BridgeClient: @unchecked Sendable {
                     try self.input?.write(contentsOf: line)
                     self.queue.asyncAfter(deadline: .now() + timeout) {
                         guard !entry.finished else { return }
+                        self.log("request timed out after \(timeout)s — resetting bridge")
                         self.completeLocked(entry, .failure(BridgeError.timeout))
                         self.resetLocked()
                     }
@@ -158,7 +159,13 @@ public final class BridgeClient: @unchecked Sendable {
         let stdoutPipe = Pipe()
         task.standardInput = stdinPipe
         task.standardOutput = stdoutPipe
-        task.standardError = FileHandle.nullDevice
+        // Bridge stderr used to go to a black hole — every diagnostic was
+        // unreadable. Tee it to a capped log file instead.
+        let stderrPipe = Pipe()
+        task.standardError = stderrPipe
+        teeStderr(stderrPipe.fileHandleForReading)
+
+        log("spawned bridge: \(executable.path)")
 
         stdoutPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
@@ -187,8 +194,61 @@ public final class BridgeClient: @unchecked Sendable {
         buffer.removeAll(keepingCapacity: true)
     }
 
+    // MARK: - Bridge log file
+    //
+    // General rule: every spawn, kill, timeout and exit is appended to a
+    // capped log, and the bridge's stderr is teed into the same file — when
+    // something breaks, there must be something to read.
+
+    private let logURL: URL = {
+        let dir = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Logs", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("MyHome-bridge.log")
+    }()
+
+    private let logMaxBytes = 512 * 1024
+
+    /// Appends one line to ~/Library/Logs/MyHome-bridge.log, truncating to the
+    /// last ~256KB when the cap is exceeded.
+    private func log(_ message: String) {
+        let line = "\(Date())  \(message)\n"
+        let fm = FileManager.default
+        if let data = fm.contents(atPath: logURL.path), data.count > logMaxBytes {
+            let tail = data.suffix(logMaxBytes / 2)
+            try? tail.write(to: logURL)
+        }
+        if let handle = FileHandle(forWritingAtPath: logURL.path) {
+            handle.seekToEndOfFile()
+            handle.write(Data(line.utf8))
+            try? handle.close()
+        }
+    }
+
+    /// Streams bridge stderr into the log file, capped the same way.
+    private func teeStderr(_ handle: FileHandle) {
+        handle.readabilityHandler = { fh in
+            let data = fh.availableData
+            guard !data.isEmpty else {
+                fh.readabilityHandler = nil
+                return
+            }
+            let logURL = self.logURL
+            let logMaxBytes = self.logMaxBytes
+            if let existing = try? Data(contentsOf: logURL), existing.count > logMaxBytes {
+                try? existing.suffix(logMaxBytes / 2).write(to: logURL)
+            }
+            if let out = FileHandle(forWritingAtPath: logURL.path) {
+                out.seekToEndOfFile()
+                out.write(data)
+                try? out.close()
+            }
+        }
+    }
+
     private func handleTerminationLocked() {
         guard process != nil else { return }
+        log("bridge exited unexpectedly — failing pending requests and resetting")
         failAllLocked(BridgeError.unavailable("The bridge process exited."))
         resetLocked()
     }
