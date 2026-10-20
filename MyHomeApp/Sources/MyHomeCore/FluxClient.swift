@@ -1,0 +1,134 @@
+// baseline-guard:allow new native flux transport, no prior baseline
+// Native TCP transport for Zengge WiFi lights (port 5577), replacing bridge
+// round-trips for briturn devices. General rule: briturn traffic never touches
+// the serial bridge — one slow bulb must never delay Tuya devices, cloud
+// calls, or schedules.
+//
+// Wire protocol (validated live against AK001-ZJ214 firmware, same packets
+// the bridge uses):
+//   Query state : 81 8a 8b -> 14-byte frame, anchor on 81 5f preamble:
+//                 [2]=power (0x23 on / 0x24 off), [3]=mode,
+//                 [5]=warm marker, [6..8]=r g b
+//   Power       : 71 23 (on) / 71 24 (off)
+//   Colour      : 31 r g b warm 0xF0 0xAA  (0xF0 applies the warm byte)
+
+import Foundation
+
+public enum FluxClient {
+    private static let port: UInt16 = 5577
+    private static let queue = DispatchQueue(label: "myhome.fluxclient", qos: .utility)
+
+    // MARK: - Public API
+
+    public static func query(ip: String) async -> DeviceStore.BriturnState? {
+        await run(ip: ip) { sock in
+            guard sendAll(sock, [0x81, 0x8A, 0x8B]) else { return nil }
+            var buffer = [UInt8](repeating: 0, count: 64)
+            let n = recv(sock, &buffer, buffer.count, 0)
+            guard n >= 14 else { return nil }
+            return parseFrame(Array(buffer[0..<n]))
+        }
+    }
+
+    public static func setPower(ip: String, on: Bool) async -> Bool {
+        await write(ip: ip, [0x71, on ? 0x23 : 0x24])
+    }
+
+    /// Pure colour: drives the warm byte explicitly (0 = white off), matching
+    /// the bridge's white-off rule so picker colours render true.
+    public static func setColor(ip: String, red: Int, green: Int, blue: Int, warm: Int = 0) async -> Bool {
+        await write(ip: ip, [0x31, clamp(red), clamp(green), clamp(blue), clamp(warm), 0xF0, 0xAA])
+    }
+
+    /// Warm-white level (white mode). level 0-255.
+    public static func setWhiteLevel(ip: String, level: Int) async -> Bool {
+        await write(ip: ip, [0x31, 0, 0, 0, clamp(level), 0xF0, 0xAA])
+    }
+
+    // MARK: - Internals
+
+    private func dummy() {}
+
+    private static func clamp(_ v: Int) -> UInt8 { UInt8(min(max(v, 0), 255)) }
+
+    private static func parseFrame(_ reply: [UInt8]) -> DeviceStore.BriturnState? {
+        // Anchor on the 81 5f preamble — ack streams may precede the frame.
+        guard let offset = reply.lastRange(of: [0x81, 0x5F])?.lowerBound,
+              reply.count - offset >= 14 else { return nil }
+        let f = Array(reply[offset...])
+        let on = f[2] == 0x23
+        let rgbZero = f[6] == 0 && f[7] == 0 && f[8] == 0
+        return DeviceStore.BriturnState(
+            on: on,
+            rawPower: Int(f[2]),
+            mode: Int(f[3]),
+            r: rgbZero ? 0 : Int(f[6]),
+            g: rgbZero ? 0 : Int(f[7]),
+            b: rgbZero ? 0 : Int(f[8]),
+            w: Int(f[5])
+        )
+    }
+
+    private static func write(ip: String, _ packet: [UInt8]) async -> Bool {
+        let ok: Bool? = await run(ip: ip) { sock in
+            sendAll(sock, packet) ? true : nil
+        }
+        return ok == true
+    }
+
+    /// Runs one socket exchange off the main thread. Two attempts, short
+    /// timeouts — these are flaky consumer firmwares, never loop hard.
+    private static func run<T>(ip: String, _ body: @escaping (Int32) -> T?) async -> T? {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                for _ in 0..<2 {
+                    if let sock = connect(ip: ip), let result = body(sock) {
+                        close(sock)
+                        continuation.resume(returning: result)
+                        return
+                    }
+                    connect(ip: ip).map { close($0) }
+                }
+                continuation.resume(returning: nil)
+            }
+        }
+    }
+
+    private static func connect(ip: String) -> Int32? {
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = port.bigEndian
+        guard inet_pton(AF_INET, ip, &addr.sin_addr) == 1 else { return nil }
+        let sock = socket(AF_INET, SOCK_STREAM, 0)
+        guard sock >= 0 else { return nil }
+        let timeout = timeval(tv_sec: 3, tv_usec: 0)
+        var tv = timeout
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        let result = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.connect(sock, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        guard result == 0 else {
+            close(sock)
+            return nil
+        }
+        return sock
+    }
+
+    private static func sendAll(_ sock: Int32, _ bytes: [UInt8]) -> Bool {
+        var sent = 0
+        let total = bytes.count
+        return bytes.withUnsafeBufferPointer { buf in
+            var ptr = buf.baseAddress!
+            while sent < total {
+                let n = Darwin.send(sock, ptr, total - sent, 0)
+                if n <= 0 { return false }
+                sent += n
+                ptr += n
+            }
+            return true
+        }
+    }
+}

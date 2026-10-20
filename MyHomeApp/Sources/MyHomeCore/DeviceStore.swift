@@ -415,27 +415,17 @@ public final class DeviceStore: ObservableObject {
             statusErrors[device.id] = "Briturn device has no IP yet — run a Briturn scan."
             return
         }
-        do {
-            let reply = try await bridge.request(["cmd": "briturnstatus", "id": device.id], timeout: 15)
-            guard reply["ok"] as? Bool == true else {
-                statusErrors[device.id] = reply["error"] as? String ?? "Briturn status failed."
-                return
-            }
-            guard let state = BriturnState(reply: reply) else {
-                statusErrors[device.id] = "Unexpected briturn status reply."
-                return
-            }
-            applyBriturnWireState(device.id, state)
-            statusErrors[device.id] = nil
-        } catch {
-            // General rule: a poll timeout on a light we already have a state
-            // for is NOT worth alarming on — the serial bridge was just busy.
-            // Keep the last known state, stay quiet; only a light we know
-            // nothing about surfaces the failure.
+        // NATIVE TRANSPORT: query the light directly.
+        guard let state = await FluxClient.query(ip: device.ip) else {
+            // Unreachable: keep last known state; only a never-seen light
+            // surfaces the failure.
             if briturnStatus[device.id] == nil {
-                statusErrors[device.id] = error.localizedDescription
+                statusErrors[device.id] = "Light unreachable."
             }
+            return
         }
+        applyBriturnWireState(device.id, state)
+        statusErrors[device.id] = nil
     }
 
     /// Sends power and/or colour and/or brightness, adopting the bridge's
@@ -473,9 +463,10 @@ public final class DeviceStore: ObservableObject {
         if let on = on {
             recordBriturnIntent([device.id], on: on)
         }
+        // NATIVE TRANSPORT: briturn traffic never touches the serial bridge.
         // Optimistic paint from the request: without this the toggle binding
         // re-reads the stale cached state and visually snaps back ON until
-        // the ~1s wire readback lands. The bridge's readback remains the
+        // the ~1s wire readback lands. The device readback remains the
         // authority and overwrites this — a rejected set reverts on its own.
         let prev = briturnStatus[device.id]
         let nextOn = on ?? (prev?.on ?? false)
@@ -489,25 +480,44 @@ public final class DeviceStore: ObservableObject {
             b: paintedWhite ? 0 : (color?.blue ?? prev?.b ?? 255),
             w: prev?.w ?? 0
         )
-        do {
-            let reply = try await bridge.request(payload, timeout: 30)
-            guard reply["ok"] as? Bool == true else {
-                statusErrors[device.id] = reply["error"] as? String ?? "Briturn set failed."
-                briturnIntent.removeValue(forKey: device.id)
-                briturnStatus[device.id] = prev
-                return
+        let ip = device.ip
+        var failed = false
+        if let on = on {
+            failed = !(await FluxClient.setPower(ip: ip, on: on))
+        }
+        if !failed {
+            if white {
+                failed = !(await FluxClient.setWhiteLevel(ip: ip, level: 128))
+            } else if let color = color {
+                failed = !(await FluxClient.setColor(ip: ip, red: color.red, green: color.green, blue: color.blue))
+            } else if let brightness = brightness {
+                // Same semantics as the bridge: brightness scales the peak
+                // colour channel; in white mode it scales the warm level.
+                let base = color ?? (prev.map { ($0.r, $0.g, $0.b) }.map { (red: $0.0, green: $0.1, blue: $0.2) } ?? (255, 255, 255))
+                if base.red == 0 && base.green == 0 && base.blue == 0 {
+                    failed = !(await FluxClient.setWhiteLevel(ip: ip, level: Int(Double(brightness) * 2.55)))
+                } else {
+                    let peak = max(base.red, base.green, base.blue, 1)
+                    let factor = Double(brightness) * 2.55 / Double(peak)
+                    failed = !(await FluxClient.setColor(
+                        ip: ip,
+                        red: min(Int(Double(base.red) * factor), 255),
+                        green: min(Int(Double(base.green) * factor), 255),
+                        blue: min(Int(Double(base.blue) * factor), 255)))
+                }
             }
-            statusErrors[device.id] = nil
-            if let raw = reply["status"] as? [String: Any], let state = BriturnState(reply: raw) {
-                applyBriturnWireState(device.id, state, authoritative: true)
-            } else {
-                // No usable readback (device dropped mid-command): re-query.
-                await loadBriturnStatus(for: device)
-            }
-        } catch {
-            statusErrors[device.id] = error.localizedDescription
+        }
+        if failed {
+            statusErrors[device.id] = "Light unreachable over WiFi."
             briturnIntent.removeValue(forKey: device.id)
             briturnStatus[device.id] = prev
+            return
+        }
+        statusErrors[device.id] = nil
+        // Reconcile with the device's own state after the settle delay.
+        try? await Task.sleep(nanoseconds: 800_000_000)
+        if let state = await FluxClient.query(ip: ip) {
+            applyBriturnWireState(device.id, state, authoritative: true)
         }
     }
 
@@ -733,15 +743,11 @@ public final class DeviceStore: ObservableObject {
         for device in targets {
             if Task.isCancelled { break }
             statusLoading.insert(device.id)
-            do {
-                let reply = try await bridge.request(["cmd": "briturnstatus", "id": device.id], timeout: 15)
-                if reply["ok"] as? Bool == true, let state = BriturnState(reply: reply) {
-                    batch[device.id] = state
-                } else {
-                    errors[device.id] = reply["error"] as? String ?? "Briturn status failed."
-                }
-            } catch {
-                errors[device.id] = error.localizedDescription
+            // NATIVE TRANSPORT: direct TCP query, no bridge round-trip.
+            if let state = await FluxClient.query(ip: device.ip) {
+                batch[device.id] = state
+            } else if briturnStatus[device.id] == nil {
+                errors[device.id] = "Light unreachable."
             }
             statusLoading.remove(device.id)
             do {

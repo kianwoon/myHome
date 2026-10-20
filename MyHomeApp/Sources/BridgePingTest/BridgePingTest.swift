@@ -18,6 +18,12 @@ struct BridgePingTest {
             return
         }
 
+        if mode == "flux" {
+            let ip = arguments.count > 2 ? arguments[2] : "192.168.5.2"
+            await proveFlux(ip: ip)
+            return
+        }
+
         if mode == "fanspeed" {
             proveFanSpeed()
             return
@@ -93,6 +99,20 @@ struct BridgePingTest {
     /// Unexpected DPS shapes must decode into the loose enum, never trap.
     /// Decodes the REAL bridge list reply (path in argv[2]) exactly as
     /// DeviceStore.refresh does — proves or disproves roster decoding.
+    /// Native flux transport, live: query, toggle off/on, set colour, restore.
+    private static func proveFlux(ip: String) async {
+        let before = await FluxClient.query(ip: ip)
+        print("FLUX_BEFORE", before.map { "on=\($0.on) rgb=(\($0.r),\($0.g),\($0.b)) w=\($0.w)" } ?? "nil")
+        print("FLUX_OFF", await FluxClient.setPower(ip: ip, on: false))
+        let mid = await FluxClient.query(ip: ip)
+        print("FLUX_MID", mid.map { "on=\($0.on)" } ?? "nil")
+        print("FLUX_ON", await FluxClient.setPower(ip: ip, on: true))
+        let after = await FluxClient.query(ip: ip)
+        print("FLUX_AFTER", after.map { "on=\($0.on)" } ?? "nil")
+        print("FLUX_COLOUR", await FluxClient.setColor(ip: ip, red: before?.r ?? 80, green: before?.g ?? 0, blue: before?.b ?? 0))
+        exit(0)
+    }
+
     private static func proveListDecoding() {
         let path = CommandLine.arguments.count > 2 ? CommandLine.arguments[2] : "/tmp/reply_line.json"
         do {
