@@ -271,11 +271,18 @@ public final class DeviceStore: ObservableObject {
         }
     }
 
-    /// Sends power and/or colour, adopting the bridge's fresh readback as the
-    /// new state — the device, not the request, is authoritative.
-    public func setBriturn(_ device: Device, on: Bool? = nil, color: (red: Int, green: Int, blue: Int)? = nil) async {
+    /// Sends power and/or colour and/or brightness, adopting the bridge's
+    /// fresh readback as the new state — the device, not the request, is
+    /// authoritative. Brightness (0-100) scales the peak colour channel; the
+    /// base is the explicit colour when given, else the device's current one.
+    public func setBriturn(
+        _ device: Device,
+        on: Bool? = nil,
+        color: (red: Int, green: Int, blue: Int)? = nil,
+        brightness: Int? = nil
+    ) async {
         guard isBriturn(device) else { return }
-        guard on != nil || color != nil else { return }
+        guard on != nil || color != nil || brightness != nil else { return }
         guard device.hasAddress else {
             statusErrors[device.id] = "Briturn device has no IP yet — run a Briturn scan."
             return
@@ -287,6 +294,7 @@ public final class DeviceStore: ObservableObject {
             payload["g"] = color.green
             payload["b"] = color.blue
         }
+        if let brightness = brightness { payload["brightness"] = brightness }
         do {
             let reply = try await bridge.request(payload, timeout: 30)
             guard reply["ok"] as? Bool == true else {
@@ -361,18 +369,22 @@ public final class DeviceStore: ObservableObject {
             payload["g"] = color.green
             payload["b"] = color.blue
         }
-        // Optimistic: members currently have a known state — paint it forward.
-        if var painted = briturnStatus[memberIDs.first ?? ""] {
-            if let on = on { painted = BriturnState(
-                on: on, rawPower: on ? 0x23 : 0x24, mode: painted.mode,
-                r: color?.red ?? painted.r,
-                g: color?.green ?? painted.g,
-                b: color?.blue ?? painted.b,
-                w: painted.w
-            ) }
-            for id in memberIDs where briturnStatus[id] != nil {
-                briturnStatus[id] = painted
-            }
+        // Optimistic: paint EVERY member from the request plus its OWN prior
+        // state — a member with no status yet must still show the group's new
+        // state immediately, and a colour-only set must not clobber members'
+        // individual power states.
+        for id in memberIDs {
+            let prev = briturnStatus[id]
+            let nextOn = on ?? (prev?.on ?? false)
+            briturnStatus[id] = BriturnState(
+                on: nextOn,
+                rawPower: nextOn ? 0x23 : 0x24,
+                mode: prev?.mode ?? 97,
+                r: color?.red ?? prev?.r ?? 255,
+                g: color?.green ?? prev?.g ?? 255,
+                b: color?.blue ?? prev?.b ?? 255,
+                w: prev?.w ?? 0
+            )
         }
         do {
             let reply = try await bridge.request(payload, timeout: 30)
@@ -384,8 +396,9 @@ public final class DeviceStore: ObservableObject {
         } catch {
             errorText = error.localizedDescription
         }
-        // The poll cycle re-reads members and reconciles any failures.
-        await refreshBriturnStatuses()
+        // The poll cycle re-reads members and reconciles any failures, but a
+        // full sweep takes seconds — reconcile just this group immediately.
+        await refreshBriturnStatuses(limitingTo: members(of: group))
     }
 
     // MARK: - Polling
@@ -430,8 +443,8 @@ public final class DeviceStore: ObservableObject {
 
     /// Refreshes every briturn device's wire state once per poll cycle.
     /// Coalesced into one published write per cycle, mirroring the DPS batch.
-    private func refreshBriturnStatuses() async {
-        let targets = devices
+    private func refreshBriturnStatuses(limitingTo devices: [Device]? = nil) async {
+        let targets = (devices ?? self.devices)
             .filter { $0.hasAddress && !statusLoading.contains($0.id) }
             .filter { $0.category.lowercased() == "briturn" }
         var batch: [String: BriturnState] = [:]

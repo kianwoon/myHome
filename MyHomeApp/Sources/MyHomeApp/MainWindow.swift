@@ -1016,7 +1016,9 @@ struct BriturnControlsView: View {
     @EnvironmentObject private var store: DeviceStore
     let device: Device
     @State private var color = Color(red: 1, green: 0, blue: 0)
+    @State private var brightness: Double = 100
     @State private var applyTask: Task<Void, Never>?
+    @State private var brightnessTask: Task<Void, Never>?
     @State private var showingNewGroup = false
     @State private var newGroupName = ""
 
@@ -1069,7 +1071,20 @@ struct BriturnControlsView: View {
                     .onChange(of: color) { newValue in
                         scheduleColorApply(newValue)
                     }
-                    .disabled(!state.on)
+
+                // General rule: colour and brightness commands work regardless
+                // of power state — the 2014 protocol applies colour while off
+                // and it takes effect on power-up, so gating the picker on
+                // `on` only created a dead control.
+                HStack {
+                    Image(systemName: "sun.max")
+                        .foregroundStyle(.secondary)
+                        .font(.caption)
+                    Slider(value: $brightness, in: 0...100, step: 1) { editing in
+                        if !editing { scheduleBrightnessApply() }
+                    }
+                }
+                .disabled(store.briturnStatus[device.id] == nil)
             } else {
                 Text("No status yet — tap Refresh.")
                     .font(.callout)
@@ -1104,7 +1119,8 @@ struct BriturnControlsView: View {
     }
 
     /// The picker mirrors the DEVICE's readback, not the user's mid-drag
-    /// color, so a set the device rejects can't silently diverge.
+    /// color, so a set the device rejects can't silently diverge. Brightness
+    /// is derived from the peak channel — the 2014 protocol scales colour.
     private func syncPicker(from state: DeviceStore.BriturnState?) {
         guard let state = state else { return }
         color = Color(
@@ -1112,6 +1128,7 @@ struct BriturnControlsView: View {
             green: Double(state.g) / 255,
             blue: Double(state.b) / 255
         )
+        brightness = Double(max(state.r, state.g, state.b)) * 100.0 / 255.0
     }
 
     /// Debounced apply: the picker fires continuously while dragging, but the
@@ -1124,6 +1141,18 @@ struct BriturnControlsView: View {
             try? await Task.sleep(nanoseconds: 350_000_000)
             guard !Task.isCancelled else { return }
             await store.setBriturn(device, color: rgb)
+        }
+    }
+
+    /// Debounced like colour, and coarser (300ms): dragging fires continuously
+    /// and each step would otherwise be a full wire round-trip + readback.
+    private func scheduleBrightnessApply() {
+        brightnessTask?.cancel()
+        let value = Int(brightness.rounded())
+        brightnessTask = Task {
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard !Task.isCancelled else { return }
+            await store.setBriturn(device, brightness: value)
         }
     }
 }

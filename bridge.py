@@ -551,6 +551,25 @@ def handle_briturnstatus(request=None):
     }
 
 
+def _briturn_frame(reply):
+    """Anchor a state frame on the 81 5f preamble; None if not present."""
+    offset = reply.rfind(b"\x81\x5f")
+    if offset < 0 or len(reply) - offset < 14:
+        return None
+    return reply[offset:]
+
+
+def _briturn_read_rgb(config):
+    """Read one device's current r/g/b, or None if unreachable/unparsable."""
+    reply = _briturn_exchange(config["ip"], BRITURN_QUERY)
+    if not reply:
+        return None
+    frame = _briturn_frame(reply)
+    if frame is None:
+        return None
+    return frame[6], frame[7], frame[8]
+
+
 def handle_briturnset(request=None):
     """Set power and/or colour on one Zengge light over TCP 5577.
 
@@ -569,8 +588,9 @@ def handle_briturnset(request=None):
 
     want_power = "on" in request
     want_color = any(key in request for key in ("r", "g", "b"))
-    if not want_power and not want_color:
-        return {"ok": False, "error": "nothing to set: pass 'on' and/or r/g/b"}
+    want_brightness = "brightness" in request
+    if not want_power and not want_color and not want_brightness:
+        return {"ok": False, "error": "nothing to set: pass 'on', r/g/b and/or brightness"}
 
     def channel(key, default=0):
         try:
@@ -578,19 +598,41 @@ def handle_briturnset(request=None):
         except (TypeError, ValueError):
             return default
 
+    # Brightness semantics: the 2014 protocol has no brightness command —
+    # Magic Home scales the peak colour channel. brightness=50 makes the
+    # strongest channel 50% (127), preserving hue. Explicit r/g/b wins as the
+    # base; otherwise the device's current colour is the base.
+    brightness = request.get("brightness")
+    color_packet = None
+    if want_color or brightness is not None:
+        red, green, blue = channel("r"), channel("g"), channel("b")
+        if brightness is not None:
+            try:
+                pct = min(max(float(brightness), 0), 100)
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "brightness must be 0-100"}
+            if not want_color:
+                base = _briturn_read_rgb(config)
+                if base is None:
+                    return {"ok": False, "error": "device unreachable for brightness read"}
+                red, green, blue = base
+            peak = max(red, green, blue, 1)
+            factor = (pct * 255.0 / 100.0) / peak
+            red = min(int(red * factor + 0.5), 255)
+            green = min(int(green * factor + 0.5), 255)
+            blue = min(int(blue * factor + 0.5), 255)
+        warm = channel("w")
+        color_packet = bytes([0x31, red, green, blue, warm,
+                              0xF0 if warm else 0x0F, 0xAA])
+
     sent = 0
     if want_power:
         packet = BRITURN_ON if bool(request.get("on")) else BRITURN_OFF
         if _briturn_exchange(config["ip"], packet, expect_reply=False) is None:
             return {"ok": False, "error": "power command failed"}
         sent += 1
-    if want_color:
-        warm = channel("w")
-        packet = bytes([
-            0x31, channel("r"), channel("g"), channel("b"), warm,
-            0xF0 if warm else 0x0F, 0xAA,
-        ])
-        if _briturn_exchange(config["ip"], packet, expect_reply=False) is None:
+    if color_packet is not None:
+        if _briturn_exchange(config["ip"], color_packet, expect_reply=False) is None:
             return {"ok": False, "error": "color command failed"}
         sent += 1
 
@@ -656,8 +698,9 @@ def handle_briturnsetgroup(request):
 
     want_power = "on" in request
     want_color = any(key in request for key in ("r", "g", "b"))
-    if not want_power and not want_color:
-        return {"ok": False, "error": "nothing to set: pass 'on' and/or r/g/b"}
+    want_brightness = "brightness" in request
+    if not want_power and not want_color and not want_brightness:
+        return {"ok": False, "error": "nothing to set: pass 'on', r/g/b and/or brightness"}
 
     def channel(key, default=0):
         try:
@@ -665,15 +708,39 @@ def handle_briturnsetgroup(request):
         except (TypeError, ValueError):
             return default
 
-    packets = []
-    if want_power:
-        packets.append(BRITURN_ON if bool(request.get("on")) else BRITURN_OFF)
-    if want_color:
-        warm = channel("w")
-        packets.append(bytes([
-            0x31, channel("r"), channel("g"), channel("b"), warm,
-            0xF0 if warm else 0x0F, 0xAA,
-        ]))
+    def base_color(config):
+        """Explicit r/g/b wins; else the member's current colour (its own
+        base — members may legitimately sit on different colours). None when
+        the member is unreachable for the read."""
+        if want_color:
+            return channel("r"), channel("g"), channel("b")
+        return _briturn_read_rgb(config)
+
+    def packets_for(config):
+        """Per-member packet list, or None when the member failed its read."""
+        pk = []
+        if want_power:
+            pk.append(BRITURN_ON if bool(request.get("on")) else BRITURN_OFF)
+        if want_color or want_brightness:
+            rgb = base_color(config)
+            if rgb is None:
+                return None
+            red, green, blue = rgb
+            warm = channel("w")
+            if want_brightness:
+                raw_pct = request.get("brightness")
+                try:
+                    pct = min(max(float(request.get("brightness") or 0), 0), 100)
+                except (TypeError, ValueError):
+                    return None
+                peak = max(red, green, blue, 1)
+                factor = (pct * 255.0 / 100.0) / peak
+                red = min(int(red * factor + 0.5), 255)
+                green = min(int(green * factor + 0.5), 255)
+                blue = min(int(blue * factor + 0.5), 255)
+            pk.append(bytes([0x31, red, green, blue, warm,
+                             0xF0 if warm else 0x0F, 0xAA]))
+        return pk
 
     members = [
         config for config in list(_devices)
@@ -683,19 +750,40 @@ def handle_briturnsetgroup(request):
     ]
     results = {}
 
-    def send(config):
-        applied = True
-        for packet in packets:
-            if _briturn_exchange(config["ip"], packet, expect_reply=False) is None:
-                applied = False
-                break
-        results[config["id"]] = applied
+    # Chunked concurrency: these are cheap embedded firmwares — a few dozen
+    # simultaneous TCP handshakes can drop radios mid-handshake. Cap
+    # parallelism and give every failed member ONE retry pass; a member that
+    # fails both passes shows up in the reply instead of aborting the group.
+    def attempt(chunk):
+        threads = []
 
-    threads = [threading.Thread(target=send, args=(config,)) for config in members]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(timeout=8)
+        def work(config):
+            packets = packets_for(config)
+            if packets is None:
+                results[config["id"]] = False
+                return
+            ok = True
+            for packet in packets:
+                if _briturn_exchange(config["ip"], packet, expect_reply=False) is None:
+                    ok = False
+                    break
+            results[config["id"]] = ok
+
+        for config in chunk:
+            thread = threading.Thread(target=work, args=(config,))
+            threads.append(thread)
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=8)
+
+    CHUNK = 6
+    for i in range(0, len(members), CHUNK):
+        attempt(members[i:i + CHUNK])
+    failed = [config for config in members if not results.get(config["id"])]
+    if failed:
+        time.sleep(0.3)
+        for i in range(0, len(failed), CHUNK):
+            attempt(failed[i:i + CHUNK])
 
     applied = sum(1 for ok in results.values() if ok)
     return {
