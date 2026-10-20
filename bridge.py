@@ -2282,6 +2282,10 @@ _RESPOND_LOCK = threading.Lock()
 # Cap concurrent workers: these are cheap embedded firmwares and serial-port
 # style readers, but a batch of requests must not fork unbounded threads.
 _WORKER_SEM = threading.Semaphore(8)
+# In-flight workers, joined (bounded) at EOF so interpreter finalization can
+# never race a worker still writing stdout.
+_WORKERS_LOCK = threading.Lock()
+_WORKERS = []
 
 
 def respond(payload):
@@ -2308,6 +2312,20 @@ def _run_request(request, request_id):
     respond(reply)
 
 
+def _spawn_worker(request, request_id):
+    """Start one daemon worker and track it for the EOF join."""
+    thread = threading.Thread(
+        target=_run_request,
+        args=(request, request_id),
+        daemon=True,
+    )
+    with _WORKERS_LOCK:
+        # Drop finished threads so a long-lived bridge does not grow the list.
+        _WORKERS[:] = [worker for worker in _WORKERS if worker.is_alive()]
+        _WORKERS.append(thread)
+    thread.start()
+
+
 def main():
     global _devices
     try:
@@ -2332,11 +2350,7 @@ def main():
             if isinstance(request_id, int) and not isinstance(request_id, bool):
                 # Id-stamped requests run concurrently; un-stamped ones keep
                 # the legacy synchronous path.
-                threading.Thread(
-                    target=_run_request,
-                    args=(request, request_id),
-                    daemon=True,
-                ).start()
+                _spawn_worker(request, request_id)
                 continue
             try:
                 respond(dispatch(request))
@@ -2344,6 +2358,18 @@ def main():
                 respond({"ok": False, "error": str(exc) or "request failed"})
         except Exception:
             respond({"ok": False, "error": "bad request"})
+
+    # stdin EOF: give in-flight workers a single shared deadline to finish
+    # their stdout writes, then exit regardless. Daemon threads keep a truly
+    # stuck handler from hanging app quit past this bound.
+    deadline = time.monotonic() + 10
+    with _WORKERS_LOCK:
+        outstanding = list(_WORKERS)
+    for thread in outstanding:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        thread.join(remaining)
 
 
 if __name__ == "__main__":
