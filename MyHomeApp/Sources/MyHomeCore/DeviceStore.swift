@@ -215,11 +215,18 @@ public final class DeviceStore: ObservableObject {
             .sink { [weak self] states in
                 guard let self else { return }
                 for (bleID, state) in states {
-                    // Route the state to the canonical roster id when the
-                    // light is dual-mode, so ONE card tracks it.
-                    let light = BLELight(id: bleID, name: "", rssi: 0)
-                    let targetID = self.matchRosterID(for: light) ?? bleID
-                    applyBriturnWireState(targetID, state)
+                    guard let light = self.bleLights.first(where: { $0.id == bleID }) ?? self.bleSeen.values.first(where: { $0.id == bleID }) else { continue }
+                    // General rule: advertisement-decoded state is ONLY used
+                    // for lights whose sole transport is Bluetooth. For
+                    // dual-mode lights the WiFi poll is authoritative and the
+                    // advert colour bytes decoded wrong on this firmware —
+                    // painting them made launch colours go wild.
+                    if let tuyaID = self.matchRosterID(for: light) {
+                        self.bleFallbackIDs.insert(tuyaID)
+                        self.bleKeysByDeviceID[tuyaID] = bleID
+                        continue
+                    }
+                    applyBriturnWireState(bleID, state)
                 }
             }
             .store(in: &cancellables)
