@@ -8,7 +8,8 @@
 // the bridge uses):
 //   Query state : 81 8a 8b -> 14-byte frame, anchor on 81 5f preamble:
 //                 [2]=power (0x23 on / 0x24 off), [3]=mode,
-//                 [5]=warm marker, [6..8]=r g b
+//                 [9]=warm white level ([5] is a fixed 0x50 on this
+//                 firmware, not the level), [6..8]=r g b
 //   Power       : 71 23 (on) / 71 24 (off)
 //   Colour      : 31 r g b warm 0xF0 0xAA  (0xF0 applies the warm byte)
 
@@ -16,7 +17,11 @@ import Foundation
 
 public enum FluxClient {
     private static let port: UInt16 = 5577
-    private static let queue = DispatchQueue(label: "myhome.fluxclient", qos: .utility)
+    // Concurrent: one wedged bulb must not head-of-line-block other bulbs.
+    // Callers already chunk per-device work, so this needs no call-site change.
+    private static let queue = DispatchQueue(
+        label: "myhome.fluxclient", qos: .utility, attributes: .concurrent
+    )
 
     // MARK: - Public API
 
@@ -65,7 +70,7 @@ public enum FluxClient {
             r: rgbZero ? 0 : Int(f[6]),
             g: rgbZero ? 0 : Int(f[7]),
             b: rgbZero ? 0 : Int(f[8]),
-            w: Int(f[5])
+            w: Int(f[9])
         )
     }
 
@@ -105,15 +110,38 @@ public enum FluxClient {
         var tv = timeout
         setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
         setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        let flags = fcntl(sock, F_GETFL, 0)
+        guard flags >= 0, fcntl(sock, F_SETFL, flags | O_NONBLOCK) >= 0 else {
+            close(sock)
+            return nil
+        }
         let result = withUnsafePointer(to: &addr) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
                 Darwin.connect(sock, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
             }
         }
-        guard result == 0 else {
-            close(sock)
-            return nil
+        // SO_RCVTIMEO/SO_SNDTIMEO do NOT bound connect(): a dropped SYN would
+        // block for the OS default (~75s). Connect non-blocking and poll.
+        if result != 0 {
+            guard errno == EINPROGRESS else {
+                close(sock)
+                return nil
+            }
+            var pfd = pollfd(fd: sock, events: Int16(POLLOUT), revents: 0)
+            guard poll(&pfd, 1, 2000) > 0 else {
+                close(sock)
+                return nil
+            }
+            var err: Int32 = 0
+            var errLen = socklen_t(MemoryLayout<Int32>.size)
+            guard getsockopt(sock, SOL_SOCKET, SO_ERROR, &err, &errLen) == 0,
+                  err == 0 else {
+                close(sock)
+                return nil
+            }
         }
+        // Blocking again for recv/send, which ARE bounded by the socket timeouts.
+        _ = fcntl(sock, F_SETFL, flags)
         return sock
     }
 
