@@ -47,20 +47,45 @@ public final class DeviceStore: ObservableObject {
     @Published public private(set) var roster: [Device] = []
     /// Raw BLE discoveries (from BLEManager advertisements).
     @Published public private(set) var bleLights: [BLELight] = []
-    /// Uniform view: roster + BLE-only lights. The dedupe is DERIVED here —
-    /// a BLE light whose MAC exists in the roster is the same physical light
-    /// (dual-mode) and never produces a second card, regardless of which
-    /// source loaded first.
+    /// Uniform view: roster + BLE-only lights. The dedupe is DERIVED here.
+    /// Identity rule: a BLE light belongs to a roster entry when the
+    /// manufacturer-data MAC matches, or — these lights advertise no MAC —
+    /// when the BLE name suffix matches the roster id's tail
+    /// (IOTWF577 ↔ briturn-…8577). One physical light = one card.
     public var devices: [Device] {
         let bleOnlyDevices = bleLights.compactMap { light -> Device? in
+            guard matchRosterID(for: light) == nil else { return nil }
             guard light.id.hasPrefix("ble-") else { return nil }
-            let tuyaID = "briturn-" + String(light.id.dropFirst("ble-".count))
-            if roster.contains(where: { $0.id == tuyaID }) { return nil }
             return Device(id: light.id, name: light.name, ip: "",
                           version: "BLE", category: "briturn", online: true)
         }
         return roster + bleOnlyDevices
     }
+
+    /// Matches a BLE discovery to its canonical roster id, if it has one.
+    /// Primary: MAC from manufacturer data. Fallback: BLE name suffix
+    /// (IOTWF577 → roster id ending "577"). Three-hex-digit suffixes can in
+    /// principle collide across large fleets; with a roster this size the
+    /// risk is negligible, and the MAC path takes precedence when present.
+    private func matchRosterID(for light: BLELight) -> String? {
+        if light.id.hasPrefix("ble-") {
+            let mac = String(light.id.dropFirst("ble-".count))
+            if mac.count == 12 {
+                let byMac = "briturn-" + mac
+                if roster.contains(where: { $0.id == byMac }) { return byMac }
+            }
+        }
+        let name = light.name.uppercased()
+        for prefix in ["IOTWF", "LEDNETWF", "IOTBT"] where name.hasPrefix(prefix) {
+            let suffix = String(name.dropFirst(prefix.count)).lowercased()
+            guard !suffix.isEmpty else { continue }
+            if let hit = roster.first(where: { $0.id.lowercased().hasSuffix(suffix) }) {
+                return hit.id
+            }
+        }
+        return nil
+    }
+
     @Published public private(set) var isOn: [String: Bool] = [:]
     @Published public private(set) var dpsById: [String: [String: DPSValue]] = [:]
     @Published public private(set) var cloudOnline: [String: Bool] = [:]
@@ -139,13 +164,10 @@ public final class DeviceStore: ObservableObject {
             .sink { [weak self] lights in
                 guard let self else { return }
                 self.bleLights = lights
-                // Side effects only here — the DEDUPE itself is derived in
-                // `devices` so it stays correct no matter which source loads
-                // first (BLE adverts vs the bridge roster).
+                // Side effects only — the dedupe itself is derived in
+                // `devices` via matchRosterID.
                 for light in lights {
-                    guard light.id.hasPrefix("ble-") else { continue }
-                    let tuyaID = "briturn-" + String(light.id.dropFirst("ble-".count))
-                    if self.roster.contains(where: { $0.id == tuyaID }) {
+                    if let tuyaID = self.matchRosterID(for: light) {
                         self.bleFallbackIDs.insert(tuyaID)
                         self.bleKeysByDeviceID[tuyaID] = light.id
                     }
@@ -159,8 +181,8 @@ public final class DeviceStore: ObservableObject {
                 for (bleID, state) in states {
                     // Route the state to the canonical roster id when the
                     // light is dual-mode, so ONE card tracks it.
-                    let tuyaID = "briturn-" + String(bleID.dropFirst("ble-".count))
-                    let targetID = bleKeysByDeviceID[tuyaID] != nil || devices.contains { $0.id == tuyaID } ? tuyaID : bleID
+                    let light = BLELight(id: bleID, name: "", rssi: 0)
+                    let targetID = self.matchRosterID(for: light) ?? bleID
                     applyBriturnWireState(targetID, state)
                 }
             }
