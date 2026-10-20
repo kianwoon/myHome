@@ -90,6 +90,7 @@ struct DashboardView: View {
             ScrollView {
                 if group == .briturn {
                     BriturnGroupsBar(selection: $briturnGroupFilter)
+                    Divider().padding(.horizontal)
                 }
                 if filtered.isEmpty {
                     VStack(spacing: 8) {
@@ -1014,17 +1015,23 @@ struct BriturnGroupCard: View {
             HStack(spacing: 12) {
                 // Tap target is the NAME ONLY — the toggle, colour well and
                 // slider control the group's lights; they must never filter.
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(group)
-                        .font(.callout.weight(.semibold))
-                        .lineLimit(1)
-                    Text("\(members.count) light\(members.count == 1 ? "" : "s")")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                // A real Button (not onTapGesture): gesture hit-testing on a
+                // bare text stack was unreliable — some chips swallowed the
+                // click, some didn't.
+                Button(action: { onSelect?() }) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(group)
+                            .font(.callout.weight(.semibold))
+                            .lineLimit(1)
+                            .multilineTextAlignment(.leading)
+                        Text("\(members.count) light\(members.count == 1 ? "" : "s")")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .contentShape(Rectangle())
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .contentShape(Rectangle())
-                .onTapGesture { onSelect?() }
-                Spacer()
+                .buttonStyle(.plain)
                 if isSelected {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundStyle(.tint)
