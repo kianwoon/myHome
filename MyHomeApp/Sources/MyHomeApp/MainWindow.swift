@@ -4,7 +4,14 @@ import SwiftUI
 import MyHomeCore
 
 enum DeviceGroup: String, CaseIterable, Identifiable {
-    case fans, curtains, lights, plugs, climate, other
+    case fans, curtains, lights, plugs, climate, briturn, other
+
+    /// General rule: any roster category listed here owns its own sidebar
+    /// group, keyed on `device.category` rather than on DeviceKind. The
+    /// kind-derived groups below must not claim those devices, so a source
+    /// cannot double-appear. Categories NOT listed here keep the existing
+    /// behaviour: classified by kind, falling through to Other.
+    static let sourceCategories: Set<String> = ["briturn"]
 
     var id: String { rawValue }
 
@@ -15,6 +22,7 @@ enum DeviceGroup: String, CaseIterable, Identifiable {
         case .lights: return "Lights"
         case .plugs: return "Plugs"
         case .climate: return "Climate"
+        case .briturn: return "Briturn"
         case .other: return "Other"
         }
     }
@@ -26,19 +34,23 @@ enum DeviceGroup: String, CaseIterable, Identifiable {
         case .lights: return "lightbulb"
         case .plugs: return "powerplug"
         case .climate: return "thermometer.medium"
+        case .briturn: return "lamp.desk"
         case .other: return "square.grid.2x2"
         }
     }
 
     func contains(_ device: Device) -> Bool {
+        let isSourceOwned = DeviceGroup.sourceCategories.contains(device.category.lowercased())
         switch self {
-        case .fans: return device.kind == .fan
-        case .curtains: return device.kind == .curtain
-        case .lights: return device.kind == .light
-        case .plugs: return device.kind == .plug
-        case .climate: return device.kind == .climate
+        case .fans: return !isSourceOwned && device.kind == .fan
+        case .curtains: return !isSourceOwned && device.kind == .curtain
+        case .lights: return !isSourceOwned && device.kind == .light
+        case .plugs: return !isSourceOwned && device.kind == .plug
+        case .climate: return !isSourceOwned && device.kind == .climate
+        case .briturn: return device.category.lowercased() == "briturn"
         case .other:
-            return ![DeviceKind.fan, .curtain, .light, .plug, .climate].contains(device.kind)
+            return !isSourceOwned
+                && ![DeviceKind.fan, .curtain, .light, .plug, .climate].contains(device.kind)
         }
     }
 }
@@ -131,7 +143,11 @@ struct DashboardView: View {
             CategoryRefreshButton(item: item, active: rescanningGroup) {
                 rescanningGroup = item
                 Task {
-                    await store.rescan()
+                    if item == .briturn {
+                        await store.briturnScan()
+                    } else {
+                        await store.rescan()
+                    }
                     rescanningGroup = nil
                 }
             }
@@ -140,9 +156,10 @@ struct DashboardView: View {
 }
 
 /// General rule: every sidebar category header refreshes the roster through the
-/// SAME store.rescan() flow — there is one scan path, never a per-section copy.
-/// While a rescan runs, the clicked header shows a spinner and every refresh
-/// button disables via the shared store.isWorking flag.
+/// SAME shared isWorking flow — either the LAN rescan or a source-specific scan
+/// (Briturn's own discovery command), never a per-section copy. While a scan
+/// runs, the clicked header shows a spinner and every refresh button disables
+/// via the shared store.isWorking flag.
 struct CategoryRefreshButton: View {
     @EnvironmentObject private var store: DeviceStore
     let item: DeviceGroup
@@ -354,10 +371,15 @@ struct RenameSheet: View {
 /// offline summary; both are needed to tell "asleep on LAN" from "radio dead".
 struct CloudStatusBadge: View {
     let online: Bool?
+    var envBroken: Bool = false
 
-    private var label: String { DeviceStore.cloudBadgeText(online) }
+    private var label: String {
+        if envBroken { return "☁ bridge env" }
+        return DeviceStore.cloudBadgeText(online)
+    }
 
     private var tint: Color {
+        if envBroken { return .orange }
         switch online {
         case .some(true): return .green
         case .some(false): return .red
@@ -734,7 +756,7 @@ struct DeviceDetailView: View {
                         HStack(alignment: .firstTextBaseline, spacing: 8) {
                             Text(device.name)
                                 .font(.title2.bold())
-                            CloudStatusBadge(online: store.cloudOnline[device.id])
+                            CloudStatusBadge(online: store.cloudOnline[device.id], envBroken: store.cloudEnvBroken)
                         }
                         Text("\(device.kind.label) · \(device.category.isEmpty ? "uncategorised" : device.category)")
                             .font(.callout)
@@ -772,14 +794,17 @@ struct DeviceDetailView: View {
                     Spacer()
                 }
 
-                Divider()
+                if device.category.lowercased() == "briturn" {
+                    BriturnControlsView(device: device)
+                } else {
+                    ScheduleSection(device: device)
+                }
 
-                ScheduleSection(device: device)
+                if device.category.lowercased() != "briturn" {
+                    Divider()
 
-                Divider()
-
-                HStack {
-                    Text("All DPS")
+                    HStack {
+                        Text("All DPS")
                         .font(.headline)
                     Spacer()
                     if store.isLoadingStatus(device) {
@@ -789,6 +814,7 @@ struct DeviceDetailView: View {
                         Task { await store.loadStatus(for: device, force: true) }
                     }
                     .controlSize(.small)
+                    }
                 }
 
                 if let error = store.statusErrors[device.id] {
@@ -826,10 +852,113 @@ struct DeviceDetailView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .task(id: device.id) {
-            await store.loadStatus(for: device)
+            if device.category.lowercased() == "briturn" {
+                await store.loadBriturnStatus(for: device)
+            } else {
+                await store.loadStatus(for: device)
+            }
         }
         .sheet(isPresented: $showingRename) {
             RenameSheet(device: device)
         }
+    }
+}
+
+/// General rule: briturn devices are controlled through their own wire
+/// protocol (Zengge 2014), not DPS, so their detail section owns a dedicated
+/// controls view fed by the store's briturn status cache. A device with no IP
+/// yet surfaces the store error instead of silently dead controls, and an
+/// ok:false bridge reply lands in the same error line — never a no-op.
+struct BriturnControlsView: View {
+    @EnvironmentObject private var store: DeviceStore
+    let device: Device
+    @State private var color = Color(red: 1, green: 0, blue: 0)
+    @State private var applyTask: Task<Void, Never>?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Controls")
+                    .font(.headline)
+                Spacer()
+                if store.statusLoading.contains(device.id) {
+                    ProgressView().controlSize(.small)
+                }
+                Button("Refresh") {
+                    Task { await store.loadBriturnStatus(for: device) }
+                }
+                .controlSize(.small)
+            }
+
+            if let error = store.statusErrors[device.id] {
+                Text(error)
+                    .font(.callout)
+                    .foregroundStyle(.red)
+            }
+
+            if let state = store.briturnStatus[device.id] {
+                Toggle(
+                    "Power",
+                    isOn: Binding(
+                        get: { store.briturnStatus[device.id]?.on ?? false },
+                        set: { newValue in
+                            Task { await store.setBriturn(device, on: newValue) }
+                        }
+                    )
+                )
+
+                ColorPicker("Color", selection: $color, supportsOpacity: false)
+                    .onChange(of: color) { newValue in
+                        scheduleColorApply(newValue)
+                    }
+                    .disabled(!state.on)
+            } else {
+                Text("No status yet — tap Refresh.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .onAppear { syncPicker(from: store.briturnStatus[device.id]) }
+        .onChange(of: store.briturnStatus[device.id]) { newState in
+            syncPicker(from: newState)
+        }
+    }
+
+    /// The picker mirrors the DEVICE's readback, not the user's mid-drag
+    /// color, so a set the device rejects can't silently diverge.
+    private func syncPicker(from state: DeviceStore.BriturnState?) {
+        guard let state = state else { return }
+        color = Color(
+            red: Double(state.r) / 255,
+            green: Double(state.g) / 255,
+            blue: Double(state.b) / 255
+        )
+    }
+
+    /// Debounced apply: the picker fires continuously while dragging, but the
+    /// bridge is serial and the bulb acks slowly, so only the settled value
+    /// is sent.
+    private func scheduleColorApply(_ newValue: Color) {
+        applyTask?.cancel()
+        guard let rgb = extractRGB(newValue) else { return }
+        applyTask = Task {
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard !Task.isCancelled else { return }
+            await store.setBriturn(device, color: rgb)
+        }
+    }
+
+    private func extractRGB(_ color: Color) -> (red: Int, green: Int, blue: Int)? {
+        #if canImport(AppKit)
+        let ns = NSColor(color).usingColorSpace(.sRGB)
+        guard let ns = ns else { return nil }
+        return (
+            red: Int((ns.redComponent * 255).rounded()),
+            green: Int((ns.greenComponent * 255).rounded()),
+            blue: Int((ns.blueComponent * 255).rounded())
+        )
+        #else
+        return nil
+        #endif
     }
 }

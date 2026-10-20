@@ -46,6 +46,11 @@ public final class DeviceStore: ObservableObject {
     @Published public private(set) var isOn: [String: Bool] = [:]
     @Published public private(set) var dpsById: [String: [String: DPSValue]] = [:]
     @Published public private(set) var cloudOnline: [String: Bool] = [:]
+    /// True when the bridge itself cannot reach the Tuya cloud (e.g. it was
+    /// launched with a python env missing `requests`). Distinct from per-device
+    /// cloud offline: nothing cloud-backed (schedules, sync) can work until the
+    /// app is relaunched so the bridge picks up the venv interpreter.
+    @Published public private(set) var cloudEnvBroken = false
     @Published public private(set) var statusLoading: Set<String> = []
     @Published public private(set) var statusErrors: [String: String] = [:]
     @Published public private(set) var schedules: [DeviceSchedule] = []
@@ -174,6 +179,122 @@ public final class DeviceStore: ObservableObject {
         await refreshCodeMap()
     }
 
+    /// A device-source scan owns its discovery command, but reuses the same
+    /// working/reload contract as rescan: the sidebar refresh for a
+    /// source-owned category calls this instead of the Tuya LAN rescan.
+    public func briturnScan() async {
+        isWorking = true
+        defer { isWorking = false }
+        do {
+            let reply = try await bridge.request(["cmd": "briturnscan"], timeout: 30)
+            guard reply["ok"] as? Bool == true else {
+                errorText = reply["error"] as? String ?? "Briturn scan failed."
+                return
+            }
+            errorText = nil
+        } catch {
+            errorText = error.localizedDescription
+        }
+        await refresh()
+    }
+
+    // MARK: - Briturn (device-source controls)
+
+    /// Wire-read state of one Zengge/Briturn light; mirrors the bridge's
+    /// briturnstatus reply. rawPower is kept alongside the on-boolean so
+    /// firmware variations stay diagnosable instead of silently mis-parsed.
+    public struct BriturnState: Equatable {
+        public let on: Bool
+        public let rawPower: Int
+        public let mode: Int
+        public let r: Int
+        public let g: Int
+        public let b: Int
+        public let w: Int
+
+        init?(reply: [String: Any]) {
+            guard let on = reply["on"] as? Bool,
+                  let rawPower = reply["raw_power"] as? Int,
+                  let mode = reply["mode"] as? Int,
+                  let r = reply["r"] as? Int,
+                  let g = reply["g"] as? Int,
+                  let b = reply["b"] as? Int,
+                  let w = reply["w"] as? Int
+            else { return nil }
+            self.on = on
+            self.rawPower = rawPower
+            self.mode = mode
+            self.r = r
+            self.g = g
+            self.b = b
+            self.w = w
+        }
+    }
+
+    /// Latest wire-read state per briturn device id.
+    @Published public private(set) var briturnStatus: [String: BriturnState] = [:]
+
+    private func isBriturn(_ device: Device) -> Bool {
+        device.category.lowercased() == "briturn"
+    }
+
+    public func loadBriturnStatus(for device: Device) async {
+        guard isBriturn(device) else { return }
+        guard device.hasAddress else {
+            statusErrors[device.id] = "Briturn device has no IP yet — run a Briturn scan."
+            return
+        }
+        do {
+            let reply = try await bridge.request(["cmd": "briturnstatus", "id": device.id])
+            guard reply["ok"] as? Bool == true else {
+                statusErrors[device.id] = reply["error"] as? String ?? "Briturn status failed."
+                return
+            }
+            guard let state = BriturnState(reply: reply) else {
+                statusErrors[device.id] = "Unexpected briturn status reply."
+                return
+            }
+            briturnStatus[device.id] = state
+            statusErrors[device.id] = nil
+        } catch {
+            statusErrors[device.id] = error.localizedDescription
+        }
+    }
+
+    /// Sends power and/or colour, adopting the bridge's fresh readback as the
+    /// new state — the device, not the request, is authoritative.
+    public func setBriturn(_ device: Device, on: Bool? = nil, color: (red: Int, green: Int, blue: Int)? = nil) async {
+        guard isBriturn(device) else { return }
+        guard on != nil || color != nil else { return }
+        guard device.hasAddress else {
+            statusErrors[device.id] = "Briturn device has no IP yet — run a Briturn scan."
+            return
+        }
+        var payload: [String: Any] = ["cmd": "briturnset", "id": device.id]
+        if let on = on { payload["on"] = on }
+        if let color = color {
+            payload["r"] = color.red
+            payload["g"] = color.green
+            payload["b"] = color.blue
+        }
+        do {
+            let reply = try await bridge.request(payload, timeout: 30)
+            guard reply["ok"] as? Bool == true else {
+                statusErrors[device.id] = reply["error"] as? String ?? "Briturn set failed."
+                return
+            }
+            statusErrors[device.id] = nil
+            if let raw = reply["status"] as? [String: Any], let state = BriturnState(reply: raw) {
+                briturnStatus[device.id] = state
+            } else {
+                // No usable readback (device dropped mid-command): re-query.
+                await loadBriturnStatus(for: device)
+            }
+        } catch {
+            statusErrors[device.id] = error.localizedDescription
+        }
+    }
+
     // MARK: - Polling
 
     /// Reference-counted so the menu extra and the main window can each keep
@@ -279,6 +400,10 @@ public final class DeviceStore: ObservableObject {
     /// Fetches DPS for one device. Non-forced calls are cached until a rescan
     /// or poll forces a re-read; concurrent calls for the same id de-duplicate.
     public func loadStatus(for device: Device, force: Bool = false) async {
+        // Briturn devices have no Tuya DPS surface; their status comes from
+        // loadBriturnStatus instead. Requesting Tuya status only produces
+        // error noise.
+        guard device.category.lowercased() != "briturn" else { return }
         guard device.hasAddress else { return }
         guard !statusLoading.contains(device.id) else { return }
         if !force && loadedStatus.contains(device.id) { return }
@@ -405,9 +530,17 @@ public final class DeviceStore: ObservableObject {
     public func refreshCloudStatus() async {
         do {
             let reply = try await bridge.request(["cmd": "cloudstatus"], timeout: 90)
-            guard reply["ok"] as? Bool == true, let raw = reply["status"] else { return }
-            let data = try JSONSerialization.data(withJSONObject: raw)
-            cloudOnline = try JSONDecoder().decode([String: Bool].self, from: data)
+            if reply["ok"] as? Bool == true {
+                cloudEnvBroken = false
+                guard let raw = reply["status"] else { return }
+                let data = try JSONSerialization.data(withJSONObject: raw)
+                cloudOnline = try JSONDecoder().decode([String: Bool].self, from: data)
+            } else {
+                // General rule: an env-level cloud failure is a distinct fact
+                // from per-device offline; only a bridge-reported capability
+                // flag flips it, so a transient cloud outage can't.
+                cloudEnvBroken = (reply["cloud_capable"] as? Bool) == false
+            }
         } catch {
             // Keep the last known cloud state; the badge stays neutral if none.
         }

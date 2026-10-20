@@ -11,6 +11,8 @@ Requests:
     {"cmd":"status","id":"<device-id>"}
     {"cmd":"set","id":"<device-id>","dps":{...}}
     {"cmd":"rename","id":"<device-id>","name":"<new-name>"}
+    {"cmd":"briturnstatus","id":"<briturn-device-id>"}
+    {"cmd":"briturnset","id":"<briturn-device-id>","on":true,"r":255,"g":0,"b":0}
     {"cmd":"rescan"}
     {"cmd":"cloudsync"}
     {"cmd":"cloudstatus"}
@@ -26,11 +28,15 @@ Requests:
     {"cmd":"specs","id":"<device-id>"}
     {"cmd":"config"}
     {"cmd":"setconfig","apiKey":"...","apiSecret":"...","apiRegion":"..."}
+    {"cmd":"gh_list"}
+    {"cmd":"gh_states","id"?:"<google-home-device-id>"}
+    {"cmd":"gh_action","id":"<google-home-device-id>","action":"<action-name>"}
 """
 
 import json
 import os
 import re
+import socket
 import sys
 import tempfile
 import threading
@@ -38,11 +44,34 @@ import time
 
 import tinytuya
 
+try:
+    import requests as _requests  # noqa: F401 — capability probe only
+    CLOUD_CAPABLE = True
+except ImportError:
+    # tinytuya's Cloud client needs requests; without it every cloud-backed
+    # command (cloudsync, schedules, cloudstatus) fails. Surface this as a
+    # structured flag so the UI can show a broken-bridge-env state instead of
+    # the user seeing unexplained timeouts.
+    CLOUD_CAPABLE = False
+
+try:
+    import google_home
+except Exception:  # pragma: no cover - import must never break the bridge
+    google_home = None
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DEVICES_PATH = os.path.join(BASE_DIR, "devices.json")
 CREDENTIALS_PATH = os.path.join(BASE_DIR, "tinytuya.json")
 
 SOCKET_TIMEOUT = 5
+
+# Zengge/Briturn WiFi lights answer a UDP broadcast on 48899 with
+# "<ip>,<mac>,<module>,<id>". Probes go to the global broadcast plus the
+# addresses used by the two setup APs.
+BRITURN_PORT = 48899
+BRITURN_PROBE = b"HF-A11ASSISTHREAD"
+BRITURN_BROADCASTS = ("255.255.255.255", "192.168.4.255", "192.168.5.255")
+BRITURN_IP = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
 
 # Consecutive cloudsync cycles a device may be missing from the cloud report
 # before it is pruned from the roster (~2 cycles x 5 min = 10 min of confirmed
@@ -230,7 +259,7 @@ def handle_rename(request):
         )
     except Exception as exc:
         # Never include token/secret material in the reply.
-        return {"ok": False, "error": "cloud request failed: " + type(exc).__name__}
+        return _cloud_failure(exc)
 
     if not isinstance(response, dict) or not response.get("success") or not response.get("result"):
         return {"ok": False, "error": "cloud rename failed"}
@@ -308,6 +337,257 @@ def handle_rescan(request=None):
     return {"ok": True, "merged": merged}
 
 
+def briturn_normalize_mac(mac):
+    """Hex-only lowercase form of a mac, the identity used for dedup/merge."""
+    return re.sub(r"[^0-9a-f]", "", mac.lower())
+
+
+def briturn_parse_reply(payload):
+    """Parse one discovery reply into {id, mac, ip, version}, or None."""
+    try:
+        text = payload.decode("ascii").strip()
+    except (UnicodeDecodeError, AttributeError):
+        return None
+    parts = text.split(",")
+    if len(parts) < 3:
+        return None
+    ip = parts[0].strip()
+    mac = briturn_normalize_mac(parts[1])
+    module = parts[2].strip()
+    if not BRITURN_IP.match(ip) or len(mac) != 12 or not module:
+        return None
+    return {
+        "id": "briturn-" + mac,
+        "mac": mac,
+        "ip": ip,
+        "version": module,
+    }
+
+
+def briturn_scan(timeout=4.0):
+    """Broadcast the Zengge discovery probe and collect replies by identity."""
+    discovered = {}
+
+    def probe(sock):
+        for address in BRITURN_BROADCASTS:
+            try:
+                sock.sendto(BRITURN_PROBE, (address, BRITURN_PORT))
+            except OSError:
+                continue
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        sock.settimeout(0.5)
+        probe(sock)
+        deadline = time.time() + timeout
+        next_probe = time.time() + 1.0
+        while time.time() < deadline:
+            if time.time() >= next_probe:
+                # Re-broadcast: a single datagram is easily lost on busy LANs.
+                probe(sock)
+                next_probe = time.time() + 1.0
+            try:
+                payload, _source = sock.recvfrom(1024)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            reply = briturn_parse_reply(payload)
+            if reply is not None:
+                # Replies may repeat or carry a stale ip; the last one wins.
+                discovered[reply["id"]] = reply
+    finally:
+        sock.close()
+    return discovered
+
+
+def handle_briturnscan(request=None):
+    """Discover Zengge/Briturn lights and upsert them into devices.json.
+
+    General rule: discovery is an UPSERT keyed by the normalized mac, not a
+    roster snapshot. Absent briturn entries are LEFT IN PLACE (a light that is
+    powered off is not deleted), existing names are preserved (user renames
+    survive), ip/version are refreshed when they moved, and entries whose
+    category is not "briturn" are never touched even if the derived id
+    collides. Non-briturn categories are outside this command's remit.
+    """
+    timeout = (request or {}).get("timeout", 4)
+    try:
+        timeout = min(max(float(timeout), 1), 15)
+    except (TypeError, ValueError):
+        timeout = 4.0
+    try:
+        found = briturn_scan(timeout)
+    except Exception as exc:
+        return {"ok": False, "error": "scan failed: " + type(exc).__name__}
+
+    added = 0
+    updated = 0
+
+    def merge(fresh):
+        nonlocal added, updated
+        by_id = {config.get("id"): config for config in fresh}
+        for found_id, device in found.items():
+            config = by_id.get(found_id)
+            if config is None:
+                config = {
+                    "id": found_id,
+                    "name": "Briturn Light " + device["mac"][-4:],
+                    "ip": device["ip"],
+                    "version": device["version"],
+                    "category": "briturn",
+                }
+                fresh.append(config)
+                by_id[found_id] = config
+                added += 1
+                continue
+            if config.get("category") != "briturn":
+                continue
+            changed = False
+            if device["ip"] and config.get("ip") != device["ip"]:
+                config["ip"] = device["ip"]
+                changed = True
+            if device["version"] and config.get("version") != device["version"]:
+                config["version"] = device["version"]
+                changed = True
+            if not config.get("name"):
+                config["name"] = "Briturn Light " + device["mac"][-4:]
+                changed = True
+            if changed:
+                updated += 1
+
+    try:
+        apply_to_disk(merge)
+    except Exception as exc:
+        return {"ok": False, "error": "devices write failed: " + type(exc).__name__}
+
+    _device_cache.clear()
+    return {"ok": True, "found": len(found), "added": added, "updated": updated}
+
+
+BRITURN_TCP_PORT = 5577
+# Roster categories owned by bridge-local discovery, not the Tuya cloud.
+SOURCE_OWNED_CATEGORIES = {"briturn"}
+
+# Zengge "2014 protocol" wire format for the AK001-ZJ2xxx module family.
+# Query state: 81 8a 8b -> 14-byte reply: [2]=0x24 marker, [3]=power/state
+# (0x61 on / 0x60 off on observed firmware), [4]=mode, [5..8]=r g b,
+# [9]=warm white. Power: cc 23 33 (on) / cc 24 33 (off). Colour packet:
+# 56 r g b w 0f aa, w=warm white (0x00 for a pure-RGB set).
+BRITURN_QUERY = bytes([0x81, 0x8A, 0x8B])
+BRITURN_ON = bytes([0xCC, 0x23, 0x33])
+BRITURN_OFF = bytes([0xCC, 0x24, 0x33])
+
+
+def _briturn_exchange(ip, send, expect_reply=True, attempts=2, timeout=3.0):
+    """One TCP 5577 exchange; returns reply bytes or None. Never raises."""
+    for _attempt in range(attempts):
+        sock = None
+        try:
+            sock = socket.create_connection((ip, BRITURN_TCP_PORT), timeout=timeout)
+            sock.settimeout(timeout)
+            sock.sendall(send)
+            if not expect_reply:
+                return b""
+            return sock.recv(64)
+        except OSError:
+            continue
+        finally:
+            if sock is not None:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+    return None
+
+
+def _briturn_resolve(request):
+    """Resolve a briturn roster entry, or an error dict tuple pair."""
+    device_id = (request or {}).get("id")
+    config = find_device(device_id)
+    if config is None or config.get("category") != "briturn":
+        return {"ok": False, "error": "unknown briturn device id"}
+    if not config.get("ip"):
+        return {"ok": False, "error": "device has no known ip"}
+    return config
+
+
+def handle_briturnstatus(request=None):
+    """Query one Zengge light's state over TCP 5577.
+
+    General rule: status is a query-and-parse of a single briturn device by
+    roster id; a device that is offline or slow yields ok:false rather than
+    raising, and only briturn-category entries are addressable. The raw power
+    byte is reported alongside the parsed boolean so firmware variations stay
+    diagnosable instead of silently mis-parsed.
+    """
+    resolved = _briturn_resolve(request)
+    if isinstance(resolved, dict) and resolved.get("ok") is False:
+        return resolved
+    config = resolved
+    reply = _briturn_exchange(config["ip"], BRITURN_QUERY)
+    if not reply or len(reply) < 14:
+        return {"ok": False, "error": "no or short reply from device"}
+    return {
+        "ok": True,
+        "on": bool(reply[3] & 0x01),
+        "raw_power": reply[3],
+        "mode": reply[4],
+        "r": reply[5],
+        "g": reply[6],
+        "b": reply[7],
+        "w": reply[9],
+    }
+
+
+def handle_briturnset(request=None):
+    """Set power and/or colour on one Zengge light over TCP 5577.
+
+    General rule: set sends the minimal packet set for exactly the requested
+    fields (power packet, colour packet, or both); values are clamped so an
+    out-of-range or wrongly-typed field cannot raise, and unknown/mismatched
+    device ids are rejected with an error dict before any wire traffic. The
+    reply carries {"packets": n, "status": <fresh briturnstatus readback>}
+    so the caller can update UI state from the device, not the request.
+    """
+    resolved = _briturn_resolve(request)
+    if isinstance(resolved, dict) and resolved.get("ok") is False:
+        return resolved
+    config = resolved
+    request = request or {}
+
+    want_power = "on" in request
+    want_color = any(key in request for key in ("r", "g", "b"))
+    if not want_power and not want_color:
+        return {"ok": False, "error": "nothing to set: pass 'on' and/or r/g/b"}
+
+    def channel(key, default=0):
+        try:
+            return min(max(int(request.get(key, default)), 0), 255)
+        except (TypeError, ValueError):
+            return default
+
+    sent = 0
+    if want_power:
+        packet = BRITURN_ON if request.get("on") else BRITURN_OFF
+        if _briturn_exchange(config["ip"], packet, expect_reply=False) is None:
+            return {"ok": False, "error": "power command failed"}
+        sent += 1
+    if want_color:
+        packet = bytes([0x56, channel("r"), channel("g"), channel("b"), 0x00, 0x0F, 0xAA])
+        if _briturn_exchange(config["ip"], packet, expect_reply=False) is None:
+            return {"ok": False, "error": "color command failed"}
+        sent += 1
+
+    # Confirm with a follow-up status read (mirrors handle_set's readback
+    # rule). The bulb acks asynchronously; reading too early returns the
+    # prior state.
+    time.sleep(0.8)
+    status = handle_briturnstatus({"id": config.get("id")})
+    return {"ok": True, "packets": sent, "status": status}
+
+
 def handle_cloudsync():
     """Re-sync device identity from the Tuya cloud.
 
@@ -324,7 +604,7 @@ def handle_cloudsync():
         result = cloud.getdevices(False)
     except Exception as exc:
         # Never include token/secret material in the reply.
-        return {"ok": False, "error": "cloud request failed: " + type(exc).__name__}
+        return _cloud_failure(exc)
 
     if not isinstance(result, list) or not result:
         return {"ok": False, "error": "cloud sync failed: empty or unexpected response"}
@@ -376,6 +656,11 @@ def handle_cloudsync():
         drop = set()
         for config in fresh:
             if config.get("id") in seen:
+                continue
+            # Source-owned categories (discovered by bridge commands, absent
+            # from the Tuya cloud roster) are exempt from cloud pruning — the
+            # cloud is only the authority for cloud-sourced identities.
+            if config.get("category") in SOURCE_OWNED_CATEGORIES:
                 continue
             config["cloud"] = False
             missed = config.get("missedSyncs", 0)
@@ -517,8 +802,17 @@ def start_autoheal(cloud):
     return True
 
 
+class CloudEnvError(RuntimeError):
+    """The bridge interpreter cannot reach the Tuya cloud (missing deps)."""
+
+
 def make_cloud():
     """Build a Cloud client from tinytuya.json. Secrets never leave this path."""
+    if not CLOUD_CAPABLE:
+        raise CloudEnvError(
+            "bridge python is missing the 'requests' module — cloud "
+            "functions unavailable; relaunch the app so it uses .venv"
+        )
     with open(CREDENTIALS_PATH, "r", encoding="utf-8") as handle:
         credentials = json.load(handle)
     return tinytuya.Cloud(
@@ -733,7 +1027,7 @@ def handle_specs(request):
     try:
         cloud = make_cloud()
     except Exception as exc:
-        return {"ok": False, "error": "cloud request failed: " + type(exc).__name__}
+        return _cloud_failure(exc)
 
     updated = 0
     failures = 0
@@ -809,7 +1103,13 @@ def handle_cloudstatus(request):
     try:
         cloud = make_cloud()
     except Exception as exc:
-        return {"ok": False, "error": "cloud request failed: " + type(exc).__name__}
+        error = "cloud request failed: " + type(exc).__name__
+        if not CLOUD_CAPABLE:
+            error = (
+                "bridge python is missing the 'requests' module — cloud "
+                "functions unavailable; relaunch the app so it uses .venv"
+            )
+        return {"ok": False, "error": error, "cloud_capable": CLOUD_CAPABLE}
 
     status = {}
     failures = 0
@@ -979,10 +1279,19 @@ def _cloud_reply(cloud, url, action=None, post=None):
     try:
         response = cloud.cloudrequest(url, action, post=post)
     except Exception as exc:
-        return None, "cloud request failed: " + type(exc).__name__
+        return None, "cloud request failed: " + (
+            str(exc) if isinstance(exc, CloudEnvError) else type(exc).__name__
+        )
     if not isinstance(response, dict) or not response.get("success"):
         return None, "schedule request failed"
     return response.get("result"), None
+
+
+def _cloud_failure(exc):
+    """Uniform error dict for cloud-path failures the UI can show directly."""
+    detail = str(exc) if isinstance(exc, CloudEnvError) else type(exc).__name__
+    return {"ok": False, "error": "cloud request failed: " + detail,
+            "cloud_capable": CLOUD_CAPABLE}
 
 
 def handle_schedules(request):
@@ -993,7 +1302,7 @@ def handle_schedules(request):
     try:
         cloud = make_cloud()
     except Exception as exc:
-        return {"ok": False, "error": "cloud request failed: " + type(exc).__name__}
+        return _cloud_failure(exc)
     result, error = _cloud_reply(cloud, "/v1.0/devices/%s/timers" % device_id)
     if error is not None:
         return {"ok": False, "error": error}
@@ -1043,7 +1352,7 @@ def handle_schedadd(request):
     try:
         cloud = make_cloud()
     except Exception as exc:
-        return {"ok": False, "error": "cloud request failed: " + type(exc).__name__}
+        return _cloud_failure(exc)
     result, error = _cloud_reply(cloud, "/v1.0/devices/%s/timers" % device_id, "POST", body)
     if error is not None:
         return {"ok": False, "error": error}
@@ -1072,7 +1381,7 @@ def handle_scheddel(request):
     try:
         cloud = make_cloud()
     except Exception as exc:
-        return {"ok": False, "error": "cloud request failed: " + type(exc).__name__}
+        return _cloud_failure(exc)
     url = "/v1.0/devices/%s/timers/categories/%s/groups/%s" % (device_id, category, group_id)
     _, error = _cloud_reply(cloud, url, "DELETE")
     if error is not None:
@@ -1244,7 +1553,7 @@ def handle_schededit(request):
     try:
         cloud = make_cloud()
     except Exception as exc:
-        return {"ok": False, "error": "cloud request failed: " + type(exc).__name__}
+        return _cloud_failure(exc)
     read_url = "/v1.0/devices/%s/timers/categories/%s" % (device_id, category)
     result, error = _cloud_reply(cloud, read_url)
     if error is not None:
@@ -1369,7 +1678,7 @@ def handle_schedtoggle(request):
     try:
         cloud = make_cloud()
     except Exception as exc:
-        return {"ok": False, "error": "cloud request failed: " + type(exc).__name__}
+        return _cloud_failure(exc)
     read_url = "/v1.0/devices/%s/timers/categories/%s" % (device_id, category)
     result, error = _cloud_reply(cloud, read_url)
     if error is not None:
@@ -1422,6 +1731,55 @@ def handle_schedtoggle(request):
     return {"ok": True}
 
 
+def gh_respond(operation, *args):
+    """Run a google_home operation and map failures to the bridge error dict.
+
+    General rule: bridge handlers never raise and never emit secret values.
+    Any Google Home failure (missing consent, HTTP/MCP error, malformed input)
+    becomes {"ok": False, "error": <redacted text>}; an auth failure also
+    carries the consent instructions.
+    """
+    if google_home is None:
+        return {"ok": False, "error": "google_home module unavailable"}
+    try:
+        return operation(*args)
+    except google_home.AuthRequired as exc:
+        return {
+            "ok": False,
+            "error": google_home.safe_error(exc),
+            "consentRequired": True,
+            "hint": "run: python3 google_home.py auth",
+        }
+    except google_home.GoogleHomeError as exc:
+        return {"ok": False, "error": google_home.safe_error(exc)}
+    except Exception as exc:
+        return {"ok": False, "error": google_home.safe_error(exc)}
+
+
+def handle_gh_list():
+    return gh_respond(google_home.list_overview)
+
+
+def handle_gh_states(request):
+    device_id = request.get("id")
+    if device_id is not None and (not isinstance(device_id, str) or not device_id.strip()):
+        return {"ok": False, "error": "invalid device id"}
+    return gh_respond(google_home.states, device_id)
+
+
+def handle_gh_action(request):
+    device_id = request.get("id")
+    if not isinstance(device_id, str) or not device_id.strip():
+        return {"ok": False, "error": "missing device id"}
+    action = request.get("action")
+    if not isinstance(action, (str, dict)) or not action:
+        return {"ok": False, "error": "missing action"}
+    home_id = request.get("home_id")
+    if home_id is not None and not isinstance(home_id, str):
+        return {"ok": False, "error": "invalid home id"}
+    return gh_respond(google_home.action, device_id, action, home_id)
+
+
 def dispatch(request):
     cmd = request.get("cmd")
     if cmd == "ping":
@@ -1442,6 +1800,12 @@ def dispatch(request):
         return handle_rename(request)
     if cmd == "rescan":
         return handle_rescan(request)
+    if cmd == "briturnscan":
+        return handle_briturnscan(request)
+    if cmd == "briturnstatus":
+        return handle_briturnstatus(request)
+    if cmd == "briturnset":
+        return handle_briturnset(request)
     if cmd == "cloudsync":
         return handle_cloudsync()
     if cmd == "cloudstatus":
@@ -1464,6 +1828,12 @@ def dispatch(request):
         return handle_config()
     if cmd == "setconfig":
         return handle_setconfig(request)
+    if cmd == "gh_list":
+        return handle_gh_list()
+    if cmd == "gh_states":
+        return handle_gh_states(request)
+    if cmd == "gh_action":
+        return handle_gh_action(request)
     return {"ok": False, "error": "unknown command"}
 
 
