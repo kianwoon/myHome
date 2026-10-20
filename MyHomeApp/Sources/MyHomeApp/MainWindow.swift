@@ -909,13 +909,17 @@ struct BriturnGroupsBar: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
             } else {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 10) {
-                        ForEach(store.briturnGroups, id: \.self) { group in
-                            BriturnGroupCard(group: group)
-                        }
+                // Wrapping grid, not a horizontal strip: every group must be
+                // visible at once — hiding some behind a scroll defeats the
+                // at-a-glance purpose of the bar.
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 240, maximum: 320), spacing: 10)],
+                    alignment: .leading,
+                    spacing: 10
+                ) {
+                    ForEach(store.briturnGroups, id: \.self) { group in
+                        BriturnGroupCard(group: group)
                     }
-                    .padding(.vertical, 2)
                 }
             }
         }
