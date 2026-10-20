@@ -933,6 +933,10 @@ struct BriturnGroupCard: View {
     @State private var applyTask: Task<Void, Never>?
     @State private var brightnessTask: Task<Void, Never>?
     @State private var syncedGroup: String?
+    /// Same anti-echo rule as the single-light picker: never let a stale wire
+    /// colour repaint the well and get sent back as a user command.
+    @State private var lastColorEdit = Date.distantPast
+    private static let colorSyncHoldOff: TimeInterval = 4
 
     private var members: [Device] { store.members(of: group) }
     private var anyOn: Bool { members.contains { store.briturnStatus[$0.id]?.on == true } }
@@ -992,6 +996,7 @@ struct BriturnGroupCard: View {
     /// the single-light path. Never yanked mid-drag.
     private func syncPicker() {
         if isDraggingBrightness { return }
+        if Date().timeIntervalSince(lastColorEdit) < Self.colorSyncHoldOff { return }
         guard let member = members.first,
               let state = store.briturnStatus[member.id] else { return }
         syncedGroup = group
@@ -1004,6 +1009,7 @@ struct BriturnGroupCard: View {
     }
 
     private func scheduleColorApply(_ newValue: Color) {
+        lastColorEdit = Date()
         applyTask?.cancel()
         guard let rgb = BriturnColorUtil.extractRGB(newValue) else { return }
         applyTask = Task {
@@ -1054,6 +1060,13 @@ struct BriturnControlsView: View {
     @State private var applyTask: Task<Void, Never>?
     @State private var brightnessTask: Task<Void, Never>?
     @State private var showingNewGroup = false
+    /// General rule: the picker must never ECHO a stale wire colour back to
+    /// the device. Between the user's pick and the device readback, a poll can
+    /// repaint the picker with the old colour; syncing then would make the
+    /// picker itself send the old colour back — the user's pick flip-flops.
+    /// After any user edit the picker stops syncing until the hold-off ends.
+    @State private var lastColorEdit = Date.distantPast
+    private static let colorSyncHoldOff: TimeInterval = 4
     @State private var newGroupName = ""
 
     private var groupBinding: Binding<String> {
@@ -1161,6 +1174,7 @@ struct BriturnControlsView: View {
         // Never yank the slider out from under an active drag — the readback
         // after the drag ends wins instead.
         if isDraggingBrightness { return }
+        if Date().timeIntervalSince(lastColorEdit) < Self.colorSyncHoldOff { return }
         color = Color(
             red: Double(state.r) / 255,
             green: Double(state.g) / 255,
@@ -1173,6 +1187,7 @@ struct BriturnControlsView: View {
     /// bridge is serial and the bulb acks slowly, so only the settled value
     /// is sent.
     private func scheduleColorApply(_ newValue: Color) {
+        lastColorEdit = Date()
         applyTask?.cancel()
         guard let rgb = BriturnColorUtil.extractRGB(newValue) else { return }
         applyTask = Task {
