@@ -295,6 +295,21 @@ public final class DeviceStore: ObservableObject {
             payload["b"] = color.blue
         }
         if let brightness = brightness { payload["brightness"] = brightness }
+        // Optimistic paint from the request: without this the toggle binding
+        // re-reads the stale cached state and visually snaps back ON until
+        // the ~1s wire readback lands. The bridge's readback remains the
+        // authority and overwrites this — a rejected set reverts on its own.
+        let prev = briturnStatus[device.id]
+        let nextOn = on ?? (prev?.on ?? false)
+        briturnStatus[device.id] = BriturnState(
+            on: nextOn,
+            rawPower: nextOn ? 0x23 : 0x24,
+            mode: prev?.mode ?? 97,
+            r: color?.red ?? prev?.r ?? 255,
+            g: color?.green ?? prev?.g ?? 255,
+            b: color?.blue ?? prev?.b ?? 255,
+            w: prev?.w ?? 0
+        )
         do {
             let reply = try await bridge.request(payload, timeout: 30)
             guard reply["ok"] as? Bool == true else {
