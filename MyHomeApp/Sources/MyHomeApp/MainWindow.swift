@@ -946,6 +946,13 @@ struct BriturnGroupCard: View {
     private static let colorSyncHoldOff: TimeInterval = 4
     @State private var isSyncingPicker = false
 
+    private func clearSyncFlagSoon() {
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            isSyncingPicker = false
+        }
+    }
+
     private var members: [Device] { store.members(of: group) }
     private var anyOn: Bool { members.contains { store.briturnStatus[$0.id]?.on == true } }
 
@@ -1009,11 +1016,19 @@ struct BriturnGroupCard: View {
               let state = store.briturnStatus[member.id] else { return }
         syncedGroup = group
         isSyncingPicker = true
-        color = Color(
-            red: Double(state.r) / 255,
-            green: Double(state.g) / 255,
-            blue: Double(state.b) / 255
-        )
+        if state.isWhiteMode {
+            color = .white
+        } else if state.r == 0 && state.g == 0 && state.b == 0 {
+            // No colour set: leave the picker alone rather than paint black.
+            clearSyncFlagSoon()
+            return
+        } else {
+            color = Color(
+                red: Double(state.r) / 255,
+                green: Double(state.g) / 255,
+                blue: Double(state.b) / 255
+            )
+        }
         brightness = Double(max(state.r, state.g, state.b)) * 100.0 / 255.0
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 150_000_000)
@@ -1205,6 +1220,12 @@ struct BriturnControlsView: View {
         isSyncingPicker = true
         if state.isWhiteMode {
             color = .white
+        } else if state.r == 0 && state.g == 0 && state.b == 0 {
+            // rgb all-zero while OFF means "no colour set" — syncing that
+            // would paint the picker black for most of the roster. Leave the
+            // picker where the user left it; the next real colour read wins.
+            clearSyncFlagSoon()
+            return
         } else {
             color = Color(
                 red: Double(state.r) / 255,
