@@ -501,13 +501,69 @@ struct RichControlView: View {
         case .curtain:
             CurtainControlView(device: device, state: state)
         case .light:
-            LightControlView(device: device, state: state)
+            // General rule: briturn lights must never receive Tuya DPS
+            // sliders — dp "2" means nothing to them, so the card slider was
+            // a dead control. They get the native brightness slider instead.
+            if device.category.lowercased() == "briturn" {
+                BriturnCardControls(device: device)
+            } else {
+                LightControlView(device: device, state: state)
+            }
         case .plug:
             PlugReadoutView(state: state)
         case .climate:
             ClimateChipsView(state: state)
         default:
             RawPreviewView(state: state, kind: device.kind)
+        }
+    }
+}
+
+/// Compact card-level brightness for briturn lights, mirroring the detail
+/// slider: peak-channel derived, drag-guarded, debounced, native transport.
+struct BriturnCardControls: View {
+    @EnvironmentObject private var store: DeviceStore
+    let device: Device
+    @State private var brightness: Double = 100
+    @State private var isDragging = false
+    @State private var applyTask: Task<Void, Never>?
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "sun.max")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Slider(value: $brightness, in: 0...100, step: 1) { dragging in
+                isDragging = dragging
+                if !dragging {
+                    applyTask?.cancel()
+                    let value = Int(brightness.rounded())
+                    applyTask = Task {
+                        try? await Task.sleep(nanoseconds: 250_000_000)
+                        guard !Task.isCancelled else { return }
+                        await store.setBriturn(device, brightness: value)
+                    }
+                }
+            }
+            .controlSize(.mini)
+            .disabled(store.briturnStatus[device.id] == nil)
+            Text("\(Int(brightness.rounded()))")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 38, alignment: .trailing)
+        }
+        .onAppear { syncFromStatus() }
+        .onChange(of: store.briturnStatus[device.id]) { newState in
+            guard !isDragging else { return }
+            if let s = newState {
+                brightness = Double(max(s.r, s.g, s.b)) * 100.0 / 255.0
+            }
+        }
+    }
+
+    private func syncFromStatus() {
+        if let s = store.briturnStatus[device.id] {
+            brightness = Double(max(s.r, s.g, s.b)) * 100.0 / 255.0
         }
     }
 }
