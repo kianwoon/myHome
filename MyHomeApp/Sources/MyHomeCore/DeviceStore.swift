@@ -45,10 +45,22 @@ public final class DeviceStore: ObservableObject {
 
     /// Bridge roster (Tuya + WiFi briturn devices).
     @Published public private(set) var roster: [Device] = []
-    /// BLE-only lights (no roster entry — discovered over Bluetooth).
-    @Published public private(set) var bleOnly: [Device] = []
-    /// Uniform view: everything the dashboard shows, roster first.
-    public var devices: [Device] { roster + bleOnly }
+    /// Raw BLE discoveries (from BLEManager advertisements).
+    @Published public private(set) var bleLights: [BLELight] = []
+    /// Uniform view: roster + BLE-only lights. The dedupe is DERIVED here —
+    /// a BLE light whose MAC exists in the roster is the same physical light
+    /// (dual-mode) and never produces a second card, regardless of which
+    /// source loaded first.
+    public var devices: [Device] {
+        let bleOnlyDevices = bleLights.compactMap { light -> Device? in
+            guard light.id.hasPrefix("ble-") else { return nil }
+            let tuyaID = "briturn-" + String(light.id.dropFirst("ble-".count))
+            if roster.contains(where: { $0.id == tuyaID }) { return nil }
+            return Device(id: light.id, name: light.name, ip: "",
+                          version: "BLE", category: "briturn", online: true)
+        }
+        return roster + bleOnlyDevices
+    }
     @Published public private(set) var isOn: [String: Bool] = [:]
     @Published public private(set) var dpsById: [String: [String: DPSValue]] = [:]
     @Published public private(set) var cloudOnline: [String: Bool] = [:]
@@ -126,23 +138,18 @@ public final class DeviceStore: ObservableObject {
             .receive(on: RunLoop.main)
             .sink { [weak self] lights in
                 guard let self else { return }
-                // Dedupe by MAC: a light already in the roster (briturn-<mac>)
-                // gains BLE as a FALLBACK transport; only never-seen MACs get
-                // a BLE-only card.
-                var bleOnlyDevices: [Device] = []
+                self.bleLights = lights
+                // Side effects only here — the DEDUPE itself is derived in
+                // `devices` so it stays correct no matter which source loads
+                // first (BLE adverts vs the bridge roster).
                 for light in lights {
                     guard light.id.hasPrefix("ble-") else { continue }
-                    let mac = String(light.id.dropFirst("ble-".count))
-                    let tuyaID = "briturn-" + mac
+                    let tuyaID = "briturn-" + String(light.id.dropFirst("ble-".count))
                     if self.roster.contains(where: { $0.id == tuyaID }) {
                         self.bleFallbackIDs.insert(tuyaID)
                         self.bleKeysByDeviceID[tuyaID] = light.id
-                    } else {
-                        bleOnlyDevices.append(Device(id: light.id, name: light.name, ip: "",
-                                                     version: "BLE", category: "briturn", online: true))
                     }
                 }
-                self.bleOnly = bleOnlyDevices
             }
             .store(in: &cancellables)
         ble.$states
