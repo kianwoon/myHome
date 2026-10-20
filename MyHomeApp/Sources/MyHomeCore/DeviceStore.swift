@@ -335,6 +335,47 @@ public final class DeviceStore: ObservableObject {
         }
     }
 
+    /// Refreshes every briturn device's wire state once per poll cycle.
+    /// Coalesced into one published write per cycle, mirroring the DPS batch.
+    private func refreshBriturnStatuses() async {
+        let targets = devices
+            .filter { $0.hasAddress && !statusLoading.contains($0.id) }
+            .filter { $0.category.lowercased() == "briturn" }
+        var batch: [String: BriturnState] = [:]
+        var errors: [String: String] = [:]
+        for device in targets {
+            if Task.isCancelled { break }
+            statusLoading.insert(device.id)
+            do {
+                let reply = try await bridge.request(["cmd": "briturnstatus", "id": device.id])
+                if reply["ok"] as? Bool == true, let state = BriturnState(reply: reply) {
+                    batch[device.id] = state
+                } else {
+                    errors[device.id] = reply["error"] as? String ?? "Briturn status failed."
+                }
+            } catch {
+                errors[device.id] = error.localizedDescription
+            }
+            statusLoading.remove(device.id)
+            do {
+                try await Task.sleep(nanoseconds: UInt64(Self.statusPollPacing * 1_000_000_000))
+            } catch {
+                return
+            }
+        }
+        if !batch.isEmpty {
+            briturnStatus.merge(batch) { _, new in new }
+            var merged = statusErrors
+            for id in batch.keys { merged[id] = nil }
+            statusErrors = merged
+        }
+        if !errors.isEmpty {
+            var merged = statusErrors
+            for (id, message) in errors { merged[id] = message }
+            statusErrors = merged
+        }
+    }
+
     /// Round-robin over online devices only; skip anything already in flight.
     ///
     /// General rule: a view must NEVER mutate observable state while it is
@@ -342,8 +383,12 @@ public final class DeviceStore: ObservableObject {
     /// @Published collection ONCE per cycle instead of per device — per-device
     /// writes invalidate layout repeatedly and can feed a layout loop.
     private func pollCycle() async {
+        // Briturn devices have no DPS surface; they are polled through their
+        // own wire status so card toggles stay live.
+        await refreshBriturnStatuses()
         let targets = devices
             .filter { $0.hasAddress && !statusLoading.contains($0.id) }
+            .filter { $0.category.lowercased() != "briturn" }
             .map(\.id)
         guard !targets.isEmpty else { return }
 

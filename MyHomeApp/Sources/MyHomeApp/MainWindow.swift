@@ -192,11 +192,17 @@ struct DeviceCard: View {
     let onSelect: () -> Void
     @State private var showingRename = false
 
+    private var isBriturn: Bool { device.category.lowercased() == "briturn" }
+
     private var isEnabled: Bool { device.hasAddress }
 
-    private var power: Bool? { store.power(for: device) }
+    private var power: Bool? {
+        if isBriturn { return store.briturnStatus[device.id]?.on }
+        return store.power(for: device)
+    }
 
     private var showPowerToggle: Bool {
+        if isBriturn { return true }
         if device.spec?["1"] != nil {
             return device.spec?["1"]?.type.lowercased() == "boolean"
         }
@@ -205,15 +211,30 @@ struct DeviceCard: View {
 
     private var powerBinding: Binding<Bool> {
         Binding(
-            get: { store.power(for: device) ?? false },
+            get: {
+                if isBriturn { return store.briturnStatus[device.id]?.on ?? false }
+                return store.power(for: device) ?? false
+            },
             set: { newValue in
-                Task { await store.toggle(device, to: newValue) }
+                Task {
+                    if isBriturn {
+                        await store.setBriturn(device, on: newValue)
+                    } else {
+                        await store.toggle(device, to: newValue)
+                    }
+                }
             }
         )
     }
 
     private func summary(_ state: DeviceState) -> String {
         if !isEnabled { return "Offline" }
+        if isBriturn {
+            if let on = store.briturnStatus[device.id]?.on {
+                return on ? "On" : "Off"
+            }
+            return "Briturn"
+        }
         switch device.kind {
         case .plug:
             if let watts = state.wattsText { return watts }

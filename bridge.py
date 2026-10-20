@@ -471,13 +471,14 @@ BRITURN_TCP_PORT = 5577
 SOURCE_OWNED_CATEGORIES = {"briturn"}
 
 # Zengge "2014 protocol" wire format for the AK001-ZJ2xxx module family.
-# Query state: 81 8a 8b -> 14-byte reply: [2]=0x24 marker, [3]=power/state
-# (0x61 on / 0x60 off on observed firmware), [4]=mode, [5..8]=r g b,
-# [9]=warm white. Power: cc 23 33 (on) / cc 24 33 (off). Colour packet:
-# 56 r g b w 0f aa, w=warm white (0x00 for a pure-RGB set).
+# Query state: 81 8a 8b -> 14-byte frame (may be preceded by an ack stream;
+# anchor on the 81 5f preamble): [2]=power (0x23 on / 0x24 off), [3]=mode,
+# [5]=warm white, [6..8]=r g b. Power: 71 23 (on) / 71 24 (off). Colour:
+# 31 r g b w ignoreW aa where ignoreW 0xf0 = apply w, 0x0f = RGB only.
 BRITURN_QUERY = bytes([0x81, 0x8A, 0x8B])
-BRITURN_ON = bytes([0xCC, 0x23, 0x33])
-BRITURN_OFF = bytes([0xCC, 0x24, 0x33])
+BRITURN_ON = bytes([0x71, 0x23])
+BRITURN_OFF = bytes([0x71, 0x24])
+BRITURN_POWER_ON = 0x23
 
 
 def _briturn_exchange(ip, send, expect_reply=True, attempts=2, timeout=3.0):
@@ -529,15 +530,21 @@ def handle_briturnstatus(request=None):
     reply = _briturn_exchange(config["ip"], BRITURN_QUERY)
     if not reply or len(reply) < 14:
         return {"ok": False, "error": "no or short reply from device"}
+    # Frame sync: the bulb may prepend an ack/notification stream to the state
+    # frame, so never trust fixed offsets — anchor on the 0x81 0x5f preamble.
+    offset = reply.rfind(b"\x81\x5f")
+    if offset < 0 or len(reply) - offset < 14:
+        return {"ok": False, "error": "unrecognized state frame"}
+    frame = reply[offset:]
     return {
         "ok": True,
-        "on": bool(reply[3] & 0x01),
-        "raw_power": reply[3],
-        "mode": reply[4],
-        "r": reply[5],
-        "g": reply[6],
-        "b": reply[7],
-        "w": reply[9],
+        "on": frame[2] == BRITURN_POWER_ON,
+        "raw_power": frame[2],
+        "mode": frame[3],
+        "w": frame[5],
+        "r": frame[6],
+        "g": frame[7],
+        "b": frame[8],
     }
 
 
@@ -570,12 +577,16 @@ def handle_briturnset(request=None):
 
     sent = 0
     if want_power:
-        packet = BRITURN_ON if request.get("on") else BRITURN_OFF
+        packet = BRITURN_ON if bool(request.get("on")) else BRITURN_OFF
         if _briturn_exchange(config["ip"], packet, expect_reply=False) is None:
             return {"ok": False, "error": "power command failed"}
         sent += 1
     if want_color:
-        packet = bytes([0x56, channel("r"), channel("g"), channel("b"), 0x00, 0x0F, 0xAA])
+        warm = channel("w")
+        packet = bytes([
+            0x31, channel("r"), channel("g"), channel("b"), warm,
+            0xF0 if warm else 0x0F, 0xAA,
+        ])
         if _briturn_exchange(config["ip"], packet, expect_reply=False) is None:
             return {"ok": False, "error": "color command failed"}
         sent += 1
