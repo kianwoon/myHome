@@ -479,7 +479,8 @@ SOURCE_OWNED_CATEGORIES = {"briturn"}
 # Zengge "2014 protocol" wire format for the AK001-ZJ2xxx module family.
 # Query state: 81 8a 8b -> 14-byte frame (may be preceded by an ack stream;
 # anchor on the 81 5f preamble): [2]=power (0x23 on / 0x24 off), [3]=mode,
-# [5]=warm white, [6..8]=r g b. Power: 71 23 (on) / 71 24 (off). Colour:
+# [9]=warm white level ([5] is a fixed 0x50 on this firmware, NOT the level;
+# verified live), [6..8]=r g b. Power: 71 23 (on) / 71 24 (off). Colour:
 # 31 r g b w ignoreW aa where ignoreW 0xf0 = apply w, 0x0f = RGB only.
 BRITURN_QUERY = bytes([0x81, 0x8A, 0x8B])
 BRITURN_ON = bytes([0x71, 0x23])
@@ -547,7 +548,7 @@ def handle_briturnstatus(request=None):
         "on": frame[2] == BRITURN_POWER_ON,
         "raw_power": frame[2],
         "mode": frame[3],
-        "w": frame[5],
+        "w": frame[9],
         "r": frame[6],
         "g": frame[7],
         "b": frame[8],
@@ -754,6 +755,13 @@ def handle_briturnsetgroup(request):
                     pct = min(max(float(request.get("brightness") or 0), 0), 100)
                 except (TypeError, ValueError):
                     return None
+                if red == green == blue == 0:
+                    # White mode: rgb channels read zero — brightness IS the
+                    # warm white level, so scale the warm byte. Scaling zeros
+                    # would send level 0 and drive a lit white member dark.
+                    warm_level = int(pct * 255.0 / 100.0 + 0.5)
+                    pk.append(bytes([0x31, 0, 0, 0, warm_level, 0xF0, 0xAA]))
+                    return pk
                 peak = max(red, green, blue, 1)
                 factor = (pct * 255.0 / 100.0) / peak
                 red = min(int(red * factor + 0.5), 255)

@@ -655,6 +655,9 @@ public final class DeviceStore: ObservableObject {
         let prev = briturnStatus[device.id]
         let nextOn = on ?? (prev?.on ?? false)
         let paintedWhite = white || (color == nil && (prev?.isWhiteMode ?? false) && brightness != nil)
+        let paintedW = paintedWhite
+            ? brightness.map { min(Int((Double($0) * 2.55).rounded()), 255) }
+            : nil
         briturnStatus[device.id] = BriturnState(
             on: nextOn,
             rawPower: nextOn ? 0x23 : 0x24,
@@ -662,7 +665,7 @@ public final class DeviceStore: ObservableObject {
             r: paintedWhite ? 0 : (color?.red ?? prev?.r ?? 255),
             g: paintedWhite ? 0 : (color?.green ?? prev?.g ?? 255),
             b: paintedWhite ? 0 : (color?.blue ?? prev?.b ?? 255),
-            w: prev?.w ?? 0
+            w: paintedW ?? prev?.w ?? 0
         )
         do {
             let reply = try await bridge.request(payload, timeout: 30)
@@ -741,6 +744,9 @@ public final class DeviceStore: ObservableObject {
         let prev = briturnStatus[device.id]
         let nextOn = on ?? (prev?.on ?? false)
         let paintedWhite = white || (color == nil && (prev?.isWhiteMode ?? false) && brightness != nil)
+        let paintedW = paintedWhite
+            ? brightness.map { min(Int((Double($0) * 2.55).rounded()), 255) }
+            : nil
         briturnStatus[device.id] = BriturnState(
             on: nextOn,
             rawPower: nextOn ? 0x23 : 0x24,
@@ -748,7 +754,7 @@ public final class DeviceStore: ObservableObject {
             r: paintedWhite ? 0 : (color?.red ?? prev?.r ?? 255),
             g: paintedWhite ? 0 : (color?.green ?? prev?.g ?? 255),
             b: paintedWhite ? 0 : (color?.blue ?? prev?.b ?? 255),
-            w: prev?.w ?? 0
+            w: paintedW ?? prev?.w ?? 0
         )
         if let on = on { recordBriturnIntent([device.id], on: on) }
         // Advertised state reconciles; force a delayed re-read of the cache.
@@ -842,6 +848,10 @@ public final class DeviceStore: ObservableObject {
         for id in memberIDs {
             let prev = briturnStatus[id]
             let nextOn = on ?? (prev?.on ?? false)
+            let paintedWhite = color == nil && (prev?.isWhiteMode ?? false) && brightness != nil
+            let paintedW = paintedWhite
+                ? brightness.map { min(Int((Double($0) * 2.55).rounded()), 255) }
+                : nil
             var r = color?.red ?? prev?.r ?? 255
             var g = color?.green ?? prev?.g ?? 255
             var b = color?.blue ?? prev?.b ?? 255
@@ -855,7 +865,7 @@ public final class DeviceStore: ObservableObject {
                 rawPower: nextOn ? 0x23 : 0x24,
                 mode: prev?.mode ?? 97,
                 r: r, g: g, b: b,
-                w: prev?.w ?? 0
+                w: paintedW ?? prev?.w ?? 0
             )
         }
         if let on = on {
