@@ -62,9 +62,16 @@ struct DashboardView: View {
     // Which category's button started the current rescan (drives the spinner).
     // Local view state only; the working flag itself stays store.isWorking.
     @State private var rescanningGroup: DeviceGroup?
+    /// Briturn group filter: nil = show all briturn lights; a name shows only
+    /// that group's members. Set by clicking a group chip, cleared by "All".
+    @State private var briturnGroupFilter: String?
 
     private var filtered: [Device] {
-        store.devices.filter { group.contains($0) }
+        var result = store.devices.filter { group.contains($0) }
+        if group == .briturn, let filter = briturnGroupFilter {
+            result = result.filter { $0.group == filter }
+        }
+        return result
     }
 
     private var selectedDevice: Device? {
@@ -82,7 +89,7 @@ struct DashboardView: View {
         } content: {
             ScrollView {
                 if group == .briturn {
-                    BriturnGroupsBar()
+                    BriturnGroupsBar(selection: $briturnGroupFilter)
                 }
                 if filtered.isEmpty {
                     VStack(spacing: 8) {
@@ -902,6 +909,7 @@ struct DeviceDetailView: View {
 /// a hint that teaches assignment via the light's detail view.
 struct BriturnGroupsBar: View {
     @EnvironmentObject private var store: DeviceStore
+    @Binding var selection: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -920,8 +928,18 @@ struct BriturnGroupsBar: View {
                     alignment: .leading,
                     spacing: 10
                 ) {
+                    BriturnAllChip(isSelected: selection == nil) {
+                        selection = nil
+                    }
                     ForEach(store.briturnGroups, id: \.self) { group in
-                        BriturnGroupCard(group: group)
+                        BriturnGroupCard(
+                            group: group,
+                            isSelected: selection == group,
+                            onSelect: {
+                                // Clicking the selected chip toggles back to all.
+                                selection = (selection == group) ? nil : group
+                            }
+                        )
                     }
                 }
             }
@@ -931,9 +949,43 @@ struct BriturnGroupsBar: View {
     }
 }
 
+/// "Show all" chip — clears the group filter.
+struct BriturnAllChip: View {
+    let isSelected: Bool
+    let onTap: () -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack(spacing: 8) {
+                Image(systemName: "square.grid.2x2")
+                Text("Show All")
+                    .font(.callout.weight(.semibold))
+                Spacer()
+                Text(isSelected ? "✓" : "")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(isSelected ? Color.accentColor.opacity(0.18) : Color(nsColor: .controlBackgroundColor))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 1.5)
+            )
+        }
+        .buttonStyle(.plain)
+        .frame(minHeight: 46)
+    }
+}
+
 struct BriturnGroupCard: View {
     @EnvironmentObject private var store: DeviceStore
     let group: String
+    var isSelected: Bool = false
+    var onSelect: (() -> Void)? = nil
     @State private var color = Color(red: 1, green: 0, blue: 0)
     @State private var brightness: Double = 100
     @State private var isDraggingBrightness = false
@@ -959,6 +1011,8 @@ struct BriturnGroupCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 12) {
+                // Tap target is the NAME ONLY — the toggle, colour well and
+                // slider control the group's lights; they must never filter.
                 VStack(alignment: .leading, spacing: 2) {
                     Text(group)
                         .font(.callout.weight(.semibold))
@@ -966,6 +1020,13 @@ struct BriturnGroupCard: View {
                     Text("\(members.count) light\(members.count == 1 ? "" : "s")")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+                .onTapGesture { onSelect?() }
+                Spacer()
+                if isSelected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.tint)
                 }
                 Toggle("", isOn: Binding(
                     get: { anyOn },
