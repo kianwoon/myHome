@@ -258,13 +258,16 @@ struct DeviceCard: View {
         if !isEnabled { return "Offline" }
         if isBriturn {
             // Group membership is part of the card's at-a-glance identity —
-            // you grouped lights precisely so they read as a set. BLE lights
-            // are flagged so their transport is obvious.
+            // you grouped lights precisely so they read as a set. Transports
+            // are shown as icons: 📶 WiFi reachable, 🔵 Bluetooth seen.
             let state = store.briturnStatus[device.id]
             let powerText = state.map { $0.on ? "On" : "Off" } ?? "Briturn"
             var parts: [String] = [powerText]
             if let name = device.group, !name.isEmpty { parts.append(name) }
-            if device.isBLE { parts.append("🔵") }
+            var transports = ""
+            if store.isWiFiAvailable(for: device) { transports += "📶" }
+            if store.isBLEAvailable(for: device) { transports += "🔵" }
+            if !transports.isEmpty { parts.append(transports) }
             return parts.joined(separator: " · ")
         }
         switch device.kind {
@@ -796,6 +799,18 @@ struct DeviceDetailView: View {
 
     private var state: DeviceState { store.state(for: device) }
 
+    /// Unique identity is the roster id (MAC-derived for briturn lights);
+    /// transports are reported separately — dual-mode is the norm.
+    private var transportLine: String {
+        var lines: [String] = []
+        if device.hasAddress { lines.append("WiFi: \(device.ip)") }
+        if store.isBLEAvailable(for: device) { lines.append("Bluetooth: in range") }
+        if lines.isEmpty {
+            lines.append(device.isBLE ? "Bluetooth: waiting for advertisement…" : "No transport")
+        }
+        return lines.joined(separator: "  ·  ")
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
@@ -818,7 +833,7 @@ struct DeviceDetailView: View {
                             .font(.caption.monospaced())
                             .foregroundStyle(.tertiary)
                             .textSelection(.enabled)
-                        Text(device.hasAddress ? device.ip : (device.isBLE ? "Bluetooth (BLE)" : "No IP"))
+                        Text(transportLine)
                             .font(.caption.monospaced())
                             .foregroundStyle(.secondary)
                     }

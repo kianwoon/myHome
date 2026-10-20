@@ -464,6 +464,17 @@ public final class DeviceStore: ObservableObject {
         }
     }
 
+    /// Transport availability for a briturn device: WiFi (has a routable IP)
+    /// and/or Bluetooth (BLE advertisements seen recently). A device can be
+    /// reachable over both — dual-mode is the norm for these lights.
+    public func isBLEAvailable(for device: Device) -> Bool {
+        device.isBLE || bleFallbackIDs.contains(device.id)
+    }
+
+    public func isWiFiAvailable(for device: Device) -> Bool {
+        device.hasAddress
+    }
+
     // MARK: - Briturn groups
 
     /// BLE-transport set: same optimistic paint + intent rules as the WiFi
