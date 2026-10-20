@@ -934,37 +934,48 @@ public final class DeviceStore: ObservableObject {
             .filter { $0.category.lowercased() == "briturn" && !$0.isBLE }
         var batch: [String: BriturnState] = [:]
         var errors: [String: String] = [:]
-        // Concurrent in chunks of 6 (same pattern as group control): a
-        // sequential sweep of 25 lights took 15-25s at launch, leaving chips
-        // on their placeholder colour the whole time. Chunking protects the
-        // bulbs from dozens of simultaneous handshakes.
+        // Sliding window of 8: bounded in-flight queries protect the bulbs'
+        // tiny TCP stacks, but there is no barrier between batches — a new
+        // query starts the moment any slot frees, so one wedged bulb idles
+        // only its own slot and total time approaches the slowest single
+        // query instead of the sum of chunk maxima.
         let knownStates = briturnStatus
-        let CHUNK = 6
-        for start in stride(from: 0, to: targets.count, by: CHUNK) {
-            let chunk = Array(targets[start..<min(start + CHUNK, targets.count)])
-            let results = await withTaskGroup(
-                of: (String, BriturnState?, String?).self,
-                returning: [(String, BriturnState?, String?)].self
-            ) { group in
-                for device in chunk {
-                    if Task.isCancelled { break }
-                    let hadState = knownStates[device.id] != nil
-                    group.addTask {
-                        let state = await FluxClient.query(ip: device.ip)
-                        let error = state == nil && !hadState ? "Light unreachable." : nil
-                        return (device.id, state, error)
-                    }
+        let MAX_IN_FLIGHT = 8
+        let results = await withTaskGroup(
+            of: (String, BriturnState?, String?).self,
+            returning: [(String, BriturnState?, String?)].self
+        ) { group in
+            var next = 0
+            while next < targets.count && next < MAX_IN_FLIGHT && !Task.isCancelled {
+                let device = targets[next]
+                next += 1
+                let hadState = knownStates[device.id] != nil
+                group.addTask {
+                    let state = await FluxClient.query(ip: device.ip)
+                    let error = state == nil && !hadState ? "Light unreachable." : nil
+                    return (device.id, state, error)
                 }
-                var collected: [(String, BriturnState?, String?)] = []
-                for await result in group { collected.append(result) }
-                return collected
             }
-            for (id, state, error) in results {
-                if let state = state {
-                    batch[id] = state
-                } else if let error = error {
-                    errors[id] = error
+            var collected: [(String, BriturnState?, String?)] = []
+            while let result = await group.next() {
+                collected.append(result)
+                guard !Task.isCancelled, next < targets.count else { continue }
+                let device = targets[next]
+                next += 1
+                let hadState = knownStates[device.id] != nil
+                group.addTask {
+                    let state = await FluxClient.query(ip: device.ip)
+                    let error = state == nil && !hadState ? "Light unreachable." : nil
+                    return (device.id, state, error)
                 }
+            }
+            return collected
+        }
+        for (id, state, error) in results {
+            if let state = state {
+                batch[id] = state
+            } else if let error = error {
+                errors[id] = error
             }
         }
         if !batch.isEmpty {
