@@ -1072,7 +1072,7 @@ struct BriturnGroupCard: View {
     let group: String
     var isSelected: Bool = false
     var onSelect: (() -> Void)? = nil
-    @State private var color = Color(red: 1, green: 0, blue: 0)
+    @State private var color = Color.white
     @State private var brightness: Double = 100
     @State private var isDraggingBrightness = false
     @State private var applyTask: Task<Void, Never>?
@@ -1155,7 +1155,18 @@ struct BriturnGroupCard: View {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(Color(nsColor: .controlBackgroundColor))
         )
-        .onAppear { syncPicker() }
+        .onAppear {
+            // Neutral until a real source paints the chip: the remembered
+            // last-user colour seeds it, then live member derivation wins.
+            if let remembered = store.groupColours[group] {
+                color = Color(
+                    red: Double(remembered.red) / 255,
+                    green: Double(remembered.green) / 255,
+                    blue: Double(remembered.blue) / 255
+                )
+            }
+            syncPicker()
+        }
         .onChange(of: store.briturnStatus) { _ in
             // Always re-track the members' live colour: the chip is a MIRROR
             // of the group, not a memory of the first readback. User edits are
