@@ -146,6 +146,18 @@ public final class DeviceStore: ObservableObject {
            let stored = try? JSONDecoder().decode([String: String].self, from: data) {
             bleGroups = stored
         }
+        if let data = defaults.data(forKey: Self.groupColoursStorageKey),
+           let stored = try? JSONDecoder().decode([String: [Int]].self, from: data),
+           let rgb = stored["rgb"], rgb.count == 3 {
+            // kept simple: stored as [r,g,b] under the group name
+        }
+        if let raw = defaults.dictionary(forKey: Self.groupColoursStorageKey) as? [String: [Int]] {
+            var loaded: [String: (red: Int, green: Int, blue: Int)] = [:]
+            for (name, rgb) in raw where rgb.count == 3 {
+                loaded[name] = (rgb[0], rgb[1], rgb[2])
+            }
+            groupColours = loaded
+        }
         if let data = defaults.data(forKey: Self.bleSeenStorageKey),
            let stored = try? JSONDecoder().decode([BLELight].self, from: data) {
             for light in stored { bleSeen[light.id] = light }
@@ -173,6 +185,11 @@ public final class DeviceStore: ObservableObject {
     /// different storage.
     @Published public private(set) var bleGroups: [String: String] = [:]
     private static let bleGroupsStorageKey = "briturn.bleGroups"
+    /// Last user-chosen colour per group, persisted. The chip shows THIS at
+    /// launch — bulbs get swept by polls after, and their leftover colours
+    /// (test residue, app-side changes) must never repaint the chip red.
+    @Published public private(set) var groupColours: [String: (red: Int, green: Int, blue: Int)] = [:]
+    private static let groupColoursStorageKey = "briturn.groupColours"
 
     /// The BLE key for a device: its own entry if BLE-only, else the matched
     /// WiFi roster id's MAC-derived key.
@@ -230,6 +247,14 @@ public final class DeviceStore: ObservableObject {
                 }
             }
             .store(in: &cancellables)
+    }
+
+    private func saveGroupColour(_ group: String, _ color: (red: Int, green: Int, blue: Int)) {
+        var stored = groupColours
+        stored[group] = (color.red, color.green, color.blue)
+        groupColours = stored
+        let raw = stored.mapValues { [$0.red, $0.green, $0.blue] }
+        UserDefaults.standard.set(raw, forKey: Self.groupColoursStorageKey)
     }
 
     // MARK: - Briturn schedules (on-bulb timers)
