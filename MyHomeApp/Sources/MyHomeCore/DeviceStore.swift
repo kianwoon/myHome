@@ -100,7 +100,9 @@ public final class DeviceStore: ObservableObject {
     }
 
     public var onCount: Int {
-        devices.filter { isOn[$0.id] == true }.count
+        devices.filter {
+            isOn[$0.id] == true || briturnStatus[$0.id]?.on == true
+        }.count
     }
 
     public var headerText: String {
