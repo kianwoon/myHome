@@ -928,39 +928,56 @@ struct BriturnGroupCard: View {
     @EnvironmentObject private var store: DeviceStore
     let group: String
     @State private var color = Color(red: 1, green: 0, blue: 0)
+    @State private var brightness: Double = 100
+    @State private var isDraggingBrightness = false
     @State private var applyTask: Task<Void, Never>?
+    @State private var brightnessTask: Task<Void, Never>?
     @State private var syncedGroup: String?
 
     private var members: [Device] { store.members(of: group) }
     private var anyOn: Bool { members.contains { store.briturnStatus[$0.id]?.on == true } }
 
     var body: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(group)
-                    .font(.callout.weight(.semibold))
-                    .lineLimit(1)
-                Text("\(members.count) light\(members.count == 1 ? "" : "s")")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Toggle("", isOn: Binding(
-                get: { anyOn },
-                set: { newValue in
-                    Task { await store.setBriturnGroupState(group, on: newValue) }
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(group)
+                        .font(.callout.weight(.semibold))
+                        .lineLimit(1)
+                    Text("\(members.count) light\(members.count == 1 ? "" : "s")")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-            ))
-            .labelsHidden()
-            .toggleStyle(.switch)
-            .controlSize(.mini)
-            ColorPicker("", selection: $color, supportsOpacity: false)
+                Toggle("", isOn: Binding(
+                    get: { anyOn },
+                    set: { newValue in
+                        Task { await store.setBriturnGroupState(group, on: newValue) }
+                    }
+                ))
                 .labelsHidden()
-                .onChange(of: color) { newValue in
-                    scheduleColorApply(newValue)
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                ColorPicker("", selection: $color, supportsOpacity: false)
+                    .labelsHidden()
+                    .onChange(of: color) { newValue in
+                        scheduleColorApply(newValue)
+                    }
+            }
+            HStack(spacing: 6) {
+                Image(systemName: "sun.max")
+                    .foregroundStyle(.secondary)
+                    .font(.caption2)
+                Slider(value: $brightness, in: 0...100, step: 1) { dragging in
+                    isDraggingBrightness = dragging
+                    if !dragging { scheduleBrightnessApply() }
                 }
+                .controlSize(.mini)
+            }
+            .disabled(!anyOn)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
+        .frame(width: 240)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(Color(nsColor: .controlBackgroundColor))
@@ -972,8 +989,9 @@ struct BriturnGroupCard: View {
     }
 
     /// Picker mirrors any member's colour; the device readback wins, same as
-    /// the single-light path.
+    /// the single-light path. Never yanked mid-drag.
     private func syncPicker() {
+        if isDraggingBrightness { return }
         guard let member = members.first,
               let state = store.briturnStatus[member.id] else { return }
         syncedGroup = group
@@ -982,6 +1000,7 @@ struct BriturnGroupCard: View {
             green: Double(state.g) / 255,
             blue: Double(state.b) / 255
         )
+        brightness = Double(max(state.r, state.g, state.b)) * 100.0 / 255.0
     }
 
     private func scheduleColorApply(_ newValue: Color) {
@@ -991,6 +1010,16 @@ struct BriturnGroupCard: View {
             try? await Task.sleep(nanoseconds: 350_000_000)
             guard !Task.isCancelled else { return }
             await store.setBriturnGroupState(group, color: rgb)
+        }
+    }
+
+    private func scheduleBrightnessApply() {
+        brightnessTask?.cancel()
+        let value = Int(brightness.rounded())
+        brightnessTask = Task {
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard !Task.isCancelled else { return }
+            await store.setBriturnGroupState(group, brightness: value)
         }
     }
 }
@@ -1021,6 +1050,7 @@ struct BriturnControlsView: View {
     let device: Device
     @State private var color = Color(red: 1, green: 0, blue: 0)
     @State private var brightness: Double = 100
+    @State private var isDraggingBrightness = false
     @State private var applyTask: Task<Void, Never>?
     @State private var brightnessTask: Task<Void, Never>?
     @State private var showingNewGroup = false
@@ -1084,8 +1114,9 @@ struct BriturnControlsView: View {
                     Image(systemName: "sun.max")
                         .foregroundStyle(.secondary)
                         .font(.caption)
-                    Slider(value: $brightness, in: 0...100, step: 1) { editing in
-                        if !editing { scheduleBrightnessApply() }
+                    Slider(value: $brightness, in: 0...100, step: 1) { dragging in
+                        isDraggingBrightness = dragging
+                        if !dragging { scheduleBrightnessApply() }
                     }
                 }
                 .disabled(store.briturnStatus[device.id] == nil)
@@ -1127,6 +1158,9 @@ struct BriturnControlsView: View {
     /// is derived from the peak channel — the 2014 protocol scales colour.
     private func syncPicker(from state: DeviceStore.BriturnState?) {
         guard let state = state else { return }
+        // Never yank the slider out from under an active drag — the readback
+        // after the drag ends wins instead.
+        if isDraggingBrightness { return }
         color = Color(
             red: Double(state.r) / 255,
             green: Double(state.g) / 255,

@@ -422,10 +422,12 @@ public final class DeviceStore: ObservableObject {
     public func setBriturnGroupState(
         _ group: String,
         on: Bool? = nil,
-        color: (red: Int, green: Int, blue: Int)? = nil
+        color: (red: Int, green: Int, blue: Int)? = nil,
+        brightness: Int? = nil
     ) async {
-        guard on != nil || color != nil else { return }
-        let memberIDs = members(of: group).filter(\.hasAddress).map(\.id)
+        guard on != nil || color != nil || brightness != nil else { return }
+        let memberDevices = members(of: group)
+        let memberIDs = memberDevices.filter(\.hasAddress).map(\.id)
         var payload: [String: Any] = ["cmd": "briturnsetgroup", "group": group]
         if let on = on { payload["on"] = on }
         if let color = color {
@@ -433,20 +435,35 @@ public final class DeviceStore: ObservableObject {
             payload["g"] = color.green
             payload["b"] = color.blue
         }
+        if let brightness = brightness { payload["brightness"] = brightness }
         // Optimistic: paint EVERY member from the request plus its OWN prior
         // state — a member with no status yet must still show the group's new
         // state immediately, and a colour-only set must not clobber members'
-        // individual power states.
+        // individual power states. Brightness scales each member's own colour.
+        var scale: Double = 1
+        if let brightness = brightness, color == nil {
+            scale = Double(brightness) * 2.55 / Double(
+                max(briturnStatus[memberIDs.first ?? ""]?.r ?? 255,
+                    briturnStatus[memberIDs.first ?? ""]?.g ?? 0,
+                    briturnStatus[memberIDs.first ?? ""]?.b ?? 0, 1)
+            )
+        }
         for id in memberIDs {
             let prev = briturnStatus[id]
             let nextOn = on ?? (prev?.on ?? false)
+            var r = color?.red ?? prev?.r ?? 255
+            var g = color?.green ?? prev?.g ?? 255
+            var b = color?.blue ?? prev?.b ?? 255
+            if color == nil, brightness != nil {
+                r = min(Int(Double(r) * scale), 255)
+                g = min(Int(Double(g) * scale), 255)
+                b = min(Int(Double(b) * scale), 255)
+            }
             briturnStatus[id] = BriturnState(
                 on: nextOn,
                 rawPower: nextOn ? 0x23 : 0x24,
                 mode: prev?.mode ?? 97,
-                r: color?.red ?? prev?.r ?? 255,
-                g: color?.green ?? prev?.g ?? 255,
-                b: color?.blue ?? prev?.b ?? 255,
+                r: r, g: g, b: b,
                 w: prev?.w ?? 0
             )
         }
