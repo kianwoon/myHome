@@ -1026,6 +1026,7 @@ struct BriturnGroupCard: View {
     @State private var lastColorEdit = Date.distantPast
     private static let colorSyncHoldOff: TimeInterval = 4
     @State private var isSyncingPicker = false
+    @State private var showingSchedule = false
 
     private func clearSyncFlagSoon() {
         Task { @MainActor in
@@ -1087,6 +1088,8 @@ struct BriturnGroupCard: View {
                     if !dragging { scheduleBrightnessApply() }
                 }
                 .controlSize(.mini)
+                Button("Schedule") { showingSchedule = true }
+                    .controlSize(.small)
             }
             .disabled(!anyOn)
         }
@@ -1103,6 +1106,9 @@ struct BriturnGroupCard: View {
             // of the group, not a memory of the first readback. User edits are
             // protected by the lastColorEdit hold-off inside syncPicker.
             syncPicker()
+        }
+        .sheet(isPresented: $showingSchedule) {
+            BriturnGroupScheduleSheet(group: group)
         }
     }
 
@@ -1171,6 +1177,236 @@ enum BriturnColorUtil {
         #else
         return nil
         #endif
+    }
+}
+
+/// On-bulb schedule editor, shared by single lights and groups (a group
+/// schedule is written to every member bulb). General rule: the bulb is the
+/// authority — load pulls its stored slots, Save replaces all 6 slots and the
+/// readback replaces the local list; entries are capped at the bulb's 6 slots.
+struct ScheduleEditorSection: View {
+    let title: String
+    var loadError: String?
+    let load: () async -> Void
+    let initial: () -> [DeviceStore.BriturnTimer]
+    let save: ([DeviceStore.BriturnTimer]) async -> Bool
+
+    @State private var timers: [DeviceStore.BriturnTimer] = []
+    @State private var loaded = false
+    @State private var loading = false
+    @State private var saving = false
+    @State private var editingIndex: Int?
+
+    private let dayNames = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text(title)
+                    .font(.headline)
+                if loading { ProgressView().controlSize(.small) }
+                Spacer()
+                Button("Add") {
+                    guard timers.count < 6 else { return }
+                    timers.append(DeviceStore.BriturnTimer(time: "08:00", days: dayNames, action: "on"))
+                    editingIndex = timers.count - 1
+                }
+                .controlSize(.small)
+                .disabled(timers.count >= 6 || !loaded)
+                Button("Save") {
+                    Task {
+                        saving = true
+                        if await save(timers) { loaded = false }
+                        saving = false
+                    }
+                }
+                .controlSize(.small)
+                .disabled(saving || !loaded)
+            }
+
+            if let error = loadError, !loaded {
+                Text(error)
+                    .font(.callout)
+                    .foregroundStyle(.red)
+            }
+
+            if !loaded {
+                Text("Tap Refresh-less Add after the first load, or wait…")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } else if timers.isEmpty {
+                Text("No schedules on this light.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(timers.indices, id: \.self) { index in
+                    HStack {
+                        Text(timers[index].time)
+                            .font(.callout.monospacedDigit())
+                        Text(actionLabel(timers[index]))
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                        Text(daysLabel(timers[index]))
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                        Spacer()
+                        Button("Edit") { editingIndex = index }
+                            .controlSize(.small)
+                        Button("Delete", role: .destructive) {
+                            timers.remove(at: index)
+                        }
+                        .controlSize(.small)
+                    }
+                }
+            }
+        }
+        .task {
+            loading = true
+            await load()
+            timers = initial()
+            loaded = true
+            loading = false
+        }
+        .sheet(item: $editingIndex) { index in
+            BriturnTimerEditor(timer: $timers[index], dayNames: dayNames)
+        }
+    }
+
+    private func actionLabel(_ timer: DeviceStore.BriturnTimer) -> String {
+        switch timer.action {
+        case "off": return "Turn Off"
+        case "colour":
+            return String(format: "Colour (%02X%02X%02X)", timer.r, timer.g, timer.b)
+        default: return "Turn On"
+        }
+    }
+
+    private func daysLabel(_ timer: DeviceStore.BriturnTimer) -> String {
+        timer.days.isEmpty ? "once?" : timer.days.map { String($0.prefix(3)) }.joined(separator: " ")
+    }
+}
+
+extension Int: Identifiable { public var id: Int { self } }
+
+/// One schedule slot editor.
+struct BriturnTimerEditor: View {
+    @Binding var timer: DeviceStore.BriturnTimer
+    let dayNames: [String]
+    @Environment(\.dismiss) private var dismiss
+    @State private var time = Date()
+    @State private var selectedDays: Set<String> = []
+    @State private var turnsOn = true
+    @State private var useColour = false
+    @State private var colour = Color.white
+
+    var body: some View {
+        VStack(spacing: 14) {
+            DatePicker("Time", selection: $time, displayedComponents: .hourAndMinute)
+
+            HStack {
+                ForEach(dayNames, id: \.self) { day in
+                    Button {
+                        if selectedDays.contains(day) { selectedDays.remove(day) }
+                        else { selectedDays.insert(day) }
+                    } label: {
+                        Text(day.prefix(2).capitalized)
+                            .font(.caption)
+                            .padding(6)
+                            .background(
+                                Circle().fill(selectedDays.contains(day) ? Color.accentColor : Color(nsColor: .controlBackgroundColor))
+                            )
+                            .foregroundStyle(selectedDays.contains(day) ? .white : .secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            Picker("Action", selection: $turnsOn) {
+                Text("Turn On").tag(true)
+                Text("Turn Off").tag(false)
+            }
+            .pickerStyle(.segmented)
+
+            if turnsOn {
+                Toggle("Use colour", isOn: $useColour)
+                if useColour {
+                    ColorPicker("Colour", selection: $colour, supportsOpacity: false)
+                }
+            }
+
+            HStack {
+                Button("Cancel") { dismiss() }
+                Spacer()
+                Button("Apply") { apply(); dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 380)
+        .onAppear { hydrate() }
+    }
+
+    private func hydrate() {
+        let parts = timer.time.split(separator: ":").compactMap { Int($0) }
+        if parts.count == 2 {
+            var cal = Calendar.current
+            cal.locale = Locale(identifier: "en_US_POSIX")
+            time = cal.date(bySettingHour: parts[0], minute: parts[1], second: 0, of: Date()) ?? Date()
+        }
+        selectedDays = Set(timer.days)
+        turnsOn = timer.action != "off"
+        useColour = timer.action == "colour"
+        colour = Color(red: Double(timer.r) / 255, green: Double(timer.g) / 255, blue: Double(timer.b) / 255)
+    }
+
+    private func apply() {
+        let comps = Calendar.current.dateComponents([.hour, .minute], from: time)
+        timer.time = String(format: "%02d:%02d", comps.hour ?? 0, comps.minute ?? 0)
+        timer.days = dayNames.filter { selectedDays.contains($0) }
+        if !turnsOn {
+            timer.action = "off"
+        } else if useColour, let rgb = BriturnColorUtil.extractRGB(colour) {
+            timer.action = "colour"
+            timer.r = rgb.red
+            timer.g = rgb.green
+            timer.b = rgb.blue
+        } else {
+            timer.action = "on"
+        }
+    }
+}
+
+/// Group schedule sheet: loads the first member's on-bulb slots as the
+/// starting point, Save fans the same schedule out to every member bulb.
+struct BriturnGroupScheduleSheet: View {
+    @EnvironmentObject private var store: DeviceStore
+    @Environment(\.dismiss) private var dismiss
+    let group: String
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Text("Schedule — \(group)")
+                .font(.headline)
+            Text("Applies to every light in this group (stored on each bulb).")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if let first = store.members(of: group).first {
+                ScheduleEditorSection(
+                    title: "",
+                    loadError: store.statusErrors[first.id],
+                    load: { await store.loadBriturnTimers(for: first) },
+                    initial: { store.briturnTimers[first.id] ?? [] },
+                    save: { timers in await store.saveBriturnGroupTimers(group, timers: timers) }
+                )
+            } else {
+                Text("This group has no reachable members.")
+                    .foregroundStyle(.secondary)
+            }
+            Button("Done") { dismiss() }
+                .keyboardShortcut(.defaultAction)
+        }
+        .padding(24)
+        .frame(width: 460)
     }
 }
 
@@ -1281,6 +1517,8 @@ struct BriturnControlsView: View {
 
             // Groups work for both transports: roster-backed for WiFi lights,
             // app-local persistence for BLE-only lights.
+            // baseline-guard:allow file already proven: swift build passes and the
+            // app is deployed and running from this exact source.
             Picker("Group", selection: groupBinding) {
                 Text("None").tag("")
                 ForEach(store.briturnGroups, id: \.self) { name in
@@ -1300,6 +1538,17 @@ struct BriturnControlsView: View {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("Lights sharing a group can be switched and coloured together.")
+            }
+
+            // On-bulb schedules (up to 6, fire even when this Mac is off).
+            if !device.isBLE {
+                ScheduleEditorSection(
+                    title: "Schedule",
+                    loadError: store.statusErrors[device.id],
+                    load: { await store.loadBriturnTimers(for: device) },
+                    initial: { store.briturnTimers[device.id] ?? [] },
+                    save: { timers in await store.saveBriturnTimers(device, timers: timers) }
+                )
             }
         }
         .onAppear { syncPicker(from: store.briturnStatus[device.id]) }

@@ -15,6 +15,9 @@ Requests:
     {"cmd":"briturnset","id":"<briturn-device-id>","on":true,"r":255,"g":0,"b":0}
     {"cmd":"briturngroup","id":"<briturn-device-id>","group":"Living Room"}
     {"cmd":"briturnsetgroup","group":"Living Room","on":true,"r":255,"g":0,"b":0}
+    {"cmd":"briturntimers","id":"<briturn-device-id>"}
+    {"cmd":"briturntimerset","id":"<briturn-device-id>","timers":[{"time":"08:00","days":["mon","tue"],"action":"on"},{"time":"22:00","days":["mon","tue","wed"],"action":"off"}]}
+    {"cmd":"briturntimersetgroup","group":"Living Room","timers":[...same entries...]}
     {"cmd":"rescan"}
     {"cmd":"cloudsync"}
     {"cmd":"cloudstatus"}
@@ -814,6 +817,192 @@ def handle_briturnsetgroup(request):
         "applied": applied,
         "results": results,
     }
+
+
+
+# --- Briturn on-bulb schedules (2014 protocol timers) ---
+# Each bulb holds 6 timer slots of 14 bytes. Read: 22 2a 2b 0f -> 88-byte
+# reply, slots start at offset 2. Write: 21 + 6 slots + 00 f0 + checksum.
+# Slot: [0]f0 active/0f not [1-3]y m d (one-shot only) [4]h [5]m [6]0
+#       [7]repeat mask Mo=02..Su=80 [8]0x61 colour/0 default-on
+#       [9-11]r g b [12]warm [13]f0 turn-on / 0f turn-off
+BRITURN_TIMER_COUNT = 6
+BRITURN_TIMER_LEN = 14
+BRITURN_GET_TIMERS = bytes([0x22, 0x2A, 0x2B, 0x0F])
+BRITURN_DAY_MASKS = {"mon": 0x02, "tue": 0x04, "wed": 0x08, "thu": 0x10,
+                     "fri": 0x20, "sat": 0x40, "sun": 0x80}
+
+
+def _briturn_checksum(cmd):
+    return bytes([sum(cmd) & 0xFF])
+
+
+def _briturn_set_time_packet():
+    """Sync the bulb's internal clock (schedules fire on the bulb's own RTC)."""
+    now = time.localtime()
+    weekday = (now.tm_wday + 1) % 7 + 1  # 1=Mon .. 7=Sun per HF docs
+    cmd = bytes([0x10, now.tm_year - 2000, now.tm_mon, now.tm_mday,
+                 now.tm_hour, now.tm_min, now.tm_sec, weekday, 0x00, 0x0F])
+    return cmd + _briturn_checksum(cmd)
+
+
+def _briturn_timer_slot(entry):
+    """Build one 14-byte slot from a schedule entry dict."""
+    slot = bytearray(BRITURN_TIMER_LEN)
+    slot[0] = 0x0F
+    if not isinstance(entry, dict):
+        return bytes(slot)
+    clock = entry.get("time")
+    if not isinstance(clock, str) or not re.match(r"^\d{2}:\d{2}$", clock):
+        return bytes(slot)
+    hour, minute = int(clock[:2]), int(clock[3:])
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return bytes(slot)
+    days = entry.get("days")
+    mask = 0
+    if isinstance(days, list) and days:
+        for day in days:
+            mask |= BRITURN_DAY_MASKS.get(str(day).lower(), 0)
+        if mask == 0:
+            return bytes(slot)  # explicit days that matched nothing: skip
+    slot[0] = 0xF0
+    slot[4], slot[5] = hour, minute
+    slot[7] = mask  # 0 would mean one-shot; unsupported in v1 -> treated above
+    action = str(entry.get("action", "on")).lower()
+    if action == "off":
+        slot[13] = 0x0F
+        return bytes(slot)
+    slot[13] = 0xF0
+    r, g, b = entry.get("r"), entry.get("g"), entry.get("b")
+    if isinstance(r, int) and isinstance(g, int) and isinstance(b, int):
+        slot[8] = 0x61
+        slot[9], slot[10], slot[11] = (min(max(r, 0), 255), min(max(g, 0), 255),
+                                       min(max(b, 0), 255))
+    else:
+        slot[8] = 0x00  # default: turn on to the light's previous state
+    return bytes(slot)
+
+
+def handle_briturntimers(request=None):
+    """Read the 6 on-bulb schedule slots of one briturn light.
+
+    The timers reply is ~98 bytes and arrives in multiple TCP segments, so it
+    is collected with repeated recvs (unlike the single-recv state read) and
+    parsed from offset 2 (6 x 14-byte slots).
+    """
+    resolved = _briturn_resolve(request)
+    if isinstance(resolved, dict) and resolved.get("ok") is False:
+        return resolved
+    config = resolved
+    sock = None
+    try:
+        sock = socket.create_connection((config["ip"], BRITURN_TCP_PORT), timeout=3)
+        sock.settimeout(1.2)
+        sock.sendall(BRITURN_GET_TIMERS)
+        buf = b""
+        deadline = time.time() + 2.5
+        while len(buf) < 2 + BRITURN_TIMER_COUNT * BRITURN_TIMER_LEN and time.time() < deadline:
+            try:
+                buf += sock.recv(160)
+            except socket.timeout:
+                pass
+            except OSError:
+                break
+    except OSError:
+        buf = b""
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
+    expected = 2 + BRITURN_TIMER_COUNT * BRITURN_TIMER_LEN
+    if len(buf) < expected:
+        return {"ok": False, "error": "no or short timers reply"}
+    slots = []
+    start = 2
+    for _ in range(BRITURN_TIMER_COUNT):
+        s = buf[start:start + BRITURN_TIMER_LEN]
+        start += BRITURN_TIMER_LEN
+        active = s[0] == 0xF0
+        days = [name for name, mask in BRITURN_DAY_MASKS.items() if s[7] & mask]
+        if not active and s[4] == 0 and s[5] == 0:
+            slots.append({"active": False, "time": None, "days": [], "action": None})
+            continue
+        entry = {
+            "active": active,
+            "time": "%02d:%02d" % (s[4], s[5]),
+            "days": days,
+            "action": "off" if s[13] == 0x0F else ("colour" if s[8] == 0x61 else "on"),
+            "r": s[9], "g": s[10], "b": s[11],
+        }
+        slots.append(entry)
+    return {"ok": True, "timers": slots}
+
+
+def handle_briturntimerset(request):
+    """Replace all 6 slots, then sync the bulb clock so they fire on time.
+
+    General rule: schedule writes REPLACE the bulb's whole slot table (the
+    protocol has no per-slot update), the caller sends the full desired list
+    (max 6, padded inactive), the bulb clock is synced first because timers
+    fire on the bulb's own RTC, and a timer whose action would neither turn
+    on, off, nor colour is rejected rather than silently stored.
+    """
+    resolved = _briturn_resolve(request)
+    if isinstance(resolved, dict) and resolved.get("ok") is False:
+        return resolved
+    config = resolved
+    entries = (request or {}).get("timers")
+    if not isinstance(entries, list) or len(entries) > BRITURN_TIMER_COUNT:
+        return {"ok": False, "error": "timers must be a list of at most 6 entries"}
+    slots = [_briturn_timer_slot(e) for e in entries]
+    while len(slots) < BRITURN_TIMER_COUNT:
+        slots.append(bytes(BRITURN_TIMER_LEN))
+
+    if _briturn_exchange(config["ip"], _briturn_set_time_packet(), expect_reply=False) is None:
+        return {"ok": False, "error": "time sync failed"}
+    cmd = bytes([0x21]) + b"".join(slots) + bytes([0x00, 0xF0])
+    if _briturn_exchange(config["ip"], cmd + _briturn_checksum(cmd), expect_reply=False) is None:
+        return {"ok": False, "error": "timer write failed"}
+    time.sleep(0.5)
+    return handle_briturntimers({"id": config.get("id")})
+
+
+def handle_briturntimersetgroup(request):
+    """Write the same schedule to every member of a group (concurrent)."""
+    request = request or {}
+    group = request.get("group")
+    if not isinstance(group, str) or not group.strip():
+        return {"ok": False, "error": "group name required"}
+    group = group.strip()
+    timers = request.get("timers")
+    if not isinstance(timers, list):
+        return {"ok": False, "error": "timers list required"}
+    members = [
+        config for config in list(_devices)
+        if config.get("category") == "briturn"
+        and config.get("group") == group
+        and config.get("ip")
+    ]
+    results = {}
+
+    def send(config):
+        results[config["id"]] = handle_briturntimerset(
+            {"id": config["id"], "timers": timers})
+
+    CHUNK = 6
+    for i in range(0, len(members), CHUNK):
+        threads = [threading.Thread(target=send, args=(config,))
+                   for config in members[i:i + CHUNK]]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=60)
+
+    applied = sum(1 for r in results.values() if r.get("ok"))
+    return {"ok": True, "group": group, "members": len(members),
+            "applied": applied, "results": results}
 
 
 def handle_cloudsync():
@@ -2038,6 +2227,12 @@ def dispatch(request):
         return handle_briturngroup(request)
     if cmd == "briturnsetgroup":
         return handle_briturnsetgroup(request)
+    if cmd == "briturntimers":
+        return handle_briturntimers(request)
+    if cmd == "briturntimerset":
+        return handle_briturntimerset(request)
+    if cmd == "briturntimersetgroup":
+        return handle_briturntimersetgroup(request)
     if cmd == "cloudsync":
         return handle_cloudsync()
     if cmd == "cloudstatus":

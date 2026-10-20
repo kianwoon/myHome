@@ -232,6 +232,133 @@ public final class DeviceStore: ObservableObject {
             .store(in: &cancellables)
     }
 
+    // MARK: - Briturn schedules (on-bulb timers)
+
+    public struct BriturnTimer: Identifiable, Equatable, Codable {
+        public var id: UUID
+        public var time: String        // "HH:MM"
+        public var days: [String]      // mon..sun, empty = not set
+        public var action: String      // "on" | "off" | "colour"
+        public var r: Int
+        public var g: Int
+        public var b: Int
+
+        public init(id: UUID = UUID(), time: String, days: [String],
+                    action: String, r: Int = 0, g: Int = 0, b: Int = 0) {
+            self.id = id
+            self.time = time
+            self.days = days
+            self.action = action
+            self.r = r
+            self.g = g
+            self.b = b
+        }
+    }
+
+    @Published public private(set) var briturnTimers: [String: [BriturnTimer]] = [:]
+    @Published public private(set) var briturnTimersLoading: Set<String> = []
+
+    public func loadBriturnTimers(for device: Device) async {
+        guard isBriturn(device), !device.isBLE, device.hasAddress else { return }
+        briturnTimersLoading.insert(device.id)
+        defer { briturnTimersLoading.remove(device.id) }
+        do {
+            let reply = try await bridge.request(["cmd": "briturntimers", "id": device.id], timeout: 15)
+            guard reply["ok"] as? Bool == true, let raw = reply["timers"] as? [[String: Any]] else {
+                statusErrors[device.id] = reply["error"] as? String ?? "Schedule read failed."
+                return
+            }
+            let timers = raw.compactMap { entry -> BriturnTimer? in
+                guard let time = entry["time"] as? String,
+                      let active = entry["active"] as? Bool, active,
+                      let action = entry["action"] as? String else { return nil }
+                let days = (entry["days"] as? [String]) ?? []
+                return BriturnTimer(time: time, days: days, action: action,
+                                    r: entry["r"] as? Int ?? 0,
+                                    g: entry["g"] as? Int ?? 0,
+                                    b: entry["b"] as? Int ?? 0)
+            }
+            briturnTimers[device.id] = timers
+            statusErrors[device.id] = nil
+        } catch {
+            // Quiet-stale like status: schedules stay on the bulb regardless.
+            if briturnTimers[device.id] == nil {
+                statusErrors[device.id] = error.localizedDescription
+            }
+        }
+    }
+
+    /// Saves the full schedule (max 6) to one light. Bulb clock is synced by
+    /// the bridge on every write.
+    public func saveBriturnTimers(_ device: Device, timers: [BriturnTimer]) async -> Bool {
+        guard isBriturn(device), !device.isBLE else { return false }
+        let payload: [[String: Any]] = timers.prefix(6).map { timer in
+            var entry: [String: Any] = [
+                "time": timer.time,
+                "days": timer.days,
+                "action": timer.action
+            ]
+            if timer.action == "colour" {
+                entry["r"] = timer.r
+                entry["g"] = timer.g
+                entry["b"] = timer.b
+            }
+            return entry
+        }
+        do {
+            let reply = try await bridge.request([
+                "cmd": "briturntimerset", "id": device.id, "timers": payload
+            ], timeout: 30)
+            guard reply["ok"] as? Bool == true else {
+                statusErrors[device.id] = reply["error"] as? String ?? "Schedule save failed."
+                return false
+            }
+            if let raw = reply["timers"] as? [[String: Any]] {
+                let timers = raw.compactMap { entry -> BriturnTimer? in
+                    guard let time = entry["time"] as? String,
+                          let active = entry["active"] as? Bool, active,
+                          let action = entry["action"] as? String else { return nil }
+                    return BriturnTimer(time: time, days: (entry["days"] as? [String]) ?? [],
+                                        action: action, r: entry["r"] as? Int ?? 0,
+                                        g: entry["g"] as? Int ?? 0, b: entry["b"] as? Int ?? 0)
+                }
+                briturnTimers[device.id] = timers
+            }
+            statusErrors[device.id] = nil
+            return true
+        } catch {
+            statusErrors[device.id] = error.localizedDescription
+            return false
+        }
+    }
+
+    /// Writes the same schedule to every member of a group.
+    public func saveBriturnGroupTimers(_ group: String, timers: [BriturnTimer]) async -> Bool {
+        let payload: [[String: Any]] = timers.prefix(6).map { timer in
+            var entry: [String: Any] = ["time": timer.time, "days": timer.days, "action": timer.action]
+            if timer.action == "colour" {
+                entry["r"] = timer.r
+                entry["g"] = timer.g
+                entry["b"] = timer.b
+            }
+            return entry
+        }
+        do {
+            let reply = try await bridge.request([
+                "cmd": "briturntimersetgroup", "group": group, "timers": payload
+            ], timeout: 90)
+            guard reply["ok"] as? Bool == true else {
+                errorText = reply["error"] as? String ?? "Group schedule failed."
+                return false
+            }
+            errorText = nil
+            return true
+        } catch {
+            errorText = error.localizedDescription
+            return false
+        }
+    }
+
     // MARK: - Derived state
 
     public var onlineCount: Int {
