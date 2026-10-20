@@ -13,6 +13,8 @@ Requests:
     {"cmd":"rename","id":"<device-id>","name":"<new-name>"}
     {"cmd":"briturnstatus","id":"<briturn-device-id>"}
     {"cmd":"briturnset","id":"<briturn-device-id>","on":true,"r":255,"g":0,"b":0}
+    {"cmd":"briturngroup","id":"<briturn-device-id>","group":"Living Room"}
+    {"cmd":"briturnsetgroup","group":"Living Room","on":true,"r":255,"g":0,"b":0}
     {"cmd":"rescan"}
     {"cmd":"cloudsync"}
     {"cmd":"cloudstatus"}
@@ -288,6 +290,7 @@ def handle_list():
             "ip": config.get("ip", ""),
             "version": config.get("version"),
             "category": config.get("category"),
+            "group": config.get("group"),
             "online": bool(config.get("ip")),
             "spec": config.get("spec"),
             "codes": config.get("codes"),
@@ -597,6 +600,111 @@ def handle_briturnset(request=None):
     time.sleep(0.8)
     status = handle_briturnstatus({"id": config.get("id")})
     return {"ok": True, "packets": sent, "status": status}
+
+
+BRITURN_GROUP_MAX_LEN = 64
+
+
+def handle_briturngroup(request):
+    """Assign one briturn device to a named group; empty string clears it.
+
+    General rule: groups are a ROSTER FIELD owned by the user, not a wire
+    concept — the Zengge protocol has no group notion, so a group is just a
+    label the bridge fans commands out to. Only briturn entries are
+    addressable, names are trimmed and length-capped, and a missing/blank
+    group clears membership rather than creating a ghost group.
+    """
+    resolved = _briturn_resolve(request)
+    if isinstance(resolved, dict) and resolved.get("ok") is False:
+        return resolved
+    device_id = resolved["id"]
+    group = (request or {}).get("group")
+    if not isinstance(group, str):
+        return {"ok": False, "error": "group must be a string (empty clears)"}
+    group = group.strip()[:BRITURN_GROUP_MAX_LEN]
+
+    def merge(fresh):
+        for config in fresh:
+            if config.get("id") == device_id:
+                if group:
+                    config["group"] = group
+                else:
+                    config.pop("group", None)
+                return
+
+    try:
+        apply_to_disk(merge)
+    except Exception as exc:
+        return {"ok": False, "error": "devices write failed: " + type(exc).__name__}
+    return {"ok": True, "id": device_id, "group": group or None}
+
+
+def handle_briturnsetgroup(request):
+    """Send power and/or colour to every briturn device in a group.
+
+    General rule: group control fans the SAME packets out to every member
+    concurrently (the bridge is otherwise serial, and a 20-light group must
+    not take 20 round-trips); a member that is offline or fails is reported
+    in the reply but never aborts the group, and an empty group is a no-op
+    with an honest count rather than an error.
+    """
+    request = request or {}
+    group = request.get("group")
+    if not isinstance(group, str) or not group.strip():
+        return {"ok": False, "error": "group name required"}
+    group = group.strip()
+
+    want_power = "on" in request
+    want_color = any(key in request for key in ("r", "g", "b"))
+    if not want_power and not want_color:
+        return {"ok": False, "error": "nothing to set: pass 'on' and/or r/g/b"}
+
+    def channel(key, default=0):
+        try:
+            return min(max(int(request.get(key, default)), 0), 255)
+        except (TypeError, ValueError):
+            return default
+
+    packets = []
+    if want_power:
+        packets.append(BRITURN_ON if bool(request.get("on")) else BRITURN_OFF)
+    if want_color:
+        warm = channel("w")
+        packets.append(bytes([
+            0x31, channel("r"), channel("g"), channel("b"), warm,
+            0xF0 if warm else 0x0F, 0xAA,
+        ]))
+
+    members = [
+        config for config in list(_devices)
+        if config.get("category") == "briturn"
+        and config.get("group") == group
+        and config.get("ip")
+    ]
+    results = {}
+
+    def send(config):
+        applied = True
+        for packet in packets:
+            if _briturn_exchange(config["ip"], packet, expect_reply=False) is None:
+                applied = False
+                break
+        results[config["id"]] = applied
+
+    threads = [threading.Thread(target=send, args=(config,)) for config in members]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=8)
+
+    applied = sum(1 for ok in results.values() if ok)
+    return {
+        "ok": True,
+        "group": group,
+        "members": len(members),
+        "applied": applied,
+        "results": results,
+    }
 
 
 def handle_cloudsync():
@@ -1817,6 +1925,10 @@ def dispatch(request):
         return handle_briturnstatus(request)
     if cmd == "briturnset":
         return handle_briturnset(request)
+    if cmd == "briturngroup":
+        return handle_briturngroup(request)
+    if cmd == "briturnsetgroup":
+        return handle_briturnsetgroup(request)
     if cmd == "cloudsync":
         return handle_cloudsync()
     if cmd == "cloudstatus":

@@ -212,6 +212,16 @@ public final class DeviceStore: ObservableObject {
         public let b: Int
         public let w: Int
 
+        init(on: Bool, rawPower: Int, mode: Int, r: Int, g: Int, b: Int, w: Int) {
+            self.on = on
+            self.rawPower = rawPower
+            self.mode = mode
+            self.r = r
+            self.g = g
+            self.b = b
+            self.w = w
+        }
+
         init?(reply: [String: Any]) {
             guard let on = reply["on"] as? Bool,
                   let rawPower = reply["raw_power"] as? Int,
@@ -293,6 +303,89 @@ public final class DeviceStore: ObservableObject {
         } catch {
             statusErrors[device.id] = error.localizedDescription
         }
+    }
+
+    // MARK: - Briturn groups
+
+    /// Sorted distinct group names across the briturn roster. Derived, never
+    /// stored: a group with no members simply stops existing.
+    public var briturnGroups: [String] {
+        Array(Set(devices.compactMap { device -> String? in
+            guard device.category.lowercased() == "briturn" else { return nil }
+            guard let group = device.group, !group.isEmpty else { return nil }
+            return group
+        })).sorted()
+    }
+
+    public func members(of group: String) -> [Device] {
+        devices.filter {
+            $0.category.lowercased() == "briturn" && $0.group == group
+        }
+    }
+
+    /// Assigns one device to a group (nil clears) and re-lists so the roster
+    /// and every derived view update together.
+    public func setBriturnGroup(_ device: Device, to group: String?) async {
+        do {
+            let reply = try await bridge.request([
+                "cmd": "briturngroup",
+                "id": device.id,
+                "group": group ?? ""
+            ], timeout: 10)
+            guard reply["ok"] as? Bool == true else {
+                statusErrors[device.id] = reply["error"] as? String ?? "Group assign failed."
+                return
+            }
+            statusErrors[device.id] = nil
+            await refresh()
+        } catch {
+            statusErrors[device.id] = error.localizedDescription
+        }
+    }
+
+    /// Group-level power/colour. Optimistic paint per member (the same state
+    /// the single-device path uses), then the bridge's applied-count reply is
+    /// the authority; failed members fall back to their true state on the
+    /// next poll cycle.
+    public func setBriturnGroupState(
+        _ group: String,
+        on: Bool? = nil,
+        color: (red: Int, green: Int, blue: Int)? = nil
+    ) async {
+        guard on != nil || color != nil else { return }
+        let memberIDs = members(of: group).filter(\.hasAddress).map(\.id)
+        var payload: [String: Any] = ["cmd": "briturnsetgroup", "group": group]
+        if let on = on { payload["on"] = on }
+        if let color = color {
+            payload["r"] = color.red
+            payload["g"] = color.green
+            payload["b"] = color.blue
+        }
+        // Optimistic: members currently have a known state — paint it forward.
+        if var painted = briturnStatus[memberIDs.first ?? ""] {
+            if let on = on { painted = BriturnState(
+                on: on, rawPower: on ? 0x23 : 0x24, mode: painted.mode,
+                r: color?.red ?? painted.r,
+                g: color?.green ?? painted.g,
+                b: color?.blue ?? painted.b,
+                w: painted.w
+            ) }
+            for id in memberIDs where briturnStatus[id] != nil {
+                briturnStatus[id] = painted
+            }
+        }
+        do {
+            let reply = try await bridge.request(payload, timeout: 30)
+            guard reply["ok"] as? Bool == true else {
+                errorText = reply["error"] as? String ?? "Group set failed."
+                return
+            }
+            errorText = nil
+        } catch {
+            errorText = error.localizedDescription
+        }
+        // The poll cycle re-reads members and reconciles any failures.
+        await refreshBriturnStatuses()
     }
 
     // MARK: - Polling

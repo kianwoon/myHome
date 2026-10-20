@@ -81,6 +81,9 @@ struct DashboardView: View {
             .navigationTitle("MyHome")
         } content: {
             ScrollView {
+                if group == .briturn {
+                    BriturnGroupsBar()
+                }
                 if filtered.isEmpty {
                     VStack(spacing: 8) {
                         Image(systemName: group.icon)
@@ -885,6 +888,125 @@ struct DeviceDetailView: View {
     }
 }
 
+/// General rule: groups are presented INSIDE the Briturn category, not as
+/// sidebar entries — the group count follows the roster, not the navigation,
+/// and the two things you do with a group (all on/off, set a mood colour)
+/// are one tap on the chip without opening anything. An empty roster shows
+/// a hint that teaches assignment via the light's detail view.
+struct BriturnGroupsBar: View {
+    @EnvironmentObject private var store: DeviceStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Groups")
+                .font(.headline)
+            if store.briturnGroups.isEmpty {
+                Text("No groups yet — open a light below and assign a group to control several lights together.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 10) {
+                        ForEach(store.briturnGroups, id: \.self) { group in
+                            BriturnGroupCard(group: group)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+        }
+        .padding(.horizontal)
+        .padding(.top, 12)
+    }
+}
+
+struct BriturnGroupCard: View {
+    @EnvironmentObject private var store: DeviceStore
+    let group: String
+    @State private var color = Color(red: 1, green: 0, blue: 0)
+    @State private var applyTask: Task<Void, Never>?
+    @State private var syncedGroup: String?
+
+    private var members: [Device] { store.members(of: group) }
+    private var anyOn: Bool { members.contains { store.briturnStatus[$0.id]?.on == true } }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(group)
+                    .font(.callout.weight(.semibold))
+                    .lineLimit(1)
+                Text("\(members.count) light\(members.count == 1 ? "" : "s")")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Toggle("", isOn: Binding(
+                get: { anyOn },
+                set: { newValue in
+                    Task { await store.setBriturnGroupState(group, on: newValue) }
+                }
+            ))
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+            ColorPicker("", selection: $color, supportsOpacity: false)
+                .labelsHidden()
+                .onChange(of: color) { newValue in
+                    scheduleColorApply(newValue)
+                }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+        .onAppear { syncPicker() }
+        .onChange(of: store.briturnStatus) { _ in
+            if syncedGroup != group { syncPicker() }
+        }
+    }
+
+    /// Picker mirrors any member's colour; the device readback wins, same as
+    /// the single-light path.
+    private func syncPicker() {
+        guard let member = members.first,
+              let state = store.briturnStatus[member.id] else { return }
+        syncedGroup = group
+        color = Color(
+            red: Double(state.r) / 255,
+            green: Double(state.g) / 255,
+            blue: Double(state.b) / 255
+        )
+    }
+
+    private func scheduleColorApply(_ newValue: Color) {
+        applyTask?.cancel()
+        guard let rgb = BriturnColorUtil.extractRGB(newValue) else { return }
+        applyTask = Task {
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard !Task.isCancelled else { return }
+            await store.setBriturnGroupState(group, color: rgb)
+        }
+    }
+}
+
+enum BriturnColorUtil {
+    static func extractRGB(_ color: Color) -> (red: Int, green: Int, blue: Int)? {
+        #if canImport(AppKit)
+        let ns = NSColor(color).usingColorSpace(.sRGB)
+        guard let ns = ns else { return nil }
+        return (
+            red: Int((ns.redComponent * 255).rounded()),
+            green: Int((ns.greenComponent * 255).rounded()),
+            blue: Int((ns.blueComponent * 255).rounded())
+        )
+        #else
+        return nil
+        #endif
+    }
+}
+
 /// General rule: briturn devices are controlled through their own wire
 /// protocol (Zengge 2014), not DPS, so their detail section owns a dedicated
 /// controls view fed by the store's briturn status cache. A device with no IP
@@ -895,6 +1017,21 @@ struct BriturnControlsView: View {
     let device: Device
     @State private var color = Color(red: 1, green: 0, blue: 0)
     @State private var applyTask: Task<Void, Never>?
+    @State private var showingNewGroup = false
+    @State private var newGroupName = ""
+
+    private var groupBinding: Binding<String> {
+        Binding(
+            get: { device.group ?? "" },
+            set: { newValue in
+                if newValue == "__new__" {
+                    showingNewGroup = true
+                } else {
+                    Task { await store.setBriturnGroup(device, to: newValue.isEmpty ? nil : newValue) }
+                }
+            }
+        )
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -938,6 +1075,27 @@ struct BriturnControlsView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
+
+            Picker("Group", selection: groupBinding) {
+                Text("None").tag("")
+                ForEach(store.briturnGroups, id: \.self) { name in
+                    Text(name).tag(name)
+                }
+                Text("New Group…").tag("__new__")
+            }
+            .pickerStyle(.menu)
+            .alert("New Group", isPresented: $showingNewGroup) {
+                TextField("Name", text: $newGroupName)
+                Button("Create") {
+                    let name = newGroupName.trimmingCharacters(in: .whitespaces)
+                    guard !name.isEmpty else { return }
+                    newGroupName = ""
+                    Task { await store.setBriturnGroup(device, to: name) }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Lights sharing a group can be switched and coloured together.")
+            }
         }
         .onAppear { syncPicker(from: store.briturnStatus[device.id]) }
         .onChange(of: store.briturnStatus[device.id]) { newState in
@@ -961,25 +1119,11 @@ struct BriturnControlsView: View {
     /// is sent.
     private func scheduleColorApply(_ newValue: Color) {
         applyTask?.cancel()
-        guard let rgb = extractRGB(newValue) else { return }
+        guard let rgb = BriturnColorUtil.extractRGB(newValue) else { return }
         applyTask = Task {
             try? await Task.sleep(nanoseconds: 350_000_000)
             guard !Task.isCancelled else { return }
             await store.setBriturn(device, color: rgb)
         }
-    }
-
-    private func extractRGB(_ color: Color) -> (red: Int, green: Int, blue: Int)? {
-        #if canImport(AppKit)
-        let ns = NSColor(color).usingColorSpace(.sRGB)
-        guard let ns = ns else { return nil }
-        return (
-            red: Int((ns.redComponent * 255).rounded()),
-            green: Int((ns.greenComponent * 255).rounded()),
-            blue: Int((ns.blueComponent * 255).rounded())
-        )
-        #else
-        return nil
-        #endif
     }
 }
