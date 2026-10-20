@@ -72,20 +72,36 @@ public final class BLEManager: NSObject, ObservableObject {
     private func clamped(_ v: Int) -> UInt8 { UInt8(min(max(v, 0), 255)) }
 
     public func setPower(id: String, on: Bool) {
-        // Both power variants, wrapped: legacy 0x71 (older fw) and 0x3B mode
-        // 0x23 (v5+). Sending both is harmless — the profile ignores unknowns.
+        // VERIFIED packet (Codex live test on IOTWF31D, Bleak write with
+        // response): payload = 3B 23|24 00*7 32 00 00 + checksum(sum).
+        // Fixed field 0x32 per the integration's power builder.
         let p: UInt8 = on ? 0x23 : 0x24
-        send(id: id, command: checksummed([0x71, p, 0x0F]))
-        var modern: [UInt8] = [0x3B, p, 0x00, 0x00, 0x64, 0x00, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
-        modern.append(modern.reduce(0, +) & 0xFF)
-        send(id: id, command: modern)
+        var payload: [UInt8] = [0x3B, p, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x32, 0x00, 0x00]
+        payload.append(payload.reduce(0, +) & 0xFF)
+        send(id: id, command: payload)
     }
 
-    /// Pure colour: mode 0x5A (RGBCW) with white channels zeroed — same
-    /// white-off rule as the WiFi path.
+    /// Pure colour over BLE: HSB form from the LEDnetWF profile
+    /// (e0 01 00 c1 H S B 00 00 00 00 14 00 00 + checksum).
     public func setColor(id: String, red: Int, green: Int, blue: Int) {
-        send(id: id, command: checksummed(
-            [0x31, clamped(red), clamped(green), clamped(blue), 0, 0, 0x5A, 0x0F]))
+        let r = Double(clamped(red)), g = Double(clamped(green)), b = Double(clamped(blue))
+        let maxC = max(r, g, b), minC = min(r, g, b)
+        let bri = maxC == 0 ? 0 : maxC / 255.0 * 100.0
+        let sat = maxC == 0 ? 0 : (maxC - minC) / maxC * 100.0
+        var hue = 0.0
+        if maxC != minC {
+            let delta = maxC - minC
+            if maxC == r { hue = ((g - b) / delta).truncatingRemainder(dividingBy: 6) }
+            else if maxC == g { hue = (b - r) / delta + 2 }
+            else { hue = (r - g) / delta + 4 }
+            hue *= 60
+            if hue < 0 { hue += 360 }
+            hue = hue / 360.0 * 255.0
+        }
+        var cmd: [UInt8] = [0xE0, 0x01, 0x00, 0xC1, UInt8(hue.rounded()), UInt8(sat.rounded()),
+                            UInt8(bri.rounded()), 0x00, 0x00, 0x00, 0x00, 0x14, 0x00, 0x00]
+        cmd.append(cmd.reduce(0, +) & 0xFF)
+        send(id: id, command: cmd)
     }
 
     /// Warm-white mode at the given level (0-255 on the white channel):
@@ -117,11 +133,11 @@ public final class BLEManager: NSObject, ObservableObject {
         guard let peripheral = peripherals[id] else { return }
         scheduleDisconnect(id: id)
         if notifyReady[id] == true, let writeChar = writeChars[id] {
-            peripheral.writeValue(Data(wrapped), for: writeChar, type: .withoutResponse)
+            peripheral.writeValue(Data(wrapped), for: writeChar, type: .withResponse)
         } else {
             connectAndThen(id: id) { [weak self] in
                 guard let self, let writeChar = self.writeChars[id] else { return }
-                peripheral.writeValue(Data(wrapped), for: writeChar, type: .withoutResponse)
+                peripheral.writeValue(Data(wrapped), for: writeChar, type: .withResponse)
             }
         }
     }
@@ -149,30 +165,30 @@ public final class BLEManager: NSObject, ObservableObject {
         }
     }
 
-    /// Decode the ZengGe manufacturer-data block (company 0x5A**) into state.
-    /// Format B (bleak-style, company id as dictionary key):
-    ///   [0] sta [1] ble_ver [2-7] mac [8-9] product [10] fw [11] led_ver
-    ///   [12] check_key_flag [13] fw_flag [14] power [15] mode [16] sub_mode
-    ///   [17] white/value [18-20] r g b [21] ww [22] led_ver2 [23] cw
-    /// v7+ devices with service data report state from offset 3 instead.
+    /// Decode the ZengGe v7 manufacturer block. Verified live: with company
+    /// id included (CoreBluetooth), POWER sits at byte 3 (0x23 on / 0x24 off).
+    /// Only power is trusted here — colour offsets vary by firmware and painted
+    /// garbage once already. r/g/b are decoded only when sub_mode is 0xF0
+    /// (RGB active); otherwise the state is treated as non-colour.
     private func decodeState(_ id: String, mfr: Data, hasServiceData: Bool, name: String) {
         let b = [UInt8](mfr)
-        guard b.count >= 24 else { return }
+        guard b.count >= 12 else { return }
         let stateOffset = (hasServiceData && b[1] >= 7) ? 3 : 14
         guard b.count >= stateOffset + 11 else { return }
         let s = Array(b[stateOffset...])
         let on = s[0] == 0x23
         let subMode = s[2]
         let r = Int(s[4]), g = Int(s[5]), bl = Int(s[6])
-        let isWhite = subMode == 0x0F || (r == 0 && g == 0 && bl == 0)
+        let isWhite = subMode == 0x0F
+        let rgbActive = subMode == 0xF0 || (!isWhite && !(r == 0 && g == 0 && bl == 0))
         let state = DeviceStore.BriturnState(
             on: on,
             rawPower: Int(s[0]),
             mode: Int(s[1]),
-            r: isWhite ? 0 : Int(s[4]),
-            g: isWhite ? 0 : Int(s[5]),
-            b: isWhite ? 0 : Int(s[6]),
-            w: Int(s[3])
+            r: (rgbActive && !isWhite) ? r : 0,
+            g: (rgbActive && !isWhite) ? g : 0,
+            b: (rgbActive && !isWhite) ? bl : 0,
+            w: rgbActive ? 0 : Int(s[3])
         )
         states[id] = state
         rawStates[id] = state
