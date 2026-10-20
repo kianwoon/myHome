@@ -817,9 +817,17 @@ public final class DeviceStore: ObservableObject {
     }
 
     /// Fetch upstream capability metadata once; the bridge caches per device.
+    /// General rule: briturn devices have NO DPS surface and their spec/codes
+    /// stay nil forever — including them in this gate made the cloud-backed
+    /// requests refire on every refresh, hogging the serial bridge and
+    /// starving the roster fetch (bridge flap).
+    private func needsSpecsOrCodes(_ device: Device) -> Bool {
+        !device.isBLE && device.category.lowercased() != "briturn"
+    }
+
     private func requestSpecsIfNeeded() {
         guard !specsFetched, !specsFetching else { return }
-        guard devices.contains(where: { $0.spec == nil }) else {
+        guard devices.contains(where: { needsSpecsOrCodes($0) && $0.spec == nil }) else {
             specsFetched = true
             return
         }
@@ -843,7 +851,7 @@ public final class DeviceStore: ObservableObject {
     /// bridge caches the map in devices.json); rescan forces a refresh.
     private func requestCodeMapIfNeeded() {
         guard !codesFetching, !codesFetched else { return }
-        guard devices.contains(where: { $0.codes == nil }) else {
+        guard devices.contains(where: { needsSpecsOrCodes($0) && $0.codes == nil }) else {
             codesFetched = true
             return
         }

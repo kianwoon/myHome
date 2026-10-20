@@ -13,6 +13,11 @@ struct BridgePingTest {
             return
         }
 
+        if mode == "listdecode" {
+            proveListDecoding()
+            return
+        }
+
         if mode == "fanspeed" {
             proveFanSpeed()
             return
@@ -86,8 +91,30 @@ struct BridgePingTest {
     }
 
     /// Unexpected DPS shapes must decode into the loose enum, never trap.
-    private static func proveLooseDecoding() {
-        let payload: [String: Any] = [
+    /// Decodes the REAL bridge list reply (path in argv[2]) exactly as
+    /// DeviceStore.refresh does — proves or disproves roster decoding.
+    private static func proveListDecoding() {
+        let path = CommandLine.arguments.count > 2 ? CommandLine.arguments[2] : "/tmp/reply_line.json"
+        do {
+            let raw = try String(contentsOfFile: path, encoding: .utf8)
+            guard let data = raw.data(using: .utf8),
+                  let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  obj["ok"] as? Bool == true,
+                  let rawDevices = obj["devices"] else {
+                print("LIST_BAD_REPLY"); exit(1)
+            }
+            let listData = try JSONSerialization.data(withJSONObject: rawDevices)
+            let decoded = try JSONDecoder().decode([Device].self, from: listData)
+            let byCategory = Dictionary(grouping: decoded, by: { $0.category }).mapValues(\.count)
+            print("LIST_DECODED \(decoded.count) \(byCategory)")
+            exit(0)
+        } catch {
+            print("LIST_DECODE_FAILED \(error)")
+            exit(1)
+        }
+    }
+
+    private static func proveLooseDecoding() {        let payload: [String: Any] = [
             "1": true,
             "2": [1, 2, 3],
             "3": ["nested": "value"],
