@@ -552,13 +552,24 @@ public final class DeviceStore: ObservableObject {
     /// confirm and clear it, and only the set command's own readback — taken
     /// after the bulb's settle delay — may overturn a fresh intent (the
     /// command was genuinely lost).
+    /// INVARIANT: USER INTENT OUTRANKS A STALE WIRE READ, per channel.
+    /// A wire read may only repaint a channel the user just commanded when it
+    /// agrees with what was painted (tolerance-aware for scaled values) or
+    /// when the grace has expired / the read is authoritative. Channels the
+    /// user did not touch are never defended. Brightness `w` is a percent×2.55
+    /// rounded int, so agreement is ±4; colour channels echo raw, so exact.
     private struct BriturnIntent {
-        let on: Bool
+        var on: Bool?
+        var w: Int?
+        var color: (r: Int, g: Int, b: Int)?
         let at: Date
     }
 
     private var briturnIntent: [String: BriturnIntent] = [:]
     private static let briturnIntentGrace: TimeInterval = 8
+    /// `w` is `percent × 2.55` rounded to Int; device echo may drift by a
+    /// point or two, so agreement is a band, not equality.
+    private static let briturnBrightnessTolerance = 4
 
     /// General rule: USER INTENT OUTRANKS A STALE WIRE READ — for DPS values
     /// too. A set command paints its optimistic value, but the bridge's
@@ -579,30 +590,78 @@ public final class DeviceStore: ObservableObject {
     private var dpsIntent: [String: DpsIntent] = [:]
     private static let dpsIntentGrace: TimeInterval = briturnIntentGrace
 
-    /// Paints a wire-read state unless it fights a fresh user intent.
+    /// Paints a wire-read state unless it fights a fresh user intent, judged
+    /// channel by channel: on/colour exactly, brightness within tolerance.
     private func applyBriturnWireState(_ id: String, _ state: BriturnState, authoritative: Bool = false) {
-        if let intent = briturnIntent[id],
-           Date().timeIntervalSince(intent.at) < Self.briturnIntentGrace {
-            if state.on == intent.on {
-                // Device confirmed the user's instruction.
-                briturnIntent.removeValue(forKey: id)
-            } else if !authoritative {
-                // Mid-transition poll: keep showing the user's instruction.
-                return
+        guard var intent = briturnIntent[id] else {
+            briturnStatus[id] = state
+            return
+        }
+        guard Date().timeIntervalSince(intent.at) < Self.briturnIntentGrace else {
+            // Grace expired: the wire wins for every channel.
+            briturnIntent.removeValue(forKey: id)
+            briturnStatus[id] = state
+            return
+        }
+        var contradicts = false
+        if let want = intent.on {
+            if state.on == want || authoritative {
+                intent.on = nil
             } else {
-                // Authoritative readback says the command never took: the
-                // device state is the truth, stop defending the intent.
-                briturnIntent.removeValue(forKey: id)
+                contradicts = true
             }
         }
+        if let want = intent.w {
+            if abs(state.w - want) <= Self.briturnBrightnessTolerance || authoritative {
+                intent.w = nil
+            } else {
+                contradicts = true
+            }
+        }
+        if let want = intent.color {
+            if (state.r == want.r && state.g == want.g && state.b == want.b) || authoritative {
+                intent.color = nil
+            } else {
+                contradicts = true
+            }
+        }
+        if contradicts && !authoritative {
+            // Mid-transition poll: keep showing what the user painted, but
+            // retain the channels the device already confirmed.
+            briturnIntent[id] = intent
+            return
+        }
+        // Confirmed on every touched channel, or the authoritative readback
+        // says the command never took: the wire is the truth.
+        briturnIntent.removeValue(forKey: id)
         briturnStatus[id] = state
     }
 
-    private func recordBriturnIntent(_ ids: [String], on: Bool) {
-        let intent = BriturnIntent(on: on, at: Date())
-        for id in ids {
-            briturnIntent[id] = intent
+    /// The intent snapshot for what a setter just painted: only the channels
+    /// the user actually commanded, using the painted values themselves. A
+    /// brightness command on a colour-mode light is carried by the scaled RGB
+    /// it painted; on a white-mode light by `w`.
+    private func briturnIntentSnapshot(
+        on: Bool?,
+        color: (red: Int, green: Int, blue: Int)?,
+        brightness: Int?,
+        paintedWhite: Bool,
+        painted: BriturnState
+    ) -> BriturnIntent {
+        let paintedColor: (r: Int, g: Int, b: Int)?
+        if let color = color {
+            paintedColor = (r: color.red, g: color.green, b: color.blue)
+        } else if brightness != nil && !paintedWhite {
+            paintedColor = (r: painted.r, g: painted.g, b: painted.b)
+        } else {
+            paintedColor = nil
         }
+        return BriturnIntent(
+            on: on,
+            w: paintedWhite ? painted.w : nil,
+            color: paintedColor,
+            at: Date()
+        )
     }
 
     private func isBriturn(_ device: Device) -> Bool {
@@ -667,9 +726,6 @@ public final class DeviceStore: ObservableObject {
         }
         if let brightness = brightness { payload["brightness"] = brightness }
         if white { payload["w"] = 128 }
-        if let on = on {
-            recordBriturnIntent([device.id], on: on)
-        }
         // Optimistic paint from the request.
         let prev = briturnStatus[device.id]
         let nextOn = on ?? (prev?.on ?? false)
@@ -677,7 +733,7 @@ public final class DeviceStore: ObservableObject {
         let paintedW = paintedWhite
             ? brightness.map { min(Int((Double($0) * 2.55).rounded()), 255) }
             : nil
-        briturnStatus[device.id] = BriturnState(
+        let painted = BriturnState(
             on: nextOn,
             rawPower: nextOn ? 0x23 : 0x24,
             mode: prev?.mode ?? 97,
@@ -685,6 +741,13 @@ public final class DeviceStore: ObservableObject {
             g: paintedWhite ? 0 : (color?.green ?? prev?.g ?? 255),
             b: paintedWhite ? 0 : (color?.blue ?? prev?.b ?? 255),
             w: paintedW ?? prev?.w ?? 0
+        )
+        briturnStatus[device.id] = painted
+        // Defend exactly what was painted, for every channel the user touched
+        // (power, brightness/white, colour) — not just power.
+        briturnIntent[device.id] = briturnIntentSnapshot(
+            on: on, color: color, brightness: brightness,
+            paintedWhite: paintedWhite, painted: painted
         )
         do {
             let reply = try await bridge.request(payload, timeout: 30)
@@ -766,7 +829,7 @@ public final class DeviceStore: ObservableObject {
         let paintedW = paintedWhite
             ? brightness.map { min(Int((Double($0) * 2.55).rounded()), 255) }
             : nil
-        briturnStatus[device.id] = BriturnState(
+        let painted = BriturnState(
             on: nextOn,
             rawPower: nextOn ? 0x23 : 0x24,
             mode: prev?.mode ?? 97,
@@ -775,7 +838,11 @@ public final class DeviceStore: ObservableObject {
             b: paintedWhite ? 0 : (color?.blue ?? prev?.b ?? 255),
             w: paintedW ?? prev?.w ?? 0
         )
-        if let on = on { recordBriturnIntent([device.id], on: on) }
+        briturnStatus[device.id] = painted
+        briturnIntent[device.id] = briturnIntentSnapshot(
+            on: on, color: color, brightness: brightness,
+            paintedWhite: paintedWhite, painted: painted
+        )
         // Advertised state reconciles; force a delayed re-read of the cache.
         Task { [weak self] in
             try? await Task.sleep(nanoseconds: 2_000_000_000)
@@ -918,26 +985,35 @@ public final class DeviceStore: ObservableObject {
                 g = min(Int(Double(g) * scale), 255)
                 b = min(Int(Double(b) * scale), 255)
             }
-            briturnStatus[id] = BriturnState(
+            let painted = BriturnState(
                 on: nextOn,
                 rawPower: nextOn ? 0x23 : 0x24,
                 mode: prev?.mode ?? 97,
                 r: r, g: g, b: b,
                 w: paintedW ?? prev?.w ?? 0
             )
-        }
-        if let on = on {
-            recordBriturnIntent(memberIDs, on: on)
+            briturnStatus[id] = painted
+            // Each member defends its OWN painted channels: colour-only sets
+            // defend colour, white-mode brightness defends w, and every
+            // member keeps its individual power display untouched.
+            briturnIntent[id] = briturnIntentSnapshot(
+                on: on, color: color, brightness: brightness,
+                paintedWhite: paintedWhite, painted: painted
+            )
         }
         do {
             let reply = try await bridge.request(payload, timeout: 30)
             guard reply["ok"] as? Bool == true else {
                 errorText = reply["error"] as? String ?? "Group set failed."
+                // Nothing was applied: drop the defensive intents so the next
+                // poll is free to correct the optimistic paint.
+                for id in memberIDs { briturnIntent.removeValue(forKey: id) }
                 return
             }
             errorText = nil
         } catch {
             errorText = error.localizedDescription
+            for id in memberIDs { briturnIntent.removeValue(forKey: id) }
         }
         // The poll cycle re-reads members and reconciles any failures, but a
         // full sweep takes seconds — reconcile just this group immediately.
