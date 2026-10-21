@@ -1351,6 +1351,28 @@ struct BriturnGroupsBar: View {
     @EnvironmentObject private var store: DeviceStore
     @Binding var selection: String?
 
+    /// General rule: group chips are ordered ON-first — a group with at least
+    /// one confirmed-on member leads — then alphabetically, exactly like the
+    /// light grid's ON-first/name tie-break. Derived per render from live
+    /// `briturnStatus`; the store's roster order is never mutated. A group
+    /// whose members all lack status counts as OFF (status proves ON, never
+    /// the absence of it).
+    private var orderedGroups: [String] {
+        store.briturnGroups.sorted { lhs, rhs in
+            let leftOn = anyOn(lhs)
+            let rightOn = anyOn(rhs)
+            if leftOn != rightOn { return leftOn }
+            let leftName = lhs.lowercased()
+            let rightName = rhs.lowercased()
+            if leftName != rightName { return leftName < rightName }
+            return lhs < rhs
+        }
+    }
+
+    private func anyOn(_ group: String) -> Bool {
+        store.members(of: group).contains { store.briturnStatus[$0.id]?.on == true }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Groups")
@@ -1371,7 +1393,7 @@ struct BriturnGroupsBar: View {
                     BriturnAllChip(isSelected: selection == nil) {
                         selection = nil
                     }
-                    ForEach(store.briturnGroups, id: \.self) { group in
+                    ForEach(orderedGroups, id: \.self) { group in
                         BriturnGroupCard(
                             group: group,
                             isSelected: selection == group,
