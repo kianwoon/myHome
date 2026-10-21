@@ -157,7 +157,8 @@ struct DashboardView: View {
                     }
                 }
             }
-            .frame(minWidth: 150, idealWidth: 175)
+            .frame(minWidth: 150, idealWidth: 175, maxWidth: 230)
+            .fixedSize(horizontal: true, vertical: false)
             .navigationTitle("MyHome")
 
             Divider()
