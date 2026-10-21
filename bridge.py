@@ -294,10 +294,12 @@ def handle_rename(request):
 def handle_setroom(request):
     """Assign free-text room metadata to any roster device.
 
-    General rule: a room is LOCAL roster metadata, not cloud identity — it is
-    written only to devices.json so every future list/cloudsync/rescan keeps
-    it. Empty room clears the assignment; whitespace-only is rejected rather
-    than silently creating a blank room.
+    General rule: `room` and `group` are independent local metadata fields with
+    disjoint owners. `room` is a Tuya device's location (this handler's only
+    write target); `group` is source-owned Briturn fixture grouping and is
+    never read or written here. `room` is written only to devices.json so
+    every future list/cloudsync/rescan keeps it. Empty room clears the
+    assignment; whitespace-only is rejected rather than storing a blank room.
     """
     device_id = request.get("id")
     room = request.get("room")
@@ -318,9 +320,9 @@ def handle_setroom(request):
             if config.get("id") != device_id:
                 continue
             if stripped:
-                config["group"] = stripped
+                config["room"] = stripped
             else:
-                config.pop("group", None)
+                config.pop("room", None)
 
     try:
         apply_to_disk(merge)
@@ -342,6 +344,7 @@ def handle_list():
             "version": config.get("version"),
             "category": config.get("category"),
             "group": config.get("group"),
+            "room": config.get("room"),
             "online": bool(config.get("ip")),
             "spec": config.get("spec"),
             "codes": config.get("codes"),

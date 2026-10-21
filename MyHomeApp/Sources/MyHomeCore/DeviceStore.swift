@@ -781,13 +781,13 @@ public final class DeviceStore: ObservableObject {
         }
     }
 
-    /// Distinct non-empty room names across the WHOLE roster. A room is local
-    /// roster metadata (the bridge's `group` field), derived not stored, so a
-    /// room with no members simply stops existing.
+    /// Distinct non-empty Tuya room names across the roster. `room` is the
+    /// Tuya location field; Briturn's `group` is fixture metadata with a
+    /// different owner and must never surface as a room. Derived not stored.
     public var roomNames: [String] {
         Array(Set(devices.compactMap { device -> String? in
-            guard let room = device.group else { return nil }
-            let trimmed = room.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard device.category.lowercased() != "briturn" else { return nil }
+            let trimmed = device.room.trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmed.isEmpty ? nil : trimmed
         })).sorted()
     }

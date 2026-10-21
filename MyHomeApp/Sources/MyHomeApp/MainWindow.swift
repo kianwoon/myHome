@@ -75,7 +75,7 @@ struct DashboardView: View {
             result = result.filter { $0.group == filter }
         }
         if group == .plugs, let filter = roomFilter {
-            result = result.filter { $0.group == filter }
+            result = result.filter { $0.room == filter }
         }
         return result
     }
@@ -233,8 +233,8 @@ struct DeviceCard: View {
     private var isBriturn: Bool { device.category.lowercased() == "briturn" }
 
     private var roomLabel: String? {
-        guard !isBriturn, let room = device.group else { return nil }
-        let trimmed = room.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !isBriturn else { return nil }
+        let trimmed = device.room.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }
 
@@ -374,7 +374,7 @@ struct DeviceCard: View {
         .onTapGesture(perform: onSelect)
         .contextMenu {
             Button("Rename…") { showingRename = true }
-            if !device.isBLE {
+            if !device.isBLE && !isBriturn {
                 Button("Set Room…") { showingRoom = true }
             }
         }
@@ -447,8 +447,9 @@ struct RenameSheet: View {
 }
 
 /// General rule: a room is LOCAL roster metadata, so this sheet edits the
-/// bridge's `group` field directly (no cloud round-trip) and offers the room
-/// names already in use house-wide so naming stays consistent.
+/// bridge's `room` field directly (no cloud round-trip) and offers the room
+/// names already in use house-wide so naming stays consistent. This is NOT
+/// Briturn's `group` field, which has its own editor on the light detail view.
 struct RoomSheet: View {
     @EnvironmentObject private var store: DeviceStore
     @Environment(\.dismiss) private var dismiss
@@ -458,7 +459,7 @@ struct RoomSheet: View {
 
     init(device: Device) {
         self.device = device
-        _room = State(initialValue: device.group ?? "")
+        _room = State(initialValue: device.room)
     }
 
     private var trimmed: String { room.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -1072,7 +1073,7 @@ struct DeviceDetailView: View {
                     Spacer()
 
                     HStack(spacing: 8) {
-                        if !device.isBLE {
+                        if !device.isBLE && device.category.lowercased() != "briturn" {
                             Button("Set Room…") { showingRoom = true }
                                 .controlSize(.small)
                         }

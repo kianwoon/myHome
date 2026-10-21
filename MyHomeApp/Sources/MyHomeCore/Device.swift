@@ -8,6 +8,8 @@ public struct Device: Identifiable, Decodable, Hashable {
     public let version: String?
     public let category: String
     public let group: String?
+    /// Tuya device location. Independent of `group`, which is Briturn-only.
+    public let room: String
     public let online: Bool
     public let spec: [String: DPDeclaration]?
     public let codes: [String: String]?
@@ -23,7 +25,8 @@ public struct Device: Identifiable, Decodable, Hashable {
         group: String? = nil,
         online: Bool,
         spec: [String: DPDeclaration]? = nil,
-        codes: [String: String]? = nil
+        codes: [String: String]? = nil,
+        room: String = ""
     ) {
         self.id = id
         self.name = name
@@ -31,13 +34,14 @@ public struct Device: Identifiable, Decodable, Hashable {
         self.version = version
         self.category = category
         self.group = group
+        self.room = room
         self.online = online
         self.spec = spec
         self.codes = codes
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, ip, version, category, group, online, spec, codes
+        case id, name, ip, version, category, group, room, online, spec, codes
     }
 
     public init(from decoder: Decoder) throws {
@@ -47,6 +51,7 @@ public struct Device: Identifiable, Decodable, Hashable {
         ip = try container.decodeIfPresent(String.self, forKey: .ip) ?? ""
         category = try container.decodeIfPresent(String.self, forKey: .category) ?? ""
         group = try container.decodeIfPresent(String.self, forKey: .group)
+        room = try container.decodeIfPresent(String.self, forKey: .room) ?? ""
         online = try container.decodeIfPresent(Bool.self, forKey: .online) ?? false
         spec = try container.decodeIfPresent([String: DPDeclaration].self, forKey: .spec)
         codes = try container.decodeIfPresent([String: String].self, forKey: .codes)

@@ -717,6 +717,8 @@ class TestBridgeSetRoom(unittest.TestCase):
         self.roster = [
             {'id': 'plug1', 'name': 'Desk Plug', 'ip': '10.0.0.5',
              'version': 3.3, 'category': 'cz', 'key': LOCAL_KEY},
+            {'id': 'briturn-1', 'name': 'Study Light', 'ip': '10.0.0.6',
+             'version': 3.3, 'category': 'briturn', 'group': 'master back'},
         ]
         with open(bridge.DEVICES_PATH, 'w', encoding='utf-8') as handle:
             json.dump(self.roster, handle)
@@ -729,7 +731,14 @@ class TestBridgeSetRoom(unittest.TestCase):
 
     def stored_room(self):
         with open(self.bridge.DEVICES_PATH, 'r', encoding='utf-8') as handle:
-            return json.load(handle)[0].get('group')
+            return json.load(handle)[0].get('room')
+
+    def stored_group(self, device_id):
+        with open(self.bridge.DEVICES_PATH, 'r', encoding='utf-8') as handle:
+            for device in json.load(handle):
+                if device['id'] == device_id:
+                    return device.get('group')
+        return None
 
     def test_setroom_persists_and_clears(self):
         result = self.bridge.handle_setroom(
@@ -742,6 +751,20 @@ class TestBridgeSetRoom(unittest.TestCase):
         self.assertTrue(result['ok'], result)
         self.assertEqual(result['room'], '')
         self.assertIsNone(self.stored_room())
+
+    def test_setroom_never_writes_group(self):
+        result = self.bridge.handle_setroom(
+            {'id': 'plug1', 'room': 'Study Room'})
+        self.assertTrue(result['ok'], result)
+        self.assertIsNone(self.stored_group('plug1'))
+
+        self.assertEqual(self.stored_group('briturn-1'), 'master back')
+
+        listed = {d['id']: d for d in self.bridge.handle_list()['devices']}
+        self.assertEqual(listed['plug1']['room'], 'Study Room')
+        self.assertIsNone(listed['plug1']['group'])
+        self.assertIsNone(listed['briturn-1']['room'])
+        self.assertEqual(listed['briturn-1']['group'], 'master back')
 
     def test_setroom_rejects_bad_input(self):
         self.assertFalse(self.bridge.handle_setroom(

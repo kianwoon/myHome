@@ -7,7 +7,7 @@ Release rollup. The **Monitor reliability** changes below ship in this PR; the
 are listed here so the release changelog is complete.
 
 ### Local rooms (MyHome bridge/app)
-* Devices can now be assigned a free-text room (for example "Study Room") from the app. The bridge's `setroom` command writes the local roster's `group` field only — rooms are home metadata, never pushed to Tuya Cloud — and the dashboard filters plugs by room and shows a room badge on each tile. Applies to any roster device, and an empty room clears the assignment.
+* Tuya devices can now be assigned a free-text room (for example "Study Room") from the app. The bridge's `setroom` command writes the local roster's `room` field only — separate from Briturn's fixture `group` — so rooms are home metadata, never pushed to Tuya Cloud, and never collide with Briturn grouping. The dashboard filters plugs by room and shows a room badge on each tile. Applies to any non-Briturn roster device, and an empty room clears the assignment.
 
 ### Monitor (experimental) reliability
 * **Monitor now owns reconnection.** Monitored devices are forced to fail fast on send errors (`socketRetryLimit = 0`) so a broken connection can no longer (a) block the single reactor thread inside the device's own retry/connect loop for tens of seconds, stalling every other monitored device, or (b) silently open a replacement socket the selector never watches — which previously caused a device to stop delivering updates with no disconnect ever reported (Linux/epoll) or spin in an error-log loop (Windows/select). See [#713](https://github.com/jasonacox/tinytuya/issues/713).
