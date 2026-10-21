@@ -778,6 +778,47 @@ class TestBridgeSetRoom(unittest.TestCase):
         self.assertIsNone(self.stored_room())
 
 
+class TestScheduleInstruction(unittest.TestCase):
+    """Schedule instructions instantiate the device's OWN declared control dp.
+
+    Regression: schedadd used a Boolean-only power-code lookup, so a curtain
+    (Enum control dp "control") got a schedule with code "switch"/value true —
+    a dp it does not have. The timer fired; the curtain never moved.
+    """
+
+    def setUp(self):
+        import bridge
+        self.bridge = bridge
+
+    def curtain(self):
+        # Shape mirrors the live spec of the living-room curtain.
+        return {'spec': {'1': {'code': 'control', 'type': 'Enum'},
+                         '2': {'code': 'percent_control', 'type': 'Integer'}}}
+
+    def plug(self):
+        return {'spec': {'1': {'code': 'switch_1', 'type': 'Boolean'}}}
+
+    def test_enum_control_uses_open_close(self):
+        self.assertEqual(
+            self.bridge._schedule_instruction(self.curtain(), True),
+            ('control', 'open'))
+        self.assertEqual(
+            self.bridge._schedule_instruction(self.curtain(), False),
+            ('control', 'close'))
+
+    def test_boolean_control_keeps_bool(self):
+        self.assertEqual(
+            self.bridge._schedule_instruction(self.plug(), True),
+            ('switch_1', True))
+        self.assertEqual(
+            self.bridge._schedule_instruction(self.plug(), False),
+            ('switch_1', False))
+
+    def test_unknown_spec_falls_back_to_switch(self):
+        self.assertEqual(
+            self.bridge._schedule_instruction({}, True), ('switch', True))
+
+
 class TestBridgeCloudsyncRooms(unittest.TestCase):
     """cloudsync fills room from the cloud map, keeping manual fallbacks."""
 

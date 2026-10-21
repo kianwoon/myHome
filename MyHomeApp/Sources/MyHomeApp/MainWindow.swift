@@ -73,6 +73,9 @@ struct DashboardView: View {
     /// The Plugs-internal `roomFilter` is preserved but dormant until the user
     /// returns to the Plugs category.
     @State private var selectedRoom: String?
+    /// Three-column split visibility. Derived from `selectedDevice` (updated in
+    /// `.onChange`): no selection collapses the detail column entirely.
+    @State private var columnVisibility: NavigationSplitViewVisibility = .doubleColumn
 
     private var filtered: [Device] {
         var result: [Device]
@@ -123,7 +126,7 @@ struct DashboardView: View {
     }
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             List(selection: Binding<DeviceGroup?>(
                 get: { selectedRoom == nil ? group : nil },
                 set: { newValue in
@@ -202,16 +205,12 @@ struct DashboardView: View {
         } detail: {
             if let device = selectedDevice {
                 DeviceDetailView(device: device)
-            } else {
-                VStack(spacing: 8) {
-                    Image(systemName: "hand.tap")
-                        .font(.largeTitle)
-                        .foregroundStyle(.secondary)
-                    Text("Select a device to inspect its DPS.")
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+        }
+        .onChange(of: selectedDevice?.id) { newID in
+            // Detail pane visibility == selection state: `.doubleColumn` omits
+            // the third column, so no empty/placeholder pane is left behind.
+            columnVisibility = newID == nil ? .doubleColumn : .all
         }
         .task {
             // The bridge spawn can transiently fail (slow host, killed

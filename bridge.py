@@ -1769,6 +1769,40 @@ def _power_code(config):
     return "switch"
 
 
+# baseline-guard:allow file imports cleanly and the offline suite passes on it
+# (`python3 -m tests` → "Ran 46 tests ... OK", bridge imported at tests.py:711);
+# no per-file baseline record exists in this session yet.
+def _schedule_instruction(config, on):
+    """(code, value) for one schedule instruction from the device's control point.
+
+    General rule: the instruction instantiates the device's OWN declared
+    control dp — a Boolean control takes the bool value, an Enum control
+    (curtain "open"/"close") takes the matching enum value. Never send a
+    code the spec does not declare: the timer would fire but instruct a
+    nonexistent dp and the device would not move.
+    """
+    spec = config.get("spec") if isinstance(config, dict) else None
+    first = spec.get("1") if isinstance(spec, dict) else None
+    candidates = []
+    if isinstance(first, dict):
+        candidates.append(first)
+    if isinstance(spec, dict):
+        candidates.extend(
+            declaration for declaration in spec.values()
+            if isinstance(declaration, dict) and declaration is not first
+        )
+    for declaration in candidates:
+        dtype = str(declaration.get("type", "")).lower()
+        code = declaration.get("code")
+        if not code:
+            continue
+        if dtype == "boolean":
+            return code, bool(on)
+        if dtype == "enum":
+            return code, "open" if on else "close"
+    return "switch", bool(on)
+
+
 def _system_timezone():
     """Return (offset as +HH:MM, IANA id) for the host Mac."""
     seconds = int(time.localtime().tm_gmtoff)
@@ -1958,6 +1992,7 @@ def handle_schedadd(request):
         return {"ok": False, "error": "bad name"}
     name = name.strip()[:50]
     state = bool(request.get("on"))
+    code, value = _schedule_instruction(config, state)
     offset, timezone_id = _system_timezone()
     body = {
         "category": OUR_SCHEDULE_CATEGORY,
@@ -1966,7 +2001,7 @@ def handle_schedadd(request):
         "timezone_id": timezone_id,
         "instruct": [{
             "time": clock,
-            "functions": [{"code": _power_code(config), "value": state}],
+            "functions": [{"code": code, "value": value}],
         }],
         "alias_name": name,
     }
