@@ -778,6 +778,80 @@ class TestBridgeSetRoom(unittest.TestCase):
         self.assertIsNone(self.stored_room())
 
 
+class TestBridgeCloudsyncRooms(unittest.TestCase):
+    """cloudsync fills room from the cloud map, keeping manual fallbacks."""
+
+    def setUp(self):
+        import bridge
+        self.bridge = bridge
+        self.directory = tempfile.mkdtemp()
+        self.old_path = bridge.DEVICES_PATH
+        self.old_start_autoheal = bridge.start_autoheal
+        bridge.DEVICES_PATH = os.path.join(self.directory, 'devices.json')
+        with open(bridge.DEVICES_PATH, 'w', encoding='utf-8') as handle:
+            json.dump([
+                {'id': 'cloudcz', 'name': 'Old Name', 'ip': '', 'version': None,
+                 'category': 'cz', 'key': '', 'room': 'Old Room'},
+                {'id': 'unmapped', 'name': 'Fan', 'ip': '', 'version': None,
+                 'category': 'fs', 'key': '', 'room': 'Manual Room'},
+            ], handle)
+        bridge.start_autoheal = MagicMock()
+        self.cloud = MagicMock()
+        self.cloud.getdevices = MagicMock(return_value=[
+            {'id': 'cloudcz', 'uid': 'uid1', 'name': 'New Name', 'category': 'cz'},
+            {'id': 'unmapped', 'name': 'Fan', 'category': 'fs'},
+        ])
+        bridge.make_cloud = MagicMock(return_value=self.cloud)
+
+    def tearDown(self):
+        self.bridge.DEVICES_PATH = self.old_path
+        self.bridge.start_autoheal = self.old_start_autoheal
+        shutil.rmtree(self.directory)
+
+    def read_roster(self):
+        with open(self.bridge.DEVICES_PATH, 'r', encoding='utf-8') as handle:
+            return {device['id']: device for device in json.load(handle)}
+
+    def cloud_responses(self):
+        def respond(url, action="GET", **kwargs):
+            if url == '/v1.0/users/uid1/homes':
+                return {'success': True, 'result': [
+                    {'home_id': 100, 'name': 'Home'}]}
+            if url == '/v1.0/homes/100/rooms':
+                return {'success': True, 'result': {
+                    'home_id': 100, 'name': 'Home',
+                    'rooms': [{'name': 'Office', 'room_id': 'r1'}]}}
+            if url == '/v1.0/homes/100/rooms/r1/devices':
+                return {'success': True, 'result': [{'id': 'cloudcz'}]}
+            raise AssertionError('unexpected cloud url: ' + url)
+        return respond
+
+    def test_cloud_room_overwrites_and_unmapped_keeps_manual(self):
+        self.cloud.cloudrequest = MagicMock(side_effect=self.cloud_responses())
+
+        result = self.bridge.handle_cloudsync()
+
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(result['rooms'], 1)
+        roster = self.read_roster()
+        self.assertEqual(roster['cloudcz']['room'], 'Office')
+        self.assertEqual(roster['cloudcz']['name'], 'New Name')
+        self.assertEqual(roster['unmapped']['room'], 'Manual Room')
+
+    def test_room_fetch_failure_keeps_identity_merge(self):
+        self.cloud.cloudrequest = MagicMock(
+            side_effect=RuntimeError('secret-token-abc'))
+
+        result = self.bridge.handle_cloudsync()
+
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(result['rooms'], 0)
+        self.assertNotIn('secret', json.dumps(result))
+        roster = self.read_roster()
+        self.assertEqual(roster['cloudcz']['room'], 'Old Room')
+        self.assertEqual(roster['cloudcz']['name'], 'New Name')
+
+
 class TestBridgeRescanCloudMerge(unittest.TestCase):
     """handle_rescan reconciles the cloud roster, not just LAN ip deltas."""
 

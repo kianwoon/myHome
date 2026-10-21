@@ -1174,6 +1174,94 @@ def _merge_cloud_roster(result, prune=False):
     }
 
 
+def _cloud_result(response):
+    """Return a cloudrequest's result payload, or None on a failed reply."""
+    if not isinstance(response, dict):
+        return None
+    return response.get("result")
+
+
+def _cloud_room_map(cloud, devices):
+    """Map device id -> room name from the Tuya home room endpoints.
+
+    General rule: the cloud is authoritative for a device's room when it
+    reports one. Resolve the account uid from the device list (falling back to
+    ONE detail call only when the list omits it), then reuse a single rooms
+    result while iterating the few rooms. Returns None when the account/home
+    cannot be resolved; an empty mapping is a valid "home has no rooms".
+    """
+    uid = None
+    for device in devices:
+        if isinstance(device, dict) and device.get("uid"):
+            uid = device.get("uid")
+            break
+    if not uid:
+        for device in devices:
+            device_id = device.get("id") if isinstance(device, dict) else None
+            if not device_id:
+                continue
+            detail = _cloud_result(
+                cloud.cloudrequest("/v1.0/devices/%s" % device_id, "GET"))
+            if isinstance(detail, dict) and detail.get("uid"):
+                uid = detail.get("uid")
+                break
+    if not uid:
+        return None
+
+    homes = _cloud_result(
+        cloud.cloudrequest("/v1.0/users/%s/homes" % uid, "GET"))
+    if not isinstance(homes, list):
+        return None
+
+    mapping = {}
+    for home in homes:
+        if not isinstance(home, dict) or home.get("home_id") is None:
+            continue
+        home_id = home.get("home_id")
+        rooms = _cloud_result(
+            cloud.cloudrequest("/v1.0/homes/%s/rooms" % home_id, "GET"))
+        room_list = rooms.get("rooms") if isinstance(rooms, dict) else None
+        if not isinstance(room_list, list):
+            continue
+        for room in room_list:
+            if not isinstance(room, dict):
+                continue
+            room_id = room.get("room_id")
+            room_name = room.get("name")
+            if not room_id or not room_name:
+                continue
+            members = _cloud_result(cloud.cloudrequest(
+                "/v1.0/homes/%s/rooms/%s/devices" % (home_id, room_id), "GET"))
+            if not isinstance(members, list):
+                continue
+            for member in members:
+                device_id = member.get("id") if isinstance(member, dict) else None
+                if device_id:
+                    mapping[device_id] = room_name
+    return mapping
+
+
+def _apply_cloud_rooms(mapping):
+    """Overwrite roster rooms from the cloud map; return entries changed.
+
+    Devices absent from the mapping keep their local room (manual setroom is
+    the fallback for devices the cloud does not place in a room).
+    """
+    updated = 0
+
+    def merge(fresh):
+        nonlocal updated
+        for config in fresh:
+            room = mapping.get(config.get("id"))
+            if not room or config.get("room") == room:
+                continue
+            config["room"] = room
+            updated += 1
+
+    apply_to_disk(merge)
+    return updated
+
+
 def handle_cloudsync():
     """Re-sync device identity from the Tuya cloud.
 
@@ -1183,7 +1271,8 @@ def handle_cloudsync():
     local-only fields (ip, version, spec), and prunes entries the cloud no
     longer reports. Absence is confirmed with a missedSyncs counter so a
     transient/partial cloud response cannot delete a device. Credentials in
-    tinytuya.json are never echoed.
+    tinytuya.json are never echoed. Room assignment is then refreshed from the
+    cloud room map; devices the cloud does not place keep their local room.
     """
     try:
         cloud = make_cloud()
@@ -1202,6 +1291,16 @@ def handle_cloudsync():
     except Exception as exc:
         return {"ok": False, "error": "devices write failed: " + type(exc).__name__}
 
+    # Room assignment is additive metadata: a room-fetch failure must not
+    # undo the identity merge above. Never log anything but the error type.
+    rooms = 0
+    try:
+        mapping = _cloud_room_map(cloud, result)
+        if mapping:
+            rooms = _apply_cloud_rooms(mapping)
+    except Exception as exc:
+        log.warning("cloudsync room fill skipped: %s", type(exc).__name__)
+
     # Do not block the serial stdio protocol on a 35s LAN scan.
     start_autoheal(cloud)
 
@@ -1211,6 +1310,7 @@ def handle_cloudsync():
         "added": counts["added"],
         "pruned": counts["pruned"],
         "total": counts["total"],
+        "rooms": rooms,
     }
 
 
