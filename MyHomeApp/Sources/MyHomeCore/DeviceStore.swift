@@ -1072,7 +1072,6 @@ public final class DeviceStore: ObservableObject {
         guard !targets.isEmpty else { return }
 
         var dpsBatch: [String: [String: DPSValue]] = [:]
-        var onBatch: [String: Bool] = [:]
         var errorBatch: [String: String] = [:]
 
         // Sliding window of 6: devices overlap instead of walking one at a
@@ -1091,9 +1090,6 @@ public final class DeviceStore: ObservableObject {
                 switch pair.1 {
                 case .success(let decoded):
                     dpsBatch[pair.0] = decoded
-                    if let power = decoded["1"]?.boolValue {
-                        onBatch[pair.0] = power
-                    }
                 case .failure(let message):
                     errorBatch[pair.0] = message
                 }
@@ -1104,20 +1100,32 @@ public final class DeviceStore: ObservableObject {
             }
         }
 
-        applyPollBatch(dps: dpsBatch, on: onBatch, errors: errorBatch)
+        applyPollBatch(dps: dpsBatch, errors: errorBatch)
     }
 
     /// Single coalesced write for one poll cycle: each published collection is
     /// assigned once, so SwiftUI sees one invalidation rather than dozens.
     private func applyPollBatch(
         dps: [String: [String: DPSValue]],
-        on: [String: Bool],
         errors: [String: String]
     ) {
         guard !dps.isEmpty || !errors.isEmpty else { return }
         if !dps.isEmpty {
-            dpsById.merge(dps) { _, new in new }
-            isOn.merge(on) { _, new in new }
+            // Reconcile BEFORE merging: the poll is a wire read like any other
+            // and must not paint over a fresh user intent. The power bit is
+            // derived from the reconciled map, not the raw decode, so dp1
+            // follows the same rule as dp3 and every unseen dp.
+            var resolvedBatch: [String: [String: DPSValue]] = [:]
+            var resolvedOn: [String: Bool] = [:]
+            for (id, decoded) in dps {
+                let resolved = reconciled(id, decoded)
+                resolvedBatch[id] = resolved
+                if let power = resolved["1"]?.boolValue {
+                    resolvedOn[id] = power
+                }
+            }
+            dpsById.merge(resolvedBatch) { _, new in new }
+            isOn.merge(resolvedOn) { _, new in new }
             loadedStatus.formUnion(dps.keys)
         }
         var mergedErrors = statusErrors
@@ -1459,7 +1467,24 @@ public final class DeviceStore: ObservableObject {
         }
     }
 
-    private func applyStatus(_ id: String, decoded: [String: DPSValue]) {
+    /// Single intent-reconciliation gate for EVERY wire-read paint.
+    ///
+    /// INVARIANT: every wire-read paint — set reply, single fetch, AND batch
+    /// poll — passes through this helper. A fresh user command is therefore
+    /// never visually undone by a stale read, and after the grace expires the
+    /// wire wins again so a genuinely lost command self-corrects. Callers paint
+    /// the RETURNED map, never the raw decode (`isOn` included).
+    ///
+    /// The rule is key-generic, not a set of per-dp special cases: the fan
+    /// speed dot (dp3) arriving in a set reply and the power bit (dp1) arriving
+    /// in a batch poll are merely two instances. Unseen inputs ride the same
+    /// path untouched — e.g. oscillation dp5 in a poll batch, or a curtain's
+    /// percent dp (dp2) — because nothing here names a key.
+    ///
+    /// Mutates `dpsIntent` exactly as the pre-extraction code did: agreeing
+    /// keys confirm and are dropped, contradicting keys keep their intent at
+    /// the original timestamp, and an expired intent is discarded.
+    private func reconciled(_ id: String, _ decoded: [String: DPSValue]) -> [String: DPSValue] {
         var resolved = decoded
         if let intent = dpsIntent[id],
            Date().timeIntervalSince(intent.at) < Self.dpsIntentGrace {
@@ -1483,6 +1508,11 @@ public final class DeviceStore: ObservableObject {
             // Grace expired: the wire is authoritative again.
             dpsIntent.removeValue(forKey: id)
         }
+        return resolved
+    }
+
+    private func applyStatus(_ id: String, decoded: [String: DPSValue]) {
+        let resolved = reconciled(id, decoded)
         dpsById[id] = resolved
         statusErrors[id] = nil
         loadedStatus.insert(id)
@@ -1507,6 +1537,9 @@ public final class DeviceStore: ObservableObject {
 
         isOn[device.id] = newValue
         dpsById[device.id, default: [:]][ "1"] = .bool(newValue)
+        // Defend the optimistic paint from stale polls/set replies, exactly
+        // like setDps does for arbitrary dps patches.
+        dpsIntent[device.id] = DpsIntent(values: ["1": .bool(newValue)], at: Date())
 
         do {
             let reply = try await bridge.request([
@@ -1518,10 +1551,12 @@ public final class DeviceStore: ObservableObject {
                 try applyConfirmedReply(device.id, reply: reply)
                 errorText = nil
             } else {
+                dpsIntent.removeValue(forKey: device.id)
                 revert(device: device, isOn: previous, dps: previousDps)
                 errorText = reply["error"] as? String ?? "Set failed."
             }
         } catch {
+            dpsIntent.removeValue(forKey: device.id)
             revert(device: device, isOn: previous, dps: previousDps)
             errorText = error.localizedDescription
         }
