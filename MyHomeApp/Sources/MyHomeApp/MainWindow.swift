@@ -73,10 +73,6 @@ struct DashboardView: View {
     /// The Plugs-internal `roomFilter` is preserved but dormant until the user
     /// returns to the Plugs category.
     @State private var selectedRoom: String?
-    /// Three-column split visibility. Derived from `selectedDevice` (updated in
-    /// `.onChange`): no selection collapses the detail column entirely.
-    @State private var columnVisibility: NavigationSplitViewVisibility = .doubleColumn
-
     private var filtered: [Device] {
         var result: [Device]
         if let room = selectedRoom {
@@ -126,7 +122,7 @@ struct DashboardView: View {
     }
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility) {
+        HStack(spacing: 0) {
             List(selection: Binding<DeviceGroup?>(
                 get: { selectedRoom == nil ? group : nil },
                 set: { newValue in
@@ -161,9 +157,11 @@ struct DashboardView: View {
                     }
                 }
             }
-            .navigationSplitViewColumnWidth(min: 150, ideal: 175)
+            .frame(minWidth: 150, idealWidth: 175)
             .navigationTitle("MyHome")
-        } content: {
+
+            Divider()
+
             ScrollView {
                 if selectedRoom == nil && group == .briturn {
                     BriturnGroupsBar(selection: $briturnGroupFilter)
@@ -200,17 +198,15 @@ struct DashboardView: View {
                     .padding()
                 }
             }
-            .navigationSplitViewColumnWidth(min: 480, ideal: 580)
+            .frame(minWidth: 480, idealWidth: 580)
+            .frame(maxWidth: .infinity)
             .navigationTitle(selectedRoom ?? group.title)
-        } detail: {
+
             if let device = selectedDevice {
+                Divider()
                 DeviceDetailView(device: device)
+                    .frame(minWidth: 320, maxWidth: .infinity)
             }
-        }
-        .onChange(of: selectedDevice?.id) { newID in
-            // Detail pane visibility == selection state: `.doubleColumn` omits
-            // the third column, so no empty/placeholder pane is left behind.
-            columnVisibility = newID == nil ? .doubleColumn : .all
         }
         .task {
             // The bridge spawn can transiently fail (slow host, killed
