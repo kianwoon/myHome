@@ -68,16 +68,30 @@ struct DashboardView: View {
     /// Room filter for the Plugs category. nil = all plugs; a room name shows
     /// only plugs assigned that room. Room names come from the whole roster.
     @State private var roomFilter: String?
+    /// Sidebar room lens. Mutually exclusive with the category `group`: when
+    /// set, the content shows every device in that room across all categories.
+    /// The Plugs-internal `roomFilter` is preserved but dormant until the user
+    /// returns to the Plugs category.
+    @State private var selectedRoom: String?
 
     private var filtered: [Device] {
-        var result = store.devices.filter { group.contains($0) }
-        if group == .briturn, let filter = briturnGroupFilter {
-            result = result.filter { $0.group == filter }
-        }
-        if group == .plugs, let filter = roomFilter {
-            result = result.filter { $0.room == filter }
+        var result: [Device]
+        if let room = selectedRoom {
+            result = store.devices.filter { $0.room == room }
+        } else {
+            result = store.devices.filter { group.contains($0) }
+            if group == .briturn, let filter = briturnGroupFilter {
+                result = result.filter { $0.group == filter }
+            }
+            if group == .plugs, let filter = roomFilter {
+                result = result.filter { $0.room == filter }
+            }
         }
         return result.sorted(by: onFirst)
+    }
+
+    private func roomCount(_ room: String) -> Int {
+        store.devices.filter { $0.room == room }.count
     }
 
     /// General rule: every dashboard list (any category or active filter) is
@@ -110,28 +124,58 @@ struct DashboardView: View {
 
     var body: some View {
         NavigationSplitView {
-            List(DeviceGroup.allCases, selection: $group) { item in
-                sidebarRow(item)
-                    .tag(item)
+            List(selection: Binding<DeviceGroup?>(
+                get: { selectedRoom == nil ? group : nil },
+                set: { newValue in
+                    if let newValue = newValue {
+                        group = newValue
+                        selectedRoom = nil
+                    }
+                }
+            )) {
+                ForEach(DeviceGroup.allCases) { item in
+                    sidebarRow(item)
+                        .tag(item)
+                }
+                if !store.roomNames.isEmpty {
+                    Divider()
+                    Text("Rooms")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    ForEach(store.roomNames, id: \.self) { room in
+                        Button {
+                            selectedRoom = room
+                        } label: {
+                            Label(room, systemImage: "house")
+                                .badge(roomCount(room))
+                        }
+                        .buttonStyle(.plain)
+                        .listRowBackground(
+                            selectedRoom == room
+                                ? Color.accentColor.opacity(0.18)
+                                : Color.clear
+                        )
+                    }
+                }
             }
             .navigationSplitViewColumnWidth(min: 150, ideal: 175)
             .navigationTitle("MyHome")
         } content: {
             ScrollView {
-                if group == .briturn {
+                if selectedRoom == nil && group == .briturn {
                     BriturnGroupsBar(selection: $briturnGroupFilter)
                     Divider().padding(.horizontal)
                 }
-                if group == .plugs && !store.roomNames.isEmpty {
+                if selectedRoom == nil && group == .plugs && !store.roomNames.isEmpty {
                     RoomFilterBar(selection: $roomFilter)
                     Divider().padding(.horizontal)
                 }
                 if filtered.isEmpty {
                     VStack(spacing: 8) {
-                        Image(systemName: group.icon)
+                        Image(systemName: selectedRoom == nil ? group.icon : "house")
                             .font(.largeTitle)
                             .foregroundStyle(.secondary)
-                        Text("No devices in \(group.title).")
+                        Text("No devices in \(selectedRoom ?? group.title).")
                             .foregroundStyle(.secondary)
                     }
                     .frame(maxWidth: .infinity)
@@ -154,7 +198,7 @@ struct DashboardView: View {
                 }
             }
             .navigationSplitViewColumnWidth(min: 480, ideal: 580)
-            .navigationTitle(group.title)
+            .navigationTitle(selectedRoom ?? group.title)
         } detail: {
             if let device = selectedDevice {
                 DeviceDetailView(device: device)

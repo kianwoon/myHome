@@ -9,6 +9,9 @@ are listed here so the release changelog is complete.
 ### Dashboard ordering (MyHome app)
 * Every dashboard category — Fans, Curtains, Lights, Plugs, Climate, Briturn and Other, including active room/group filters — now lists ON devices first, then unknown-state devices, then OFF. Intra-class order stays name/id stable, so status polls only move a tile when its ON/OFF class changes.
 
+### Sidebar rooms (MyHome app)
+* The sidebar now pairs the type categories with a "Rooms" section derived from the roster's non-Briturn `room` metadata. Selecting a room shows every category mixed together, ON-first like every other list; selecting a category leaves the room view. The Plugs-internal room filter remains and resumes when returning to Plugs.
+
 ### Local rooms (MyHome bridge/app)
 * Tuya devices can now be assigned a free-text room (for example "Study Room") from the app. The bridge's `setroom` command writes the local roster's `room` field only — separate from Briturn's fixture `group` — so rooms are never pushed to Tuya Cloud and never collide with Briturn grouping. On every cloudsync the bridge also pulls the cloud home's room→device map and overwrites `room` for mapped devices; manual assignments remain the fallback for devices the cloud does not place in a room. The dashboard filters plugs by room and shows a room badge on each tile. Applies to any non-Briturn roster device, and an empty room clears the assignment.
 
