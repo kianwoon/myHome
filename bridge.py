@@ -11,6 +11,7 @@ Requests:
     {"cmd":"status","id":"<device-id>"}
     {"cmd":"set","id":"<device-id>","dps":{...}}
     {"cmd":"rename","id":"<device-id>","name":"<new-name>"}
+    {"cmd":"setroom","id":"<device-id>","room":"<room or empty to clear>"}
     {"cmd":"briturnstatus","id":"<briturn-device-id>"}
     {"cmd":"briturnset","id":"<briturn-device-id>","on":true,"r":255,"g":0,"b":0}
     {"cmd":"briturngroup","id":"<briturn-device-id>","group":"Living Room"}
@@ -39,6 +40,7 @@ Requests:
 """
 
 import json
+import logging
 import os
 import re
 import socket
@@ -48,6 +50,8 @@ import threading
 import time
 
 import tinytuya
+
+log = logging.getLogger(__name__)
 
 try:
     import requests as _requests  # noqa: F401 — capability probe only
@@ -287,6 +291,44 @@ def handle_rename(request):
     return {"ok": True, "name": name}
 
 
+def handle_setroom(request):
+    """Assign free-text room metadata to any roster device.
+
+    General rule: a room is LOCAL roster metadata, not cloud identity — it is
+    written only to devices.json so every future list/cloudsync/rescan keeps
+    it. Empty room clears the assignment; whitespace-only is rejected rather
+    than silently creating a blank room.
+    """
+    device_id = request.get("id")
+    room = request.get("room")
+    if not isinstance(device_id, str) or not device_id:
+        return {"ok": False, "error": "missing device id"}
+    if not isinstance(room, str):
+        return {"ok": False, "error": "missing room"}
+    stripped = room.strip()
+    if not stripped and room:
+        return {"ok": False, "error": "room must be 1-40 characters (empty clears)"}
+    if len(stripped) > 40:
+        return {"ok": False, "error": "room must be 1-40 characters"}
+    if find_device(device_id) is None:
+        return {"ok": False, "error": "unknown device id"}
+
+    def merge(fresh):
+        for config in fresh:
+            if config.get("id") != device_id:
+                continue
+            if stripped:
+                config["group"] = stripped
+            else:
+                config.pop("group", None)
+
+    try:
+        apply_to_disk(merge)
+    except Exception as exc:
+        return {"ok": False, "error": "devices write failed: " + type(exc).__name__}
+    return {"ok": True, "id": device_id, "room": stripped}
+
+
 def handle_list():
     # General rule: the list reply is the app's view of the persisted roster.
     # Every field the UI consumes (including capability metadata) must
@@ -308,12 +350,35 @@ def handle_list():
 
 
 def handle_rescan(request=None):
-    """Scan the LAN and merge ip/version into devices.json, preserving keys."""
+    """Scan the LAN and reconcile the roster with the cloud and LAN.
+
+    General rule: the roster converges to the UNION of the cloud roster and
+    the LAN scan. A cloud failure degrades to LAN-only instead of failing the
+    command; the reply's "cloud" flag reports which paths actually ran.
+    """
     window = (request or {}).get("window", 35)
     try:
         window = min(max(int(window), 15), 60)
     except (TypeError, ValueError):
         window = 35
+
+    # Add/refresh cloud-known identities first, so a device that only the
+    # cloud reports is added, and a device found on both paths gets its LAN
+    # address merged onto the cloud entry below.
+    cloud_ok = True
+    cloud_added = 0
+    try:
+        cloud = make_cloud()
+        roster = cloud.getdevices(False)
+        if not isinstance(roster, list) or not roster:
+            raise ValueError("empty or unexpected cloud response")
+        cloud_added = _merge_cloud_roster(roster, prune=False)["added"]
+    except Exception as exc:
+        # Never include token/secret material in logs or the reply. The LAN
+        # merge must still run: cloud absence is not a rescan failure.
+        cloud_ok = False
+        log.warning("rescan cloud merge skipped: %s", type(exc).__name__)
+
     scan = tinytuya.deviceScan(poll=False, color=False, maxretry=window)
     if not isinstance(scan, dict):
         scan = {}
@@ -346,7 +411,8 @@ def handle_rescan(request=None):
 
     # Addresses may have moved, so drop cached sockets.
     _device_cache.clear()
-    return {"ok": True, "merged": merged}
+    return {"ok": True, "merged": merged, "cloud": cloud_ok,
+            "added": cloud_added}
 
 
 def briturn_normalize_mac(mac):
@@ -1019,29 +1085,15 @@ def handle_briturntimersetgroup(request):
             "applied": applied, "results": results}
 
 
-def handle_cloudsync():
-    """Re-sync device identity from the Tuya cloud.
+def _merge_cloud_roster(result, prune=False):
+    """Merge a cloud roster response into devices.json, returning counts.
 
-    General rule: the cloud roster is the authority for device IDENTITY AND
-    CREDENTIALS. cloudsync merges every identity/credential field the cloud
-    provides (CLOUD_IDENTITY_FIELDS) onto the local entry, preserving only
-    local-only fields (ip, version, spec), and prunes entries the cloud no
-    longer reports. Absence is confirmed with a missedSyncs counter so a
-    transient/partial cloud response cannot delete a device. Credentials in
-    tinytuya.json are never echoed.
+    General rule: the roster is the union of cloud-known identities and
+    everything discovered locally. CLOUD_IDENTITY_FIELDS are merged onto
+    existing entries and unknown cloud devices are added. Pruning is opt-in:
+    only cloudsync treats cloud absence as authority; rescan must not drop a
+    LAN-known device merely because the cloud did not list it.
     """
-    try:
-        cloud = make_cloud()
-        result = cloud.getdevices(False)
-    except Exception as exc:
-        # Never include token/secret material in the reply.
-        return _cloud_failure(exc)
-
-    if not isinstance(result, list) or not result:
-        return {"ok": False, "error": "cloud sync failed: empty or unexpected response"}
-
-    # General rule: shared mutable state — apply only this command's
-    # identity/roster delta to a fresh read; never dump the serving cache.
     renamed = 0
     added = 0
     pruned = 0
@@ -1084,6 +1136,9 @@ def handle_cloudsync():
                     if field == "name":
                         renamed += 1
 
+        if not prune:
+            return
+
         drop = set()
         for config in fresh:
             if config.get("id") in seen:
@@ -1107,8 +1162,40 @@ def handle_cloudsync():
             fresh[:] = [config for config in fresh if config.get("id") not in drop]
             pruned = len(drop)
 
+    merged_devices = apply_to_disk(merge)
+    return {
+        "renamed": renamed,
+        "added": added,
+        "pruned": pruned,
+        "total": len(merged_devices),
+    }
+
+
+def handle_cloudsync():
+    """Re-sync device identity from the Tuya cloud.
+
+    General rule: the cloud roster is the authority for device IDENTITY AND
+    CREDENTIALS. cloudsync merges every identity/credential field the cloud
+    provides (CLOUD_IDENTITY_FIELDS) onto the local entry, preserving only
+    local-only fields (ip, version, spec), and prunes entries the cloud no
+    longer reports. Absence is confirmed with a missedSyncs counter so a
+    transient/partial cloud response cannot delete a device. Credentials in
+    tinytuya.json are never echoed.
+    """
     try:
-        merged_devices = apply_to_disk(merge)
+        cloud = make_cloud()
+        result = cloud.getdevices(False)
+    except Exception as exc:
+        # Never include token/secret material in the reply.
+        return _cloud_failure(exc)
+
+    if not isinstance(result, list) or not result:
+        return {"ok": False, "error": "cloud sync failed: empty or unexpected response"}
+
+    # General rule: shared mutable state — apply only this command's
+    # identity/roster delta to a fresh read; never dump the serving cache.
+    try:
+        counts = _merge_cloud_roster(result, prune=True)
     except Exception as exc:
         return {"ok": False, "error": "devices write failed: " + type(exc).__name__}
 
@@ -1117,10 +1204,10 @@ def handle_cloudsync():
 
     return {
         "ok": True,
-        "renamed": renamed,
-        "added": added,
-        "pruned": pruned,
-        "total": len(merged_devices),
+        "renamed": counts["renamed"],
+        "added": counts["added"],
+        "pruned": counts["pruned"],
+        "total": counts["total"],
     }
 
 
@@ -2229,6 +2316,8 @@ def dispatch(request):
         return handle_set(device_id, request.get("dps"))
     if cmd == "rename":
         return handle_rename(request)
+    if cmd == "setroom":
+        return handle_setroom(request)
     if cmd == "rescan":
         return handle_rescan(request)
     if cmd == "briturnscan":

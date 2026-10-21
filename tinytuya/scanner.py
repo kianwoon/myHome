@@ -1128,6 +1128,25 @@ def _print_device_info( result, note, term, extra_message=None, verbose=True ):
 
 
 # Scan function
+def _build_keylist(tuyadevices):
+    """Build KeyObj entries for roster rows that carry usable credentials.
+
+    General rule: credential fields are optional in a device roster. An entry
+    without an id or key cannot be matched/decrypted, so it is skipped rather
+    than aborting discovery for the whole scan.
+    """
+    keylist = []
+    for item in tuyadevices or []:
+        if not isinstance(item, dict):
+            continue
+        device_id = item.get('id')
+        key = item.get('key')
+        if not device_id or not key:
+            continue
+        keylist.append( KeyObj( device_id, key ) )
+    return keylist
+
+
 def devices(verbose=False, scantime=None, color=True, poll=True, forcescan=False, byID=False, show_timer=None, 
             discover=True, wantips=None, wantids=None, snapshot=None, assume_yes=False, tuyadevices=None,
             maxdevices=0): # pylint: disable=W0621
@@ -1291,8 +1310,7 @@ def devices(verbose=False, scantime=None, color=True, poll=True, forcescan=False
         'keylist': [],
     }
 
-    for i in tuyadevices:
-        options['keylist'].append( KeyObj( i['id'], i['key'] ) )
+    options['keylist'] = _build_keylist(tuyadevices)
 
     wantips = [] if not wantips else list(wantips) #['192.168.1.3']
     wantids = [] if not wantids else list(wantids) #['abcdef']

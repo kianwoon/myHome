@@ -65,10 +65,16 @@ struct DashboardView: View {
     /// Briturn group filter: nil = show all briturn lights; a name shows only
     /// that group's members. Set by clicking a group chip, cleared by "All".
     @State private var briturnGroupFilter: String?
+    /// Room filter for the Plugs category. nil = all plugs; a room name shows
+    /// only plugs assigned that room. Room names come from the whole roster.
+    @State private var roomFilter: String?
 
     private var filtered: [Device] {
         var result = store.devices.filter { group.contains($0) }
         if group == .briturn, let filter = briturnGroupFilter {
+            result = result.filter { $0.group == filter }
+        }
+        if group == .plugs, let filter = roomFilter {
             result = result.filter { $0.group == filter }
         }
         return result
@@ -90,6 +96,10 @@ struct DashboardView: View {
             ScrollView {
                 if group == .briturn {
                     BriturnGroupsBar(selection: $briturnGroupFilter)
+                    Divider().padding(.horizontal)
+                }
+                if group == .plugs && !store.roomNames.isEmpty {
+                    RoomFilterBar(selection: $roomFilter)
                     Divider().padding(.horizontal)
                 }
                 if filtered.isEmpty {
@@ -218,8 +228,15 @@ struct DeviceCard: View {
     let isSelected: Bool
     let onSelect: () -> Void
     @State private var showingRename = false
+    @State private var showingRoom = false
 
     private var isBriturn: Bool { device.category.lowercased() == "briturn" }
+
+    private var roomLabel: String? {
+        guard !isBriturn, let room = device.group else { return nil }
+        let trimmed = room.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
 
     private var isEnabled: Bool { device.hasAddress || device.isBLE }
 
@@ -309,6 +326,9 @@ struct DeviceCard: View {
                         Text(summary(state))
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                        if let room = roomLabel {
+                            RoomBadge(room: room)
+                        }
                         BatteryChip(percent: state.batteryPercent)
                     }
                 }
@@ -354,9 +374,15 @@ struct DeviceCard: View {
         .onTapGesture(perform: onSelect)
         .contextMenu {
             Button("Rename…") { showingRename = true }
+            if !device.isBLE {
+                Button("Set Room…") { showingRoom = true }
+            }
         }
         .sheet(isPresented: $showingRename) {
             RenameSheet(device: device)
+        }
+        .sheet(isPresented: $showingRoom) {
+            RoomSheet(device: device)
         }
     }
 }
@@ -417,6 +443,154 @@ struct RenameSheet: View {
             saving = false
             if ok { dismiss() }
         }
+    }
+}
+
+/// General rule: a room is LOCAL roster metadata, so this sheet edits the
+/// bridge's `group` field directly (no cloud round-trip) and offers the room
+/// names already in use house-wide so naming stays consistent.
+struct RoomSheet: View {
+    @EnvironmentObject private var store: DeviceStore
+    @Environment(\.dismiss) private var dismiss
+    let device: Device
+    @State private var room: String
+    @State private var saving = false
+
+    init(device: Device) {
+        self.device = device
+        _room = State(initialValue: device.group ?? "")
+    }
+
+    private var trimmed: String { room.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var isValid: Bool { trimmed.count <= 40 }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Set Room")
+                .font(.headline)
+            Text("Rooms are local labels stored in the bridge roster, not in Tuya Cloud. Leave empty to clear.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            TextField("Room, for example Study Room", text: $room)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 320)
+                .onSubmit(submit)
+            if !store.roomNames.isEmpty {
+                Text("Existing rooms")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 100, maximum: 150), spacing: 6)],
+                    alignment: .leading,
+                    spacing: 6
+                ) {
+                    ForEach(store.roomNames, id: \.self) { name in
+                        Button(name) { room = name }
+                            .controlSize(.small)
+                    }
+                }
+                .frame(width: 320, alignment: .leading)
+            }
+            HStack {
+                if let error = store.statusErrors[device.id] {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .lineLimit(2)
+                }
+                Spacer()
+                Button("Clear") { room = ""; submit() }
+                    .disabled(saving)
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button(saving ? "Saving…" : "Save", action: submit)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!isValid || saving)
+            }
+        }
+        .padding(20)
+        .frame(width: 380)
+    }
+
+    private func submit() {
+        guard isValid, !saving else { return }
+        saving = true
+        Task {
+            let ok = await store.setRoom(id: device.id, room: trimmed)
+            saving = false
+            if ok { dismiss() }
+        }
+    }
+}
+
+/// Compact room badge for a device tile. Briturn lights already render their
+/// group in the summary line, so the badge is for every other category.
+struct RoomBadge: View {
+    let room: String
+
+    var body: some View {
+        Text(room)
+            .font(.caption2.weight(.semibold))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Capsule().fill(Color.accentColor.opacity(0.14)))
+            .foregroundStyle(Color.accentColor)
+            .lineLimit(1)
+    }
+}
+
+/// Room filter for the Plugs category: "All" plus one chip per room known
+/// anywhere in the roster. Mirrors BriturnGroupsBar's selection semantics —
+/// clicking the selected chip returns to all rooms.
+struct RoomFilterBar: View {
+    @EnvironmentObject private var store: DeviceStore
+    @Binding var selection: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Rooms")
+                .font(.headline)
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 130, maximum: 200), spacing: 8)],
+                alignment: .leading,
+                spacing: 8
+            ) {
+                RoomChip(name: "All", isSelected: selection == nil) {
+                    selection = nil
+                }
+                ForEach(store.roomNames, id: \.self) { name in
+                    RoomChip(name: name, isSelected: selection == name) {
+                        selection = (selection == name) ? nil : name
+                    }
+                }
+            }
+        }
+        .padding(.horizontal)
+        .padding(.top, 12)
+    }
+}
+
+struct RoomChip: View {
+    let name: String
+    let isSelected: Bool
+    let onTap: () -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            Text(name)
+                .font(.callout.weight(.semibold))
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(
+                    Capsule().fill(
+                        isSelected ? Color.accentColor.opacity(0.2)
+                                   : Color(nsColor: .controlBackgroundColor))
+                )
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -852,6 +1026,7 @@ struct DeviceDetailView: View {
     @EnvironmentObject private var store: DeviceStore
     let device: Device
     @State private var showingRename = false
+    @State private var showingRoom = false
 
     private var state: DeviceState { store.state(for: device) }
 
@@ -896,8 +1071,14 @@ struct DeviceDetailView: View {
 
                     Spacer()
 
-                    Button("Rename…") { showingRename = true }
-                        .controlSize(.small)
+                    HStack(spacing: 8) {
+                        if !device.isBLE {
+                            Button("Set Room…") { showingRoom = true }
+                                .controlSize(.small)
+                        }
+                        Button("Rename…") { showingRename = true }
+                            .controlSize(.small)
+                    }
                 }
 
                 HStack(spacing: 10) {
@@ -984,6 +1165,9 @@ struct DeviceDetailView: View {
         }
         .sheet(isPresented: $showingRename) {
             RenameSheet(device: device)
+        }
+        .sheet(isPresented: $showingRoom) {
+            RoomSheet(device: device)
         }
     }
 }

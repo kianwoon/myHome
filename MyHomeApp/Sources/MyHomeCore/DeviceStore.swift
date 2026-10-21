@@ -781,6 +781,45 @@ public final class DeviceStore: ObservableObject {
         }
     }
 
+    /// Distinct non-empty room names across the WHOLE roster. A room is local
+    /// roster metadata (the bridge's `group` field), derived not stored, so a
+    /// room with no members simply stops existing.
+    public var roomNames: [String] {
+        Array(Set(devices.compactMap { device -> String? in
+            guard let room = device.group else { return nil }
+            let trimmed = room.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        })).sorted()
+    }
+
+    /// Assigns a room to any roster device (nil/empty clears) and re-lists so
+    /// chips, badges and the detail view update from one source of truth.
+    @discardableResult
+    public func setRoom(id: String, room: String?) async -> Bool {
+        let value = (room ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard value.count <= 40 else {
+            statusErrors[id] = "Room must be 1-40 characters."
+            return false
+        }
+        do {
+            let reply = try await bridge.request([
+                "cmd": "setroom",
+                "id": id,
+                "room": value
+            ], timeout: 10)
+            guard reply["ok"] as? Bool == true else {
+                statusErrors[id] = reply["error"] as? String ?? "Room assign failed."
+                return false
+            }
+            statusErrors[id] = nil
+            await refresh()
+            return true
+        } catch {
+            statusErrors[id] = error.localizedDescription
+            return false
+        }
+    }
+
     /// Assigns one device to a group (nil clears) and re-lists so the roster
     /// and every derived view update together.
     public func setBriturnGroup(_ device: Device, to group: String?) async {

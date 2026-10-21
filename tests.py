@@ -8,7 +8,10 @@ try:
 except ImportError:
     from mock import MagicMock  # py2 use https://pypi.python.org/pypi/mock
 import json
+import os
+import shutil
 import struct
+import tempfile
 
 # Enable info logging to see version information
 log = logging.getLogger('tinytuya')
@@ -680,6 +683,145 @@ class TestMonitorReliability(unittest.TestCase):
         self.assertTrue(_accepts_nowait(lambda x, nowait=False: None))
         self.assertTrue(_accepts_nowait(lambda x, **kw: None))
         self.assertFalse(_accepts_nowait(lambda x: None))
+
+
+class TestScannerKeylist(unittest.TestCase):
+    """Discovery must not crash on roster rows without credentials."""
+
+    def test_build_keylist_skips_missing_credentials(self):
+        from tinytuya import scanner
+        rows = [
+            {'id': 'valid', 'key': LOCAL_KEY},
+            {'id': 'briturn', 'name': 'Source owned'},
+            {'id': 'emptykey', 'key': ''},
+            {'key': LOCAL_KEY},
+            {'id': 'nonekey', 'key': None},
+        ]
+
+        keylist = scanner._build_keylist(rows)
+
+        self.assertEqual([item.gwId for item in keylist], ['valid'])
+        self.assertEqual(keylist[0].key, LOCAL_KEY)
+
+
+class TestBridgeSetRoom(unittest.TestCase):
+    """setroom writes local roster metadata and clears on an empty room."""
+
+    def setUp(self):
+        import bridge
+        self.bridge = bridge
+        self.directory = tempfile.mkdtemp()
+        self.old_path = bridge.DEVICES_PATH
+        self.old_devices = bridge._devices
+        bridge.DEVICES_PATH = os.path.join(self.directory, 'devices.json')
+        self.roster = [
+            {'id': 'plug1', 'name': 'Desk Plug', 'ip': '10.0.0.5',
+             'version': 3.3, 'category': 'cz', 'key': LOCAL_KEY},
+        ]
+        with open(bridge.DEVICES_PATH, 'w', encoding='utf-8') as handle:
+            json.dump(self.roster, handle)
+        bridge._devices = list(self.roster)
+
+    def tearDown(self):
+        self.bridge.DEVICES_PATH = self.old_path
+        self.bridge._devices = self.old_devices
+        shutil.rmtree(self.directory)
+
+    def stored_room(self):
+        with open(self.bridge.DEVICES_PATH, 'r', encoding='utf-8') as handle:
+            return json.load(handle)[0].get('group')
+
+    def test_setroom_persists_and_clears(self):
+        result = self.bridge.handle_setroom(
+            {'id': 'plug1', 'room': '  Study Room  '})
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(result['room'], 'Study Room')
+        self.assertEqual(self.stored_room(), 'Study Room')
+
+        result = self.bridge.handle_setroom({'id': 'plug1', 'room': ''})
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(result['room'], '')
+        self.assertIsNone(self.stored_room())
+
+    def test_setroom_rejects_bad_input(self):
+        self.assertFalse(self.bridge.handle_setroom(
+            {'id': 'missing', 'room': 'Study'})['ok'])
+        self.assertFalse(self.bridge.handle_setroom(
+            {'id': 'plug1', 'room': 'x' * 41})['ok'])
+        self.assertFalse(self.bridge.handle_setroom(
+            {'id': 'plug1', 'room': '   '})['ok'])
+        self.assertFalse(self.bridge.handle_setroom(
+            {'id': 'plug1', 'room': None})['ok'])
+        self.assertIsNone(self.stored_room())
+
+
+class TestBridgeRescanCloudMerge(unittest.TestCase):
+    """handle_rescan reconciles the cloud roster, not just LAN ip deltas."""
+
+    def setUp(self):
+        import bridge
+        self.bridge = bridge
+        self.directory = tempfile.mkdtemp()
+        self.old_path = bridge.DEVICES_PATH
+        bridge.DEVICES_PATH = os.path.join(self.directory, 'devices.json')
+        self.write_roster([
+            {'id': 'lan1', 'name': 'Old Plug', 'ip': '10.0.0.2',
+             'version': 3.1, 'category': 'cz', 'key': LOCAL_KEY},
+        ])
+        self.old_make_cloud = bridge.make_cloud
+        self.old_device_scan = bridge.tinytuya.deviceScan
+        bridge.tinytuya.deviceScan = MagicMock(return_value={
+            'lan1': {'ip': '10.0.0.9', 'version': 3.3},
+        })
+
+    def tearDown(self):
+        self.bridge.DEVICES_PATH = self.old_path
+        self.bridge.make_cloud = self.old_make_cloud
+        self.bridge.tinytuya.deviceScan = self.old_device_scan
+        shutil.rmtree(self.directory)
+
+    def write_roster(self, roster):
+        with open(self.bridge.DEVICES_PATH, 'w', encoding='utf-8') as handle:
+            json.dump(roster, handle)
+
+    def read_roster(self):
+        with open(self.bridge.DEVICES_PATH, 'r', encoding='utf-8') as handle:
+            return {device['id']: device for device in json.load(handle)}
+
+    def test_rescan_adds_cloud_only_device(self):
+        cloud = MagicMock()
+        cloud.getdevices = MagicMock(return_value=[{
+            'id': 'cloudcz', 'name': 'New Plug', 'category': 'cz',
+            'key': 'abcdefghijklmnop123456',
+        }])
+        self.bridge.make_cloud = MagicMock(return_value=cloud)
+
+        result = self.bridge.handle_rescan({'window': 15})
+
+        self.assertTrue(result['ok'], result)
+        self.assertTrue(result['cloud'], result)
+        self.assertEqual(result['added'], 1)
+        self.assertEqual(result['merged'], 1)
+        roster = self.read_roster()
+        self.assertIn('cloudcz', roster)
+        self.assertEqual(roster['cloudcz']['name'], 'New Plug')
+        self.assertTrue(roster['cloudcz']['cloud'])
+        self.assertEqual(roster['lan1']['ip'], '10.0.0.9')
+
+    def test_rescan_degrades_when_cloud_fails(self):
+        self.bridge.make_cloud = MagicMock(
+            side_effect=RuntimeError('secret-token-abc'))
+
+        result = self.bridge.handle_rescan({'window': 15})
+
+        self.assertTrue(result['ok'], result)
+        self.assertFalse(result['cloud'], result)
+        self.assertEqual(result['merged'], 1)
+        self.assertNotIn('secret', json.dumps(result))
+        roster = self.read_roster()
+        self.assertNotIn('cloudcz', roster)
+        self.assertEqual(roster['lan1']['ip'], '10.0.0.9')
+
 
 if __name__ == '__main__':
     unittest.main()
