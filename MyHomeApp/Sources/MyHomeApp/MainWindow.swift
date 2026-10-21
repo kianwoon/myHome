@@ -162,9 +162,11 @@ struct DashboardView: View {
     }
 
     /// General rule: every dashboard list (any category or active filter) is
-    /// partitioned ON → unknown → OFF, then ordered by name/id so a status
-    /// poll only reorders a row when its class actually changes. Same
-    /// ON-first + name tie-break as the menu bar (commit 1a191e6).
+    /// partitioned ON → reachable → unreachable, then ordered by name/id so a
+    /// status poll only reorders a row when its class actually changes.
+    /// "Reachable" uses the same transport notion as DeviceCard's `isEnabled`:
+    /// the device has an address (WiFi) or is BLE. Same ON-first + name
+    /// tie-break as the menu bar (commit 1a191e6).
     private func onFirst(_ lhs: Device, _ rhs: Device) -> Bool {
         let leftRank = onRank(lhs)
         let rightRank = onRank(rhs)
@@ -179,10 +181,7 @@ struct DashboardView: View {
         if store.isOn[device.id] == true || store.briturnStatus[device.id]?.on == true {
             return 0
         }
-        if store.isOn[device.id] == false || store.briturnStatus[device.id]?.on == false {
-            return 2
-        }
-        return 1
+        return (device.hasAddress || device.isBLE) ? 1 : 2
     }
 
     private var selectedDevice: Device? {
