@@ -34,7 +34,9 @@ struct MyHomeApp: App {
             DashboardView()
                 .environmentObject(store)
         }
-        .defaultSize(width: 760, height: 520)
+        // Fits the designed layout without dead space: 175pt sidebar + ~580pt
+        // two-column device grid + 360pt detail pane + divider/chrome.
+        .defaultSize(width: 1120, height: 760)
         .commands {
             CommandGroup(replacing: .newItem) {}
         }

@@ -73,6 +73,17 @@ struct DashboardView: View {
     /// The Plugs-internal `roomFilter` is preserved but dormant until the user
     /// returns to the Plugs category.
     @State private var selectedRoom: String?
+    /// Detail pane width in points: user-owned state, clamped to a sane range
+    /// and persisted so the chosen width survives relaunch. Never derived from
+    /// the window width, so the pane never stretches to fill dead space.
+    @AppStorage("dashboardDetailWidth") private var detailWidth: Double = 360
+    @State private var detailDragStartWidth: CGFloat?
+
+    private let detailWidthRange: ClosedRange<CGFloat> = 300...560
+
+    private var clampedDetailWidth: CGFloat {
+        min(max(CGFloat(detailWidth), detailWidthRange.lowerBound), detailWidthRange.upperBound)
+    }
     private var filtered: [Device] {
         var result: [Device]
         if let room = selectedRoom {
@@ -204,9 +215,9 @@ struct DashboardView: View {
             .navigationTitle(selectedRoom ?? group.title)
 
             if let device = selectedDevice {
-                Divider()
+                detailResizeHandle
                 DeviceDetailView(device: device)
-                    .frame(minWidth: 320, maxWidth: .infinity)
+                    .frame(width: clampedDetailWidth)
             }
         }
         .task {
@@ -233,6 +244,33 @@ struct DashboardView: View {
             }
         }
         .onDisappear { store.stopPolling() }
+    }
+
+    /// Draggable divider: dragging left widens the detail pane, clamped and
+    /// persisted. A 1pt rule inside a 10pt hit area keeps the visual weight of
+    /// the old `Divider()` while remaining an easy grab target.
+    private var detailResizeHandle: some View {
+        Rectangle()
+            .fill(Color(nsColor: .separatorColor))
+            .frame(width: 1)
+            .frame(width: 10)
+            .contentShape(Rectangle())
+            .onHover { inside in
+                if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        if detailDragStartWidth == nil {
+                            detailDragStartWidth = clampedDetailWidth
+                        }
+                        let proposed = (detailDragStartWidth ?? clampedDetailWidth) - value.translation.width
+                        detailWidth = Double(
+                            min(max(proposed, detailWidthRange.lowerBound), detailWidthRange.upperBound)
+                        )
+                    }
+                    .onEnded { _ in detailDragStartWidth = nil }
+            )
     }
 
     @ViewBuilder
