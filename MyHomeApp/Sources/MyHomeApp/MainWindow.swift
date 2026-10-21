@@ -162,12 +162,13 @@ struct DashboardView: View {
     }
 
     /// General rule: every dashboard list (any category or active filter) is
-    /// partitioned ON → cloud-not-offline → cloud-offline, then ordered by
-    /// name/id so a status poll only reorders a row when its class actually
-    /// changes. The sort tiers mirror the card's own online badge
-    /// (`store.cloudOnline[device.id]`): a row sorts out of the middle tier
-    /// exactly when its badge would show offline. Same ON-first + name
-    /// tie-break as the menu bar (commit 1a191e6).
+    /// partitioned ON → online → offline, then ordered by name/id so a status
+    /// poll only reorders a row when its class actually changes. "Online" means
+    /// the card shows no offline indication: it is reachable by transport
+    /// (`hasAddress || isBLE`, the same notion as DeviceCard's `isEnabled`) AND
+    /// the cloud badge is not offline. Any offline indication on either signal
+    /// sends the row to the last tier. Same ON-first + name tie-break as the
+    /// menu bar (commit 1a191e6).
     private func onFirst(_ lhs: Device, _ rhs: Device) -> Bool {
         let leftRank = onRank(lhs)
         let rightRank = onRank(rhs)
@@ -182,7 +183,8 @@ struct DashboardView: View {
         if store.isOn[device.id] == true || store.briturnStatus[device.id]?.on == true {
             return 0
         }
-        return store.cloudOnline[device.id] == false ? 2 : 1
+        let showsOffline = !(device.hasAddress || device.isBLE) || store.cloudOnline[device.id] == false
+        return showsOffline ? 2 : 1
     }
 
     private var selectedDevice: Device? {
