@@ -55,6 +55,63 @@ enum DeviceGroup: String, CaseIterable, Identifiable {
     }
 }
 
+/// General rule: a room's icon reflects its purpose whenever its name is
+/// recognizable. Matching is a total, ordered substring lookup over
+/// `RoomIcon.table`, normalized to lowercase and trimmed; the most specific
+/// entry wins, and any unrecognized name (for example "Function room")
+/// degrades to the generic "house" icon. The five current rooms are simply
+/// instances of that rule, not cases: "Guest room" → bed.double via "guest",
+/// "Master room" → bed.double via "master", "Dining room" → fork.knife via
+/// "dining", "Living room" → sofa via "living", "Study room" → books.vertical
+/// via "study". New room types need only a table entry — never a view change.
+enum RoomIcon {
+    /// Ordered most-specific → least-specific; first substring match wins.
+    /// Symbols verified against the macOS 13 deployment target (SF Symbols
+    /// versions ≤ 3); unavailable candidates such as "door.fully.open",
+    /// "crib", "dining.table", and "arrows.rotate" were rejected.
+    private static let table: [(keyword: String, symbol: String)] = [
+        ("guest", "bed.double"),
+        ("master", "bed.double"),
+        ("kids", "bed.double"),
+        ("nursery", "bed.double"),
+        ("bed", "bed.double"),
+        ("dining", "fork.knife"),
+        ("living", "sofa"),
+        ("lounge", "sofa"),
+        ("study", "books.vertical"),
+        ("office", "books.vertical"),
+        ("desk", "books.vertical"),
+        ("kitchen", "refrigerator"),
+        ("bath", "drop"),
+        ("shower", "drop"),
+        ("toilet", "drop"),
+        ("garage", "car"),
+        ("laundry", "washer"),
+        ("wash", "washer"),
+        ("garden", "leaf"),
+        ("balcony", "leaf"),
+        ("yard", "leaf"),
+        ("patio", "leaf"),
+        ("gym", "dumbbell"),
+        ("exercise", "dumbbell"),
+        ("play", "puzzlepiece"),
+        ("storage", "archivebox"),
+        ("store", "archivebox"),
+        ("hall", "door.left.hand.closed"),
+        ("corridor", "door.left.hand.closed"),
+        ("entry", "door.left.hand.closed")
+    ]
+
+    /// Total function: returns "house" for empty or unrecognized input.
+    public static func icon(for room: String) -> String {
+        let normalized = room.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        for entry in table where normalized.contains(entry.keyword) {
+            return entry.symbol
+        }
+        return "house"
+    }
+}
+
 struct DashboardView: View {
     @EnvironmentObject private var store: DeviceStore
     @State private var group: DeviceGroup = DeviceGroup.allCases.first { ProcessInfo.processInfo.environment["MYHOME_GROUP"] == $0.title.lowercased() } ?? .fans
@@ -156,7 +213,7 @@ struct DashboardView: View {
                         Button {
                             selectedRoom = room
                         } label: {
-                            Label(room, systemImage: "house")
+                            Label(room, systemImage: RoomIcon.icon(for: room))
                                 .badge(roomCount(room))
                         }
                         .buttonStyle(.plain)

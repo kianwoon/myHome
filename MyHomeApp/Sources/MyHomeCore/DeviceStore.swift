@@ -560,6 +560,25 @@ public final class DeviceStore: ObservableObject {
     private var briturnIntent: [String: BriturnIntent] = [:]
     private static let briturnIntentGrace: TimeInterval = 8
 
+    /// General rule: USER INTENT OUTRANKS A STALE WIRE READ — for DPS values
+    /// too. A set command paints its optimistic value, but the bridge's
+    /// immediate readback (and any poll landing mid-transition) can still
+    /// report the OLD value; painting that reply would visually undo the
+    /// user's command until the next poll corrects it. An intent records the
+    /// dps the user asked for; incoming dps that contradict a fresh intent are
+    /// dropped (the intent value is painted instead), agreeing values confirm
+    /// and clear their keys, and only after the grace expires does the wire
+    /// win — so a genuinely lost command still self-corrects via polling.
+    /// Instances: fan speed dots (set-reply AND polls), oscillation toggle,
+    /// ModeMenu string enums, and bulb dp sets via SpecControls.
+    private struct DpsIntent {
+        let values: [String: DPSValue]
+        let at: Date
+    }
+
+    private var dpsIntent: [String: DpsIntent] = [:]
+    private static let dpsIntentGrace: TimeInterval = briturnIntentGrace
+
     /// Paints a wire-read state unless it fights a fresh user intent.
     private func applyBriturnWireState(_ id: String, _ state: BriturnState, authoritative: Bool = false) {
         if let intent = briturnIntent[id],
@@ -1441,10 +1460,33 @@ public final class DeviceStore: ObservableObject {
     }
 
     private func applyStatus(_ id: String, decoded: [String: DPSValue]) {
-        dpsById[id] = decoded
+        var resolved = decoded
+        if let intent = dpsIntent[id],
+           Date().timeIntervalSince(intent.at) < Self.dpsIntentGrace {
+            var pending: [String: DPSValue] = [:]
+            for (key, intended) in intent.values {
+                guard let wire = decoded[key] else { continue }
+                if wire == intended {
+                    // Device confirmed the user's instruction: stop defending.
+                    continue
+                }
+                // Stale readback: keep showing the user's command.
+                resolved[key] = intended
+                pending[key] = intended
+            }
+            if pending.isEmpty {
+                dpsIntent.removeValue(forKey: id)
+            } else {
+                dpsIntent[id] = DpsIntent(values: pending, at: intent.at)
+            }
+        } else if dpsIntent[id] != nil {
+            // Grace expired: the wire is authoritative again.
+            dpsIntent.removeValue(forKey: id)
+        }
+        dpsById[id] = resolved
         statusErrors[id] = nil
         loadedStatus.insert(id)
-        if let power = decoded["1"]?.boolValue {
+        if let power = resolved["1"]?.boolValue {
             isOn[id] = power
         }
     }
@@ -1500,6 +1542,8 @@ public final class DeviceStore: ObservableObject {
         let previousOn = isOn[device.id]
 
         if !optimistic.isEmpty {
+            // A newer command supersedes any prior intent for this device.
+            dpsIntent[device.id] = DpsIntent(values: optimistic, at: Date())
             var merged = dpsById[device.id] ?? [:]
             for (key, value) in optimistic {
                 merged[key] = value
@@ -1523,11 +1567,13 @@ public final class DeviceStore: ObservableObject {
             }
             dpsById[device.id] = previousDps
             isOn[device.id] = previousOn
+            dpsIntent.removeValue(forKey: device.id)
             errorText = reply["error"] as? String ?? "Set failed."
             return false
         } catch {
             dpsById[device.id] = previousDps
             isOn[device.id] = previousOn
+            dpsIntent.removeValue(forKey: device.id)
             errorText = error.localizedDescription
             return false
         }
