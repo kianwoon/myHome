@@ -389,6 +389,13 @@ struct DeviceCard: View {
     @State private var showingRename = false
     @State private var showingRoom = false
 
+    /// General rule: every card reserves the same vertical content box, so a
+    /// card's height is a property of the GRID, not of the device's control
+    /// count. 260pt is sized for the tallest current card (Water: header +
+    /// five spec controls + timer picker + readout) with headroom; content is
+    /// top-aligned, so sparse cards pad below rather than shrink.
+    static let uniformContentHeight: CGFloat = 260
+
     private var isBriturn: Bool { device.category.lowercased() == "briturn" }
 
     private var roomLabel: String? {
@@ -517,6 +524,7 @@ struct DeviceCard: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(12)
+        .frame(maxWidth: .infinity, minHeight: Self.uniformContentHeight, alignment: .topLeading)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(Color(nsColor: .controlBackgroundColor))
