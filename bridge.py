@@ -190,6 +190,8 @@ def make_device(config):
         version=version,
         connection_timeout=SOCKET_TIMEOUT,
         persist=False,
+        connection_retry_limit=1,
+        connection_retry_delay=1,
     )
     device.set_socketTimeout(SOCKET_TIMEOUT)
     _device_cache[device_id] = device
