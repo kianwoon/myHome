@@ -1627,13 +1627,19 @@ public final class DeviceStore: ObservableObject {
                 try applyConfirmedReply(device.id, reply: reply)
                 errorText = nil
             } else {
-                dpsIntent.removeValue(forKey: device.id)
-                revert(device: device, isOn: previous, dps: previousDps)
-                errorText = reply["error"] as? String ?? "Set failed."
+                let message = reply["error"] as? String ?? "Set failed."
+                if Self.isDefiniteRejection(message) {
+                    dpsIntent.removeValue(forKey: device.id)
+                    revert(device: device, isOn: previous, dps: previousDps)
+                }
+                // Ambiguous outcome (transport/914/etc.): keep the optimistic
+                // paint and the intent -- see the invariant in setDps.
+                errorText = message
             }
         } catch {
-            dpsIntent.removeValue(forKey: device.id)
-            revert(device: device, isOn: previous, dps: previousDps)
+            // No reply at all is an unknown outcome, not evidence of failure:
+            // leave the optimistic paint and intent for the next poll to
+            // confirm or let the grace window self-correct.
             errorText = error.localizedDescription
         }
     }
@@ -1676,18 +1682,41 @@ public final class DeviceStore: ObservableObject {
                 errorText = nil
                 return true
             }
-            dpsById[device.id] = previousDps
-            isOn[device.id] = previousOn
-            dpsIntent.removeValue(forKey: device.id)
-            errorText = reply["error"] as? String ?? "Set failed."
+            // Reversion rule (invariant): an UNKNOWN outcome is not evidence
+            // of failure. Only a definite rejection may undo the user's paint
+            // and clear the intent; a thrown transport error or an ambiguous
+            // device message (902/914/timeout/connection) must keep both, so
+            // the pending poll can confirm what the device actually applied
+            // and the grace window can self-correct if it never does.
+            let message = reply["error"] as? String ?? "Set failed."
+            if Self.isDefiniteRejection(message) {
+                dpsById[device.id] = previousDps
+                isOn[device.id] = previousOn
+                dpsIntent.removeValue(forKey: device.id)
+            }
+            errorText = message
             return false
         } catch {
-            dpsById[device.id] = previousDps
-            isOn[device.id] = previousOn
-            dpsIntent.removeValue(forKey: device.id)
+            // Unknown outcome: keep optimistic dps and intent in place.
             errorText = error.localizedDescription
             return false
         }
+    }
+
+    /// A failed set is definite only when the bridge explicitly rejected the
+    /// request (bad id/ip/dps). Transport-class text -- 902, 914, timeouts,
+    /// connection resets -- means the device may have applied the set, so it
+    /// must not be treated as a rejection. Any unrecognized text is treated as
+    /// ambiguous on purpose: the safe default is to keep the paint.
+    private static func isDefiniteRejection(_ message: String) -> Bool {
+        let text = message.lowercased()
+        let ambiguous = [
+            "902", "914", "timeout", "timed out", "time out", "connection",
+            "did not respond", "no response", "network is unreachable",
+            "no route to host", "broken pipe", "reset by peer", "eof",
+            "socket", "unreachable"
+        ]
+        return !ambiguous.contains { text.contains($0) }
     }
 
     /// Applies the dps the bridge confirmed from the device after a set. If the

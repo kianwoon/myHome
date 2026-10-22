@@ -109,6 +109,9 @@ CLOUD_IDENTITY_FIELDS = (
 
 # Device objects keyed by device id; reused so persistent sockets are shared.
 _device_cache = {}
+# Per-device locks guarding every wire exchange on the cached Device objects.
+_DEVICE_LOCKS = {}
+_DEVICE_LOCKS_GUARD = threading.Lock()
 # In-memory copy of devices.json, refreshed by rescan.
 _devices = []
 
@@ -170,8 +173,31 @@ def find_device(device_id):
     return None
 
 
+def device_lock(device_id):
+    """Return the per-device lock that guards its cached tinytuya.Device.
+
+    Invariant: exactly one Device object per id lives in _device_cache and its
+    socket is not thread-safe. Every caller must hold this lock across the
+    whole request/response exchange -- status(), set_multiple_values(), and any
+    future wire call -- and across make_device() so the cache is not populated
+    concurrently. Without it the 10s status poll interleaves with a user set on
+    the same socket, corrupting the exchange into spurious Err 914 "Check
+    device key or version" rejections.
+    """
+    with _DEVICE_LOCKS_GUARD:
+        lock = _DEVICE_LOCKS.get(device_id)
+        if lock is None:
+            lock = threading.Lock()
+            _DEVICE_LOCKS[device_id] = lock
+        return lock
+
+
 def make_device(config):
-    """Build (or reuse) a tinytuya.Device for a devices.json entry."""
+    """Build (or reuse) a tinytuya.Device for a devices.json entry.
+
+    Callers must hold device_lock(config["id"]) around this call and until the
+    exchange finishes; the returned object is shared by every thread.
+    """
     device_id = config.get("id")
     cached = _device_cache.get(device_id)
     if cached is not None:
@@ -224,7 +250,9 @@ def handle_status(device_id):
     if not config.get("ip"):
         return {"ok": False, "error": "device has no known ip"}
     try:
-        dps = read_status(make_device(config))
+        # One shared Device socket: serialize against sets and other polls.
+        with device_lock(device_id):
+            dps = read_status(make_device(config))
         return {"ok": True, "dps": dps}
     except Exception as exc:  # network failures must stay on the wire path
         return {"ok": False, "error": str(exc) or "status failed"}
@@ -239,12 +267,23 @@ def handle_set(device_id, dps):
     if not isinstance(dps, dict) or not dps:
         return {"ok": False, "error": "dps must be a non-empty object"}
     try:
-        device = make_device(config)
-        result = device.set_multiple_values(dps)
-        if isinstance(result, dict) and (result.get("Error") or result.get("Err")):
-            return {"ok": False, "error": error_text(result)}
-        # Confirm with a follow-up status().
-        return {"ok": True, "dps": read_status(device)}
+        with device_lock(device_id):
+            device = make_device(config)
+            result = device.set_multiple_values(dps)
+            if isinstance(result, dict) and (result.get("Error") or result.get("Err")):
+                return {"ok": False, "error": error_text(result)}
+            # tinytuya echoes the applied dps on the command reply; that echo is
+            # itself the device's confirmation and costs no second exchange.
+            echo = result.get("dps") if isinstance(result, dict) else None
+            if isinstance(echo, dict):
+                return {"ok": True, "dps": echo, "confirmed": True}
+            # No echo: fall back to a status read, but a failed readback is an
+            # UNKNOWN outcome, not a failed set -- the command already reached
+            # the wire, so never report ok:false for a missing confirmation.
+            try:
+                return {"ok": True, "dps": read_status(device), "confirmed": True}
+            except Exception:
+                return {"ok": True, "confirmed": False}
     except Exception as exc:
         return {"ok": False, "error": str(exc) or "set failed"}
 
