@@ -243,6 +243,81 @@ def read_status(device):
     raise ValueError(error_text(result))
 
 
+def cloud_status_dps(config):
+    """Return dps fetched over the Tuya cloud, shaped like a local reply.
+
+    General rule: any failed local exchange may be answered by the cloud, so
+    the cloud reply must look exactly like a local one. The device's "codes"
+    map is code -> dp (see handle_specs); invert it. A device without a map
+    still returns the cloud's raw code -> value pairs, which is more useful
+    than an error. Raises on a cloud failure; the caller keeps the local error.
+    """
+    cloud = make_cloud()
+    result = cloud.getstatus(config.get("id"))
+    if not isinstance(result, dict) or result.get("Error") or result.get("Err"):
+        raise ValueError(error_text(result))
+    if result.get("success") is False:
+        raise ValueError("cloud status failed")
+    points = result.get("result", result)
+    if isinstance(points, list):
+        # Live iot-03 status replies carry a list of {code, value} points.
+        values = {}
+        for item in points:
+            if isinstance(item, dict) and item.get("code"):
+                values[item["code"]] = item.get("value")
+        points = values
+    if not isinstance(points, dict):
+        raise ValueError("cloud status failed")
+
+    codes = config.get("codes")
+    if not isinstance(codes, dict) or not codes:
+        return dict(points)
+    dps = {}
+    for code, value in points.items():
+        dp_id = codes.get(code)
+        dps[dp_id if dp_id is not None else code] = value
+    return dps
+
+
+def cloud_set_dps(config, dps):
+    """Send dp values through the Tuya cloud, returning an ok/error reply.
+
+    General rule: a dp only travels upstream when the device's "codes" map
+    (code -> dp) names a code for it; unmappable dps are reported, never
+    silently dropped. Nothing here depends on a device id or a dp number.
+    Raises on a cloud failure; the caller keeps the local error.
+    """
+    codes = config.get("codes")
+    code_by_dp = {}
+    if isinstance(codes, dict):
+        for code, dp_id in codes.items():
+            code_by_dp[str(dp_id)] = code
+    commands = []
+    missing = []
+    for dp_id, value in dps.items():
+        code = code_by_dp.get(str(dp_id))
+        if code is None:
+            missing.append(str(dp_id))
+            continue
+        commands.append({"code": code, "value": value})
+    if not commands:
+        return {"ok": False,
+                "error": "no cloud code for dp " + ", ".join(missing)}
+    cloud = make_cloud()
+    result = cloud.sendcommand(config.get("id"), {"commands": commands})
+    if not isinstance(result, dict) or result.get("Error") or result.get("Err"):
+        raise ValueError(error_text(result))
+    if result.get("success") is False:
+        raise ValueError("cloud send failed")
+    reply = {"ok": True, "via": "cloud"}
+    echo = result.get("dps") if isinstance(result, dict) else None
+    if isinstance(echo, dict):
+        reply["dps"] = echo
+    if missing:
+        reply["error"] = "no cloud code for dp " + ", ".join(missing)
+    return reply
+
+
 def handle_status(device_id):
     config = find_device(device_id)
     if config is None:
@@ -255,7 +330,14 @@ def handle_status(device_id):
             dps = read_status(make_device(config))
         return {"ok": True, "dps": dps}
     except Exception as exc:  # network failures must stay on the wire path
-        return {"ok": False, "error": str(exc) or "status failed"}
+        local_error = str(exc) or "status failed"
+    # General rule: a broken local exchange is not a broken device. Try the
+    # cloud exactly as the official app does; if the cloud is unconfigured or
+    # also fails, the ORIGINAL local error is what the caller sees.
+    try:
+        return {"ok": True, "dps": cloud_status_dps(config), "via": "cloud"}
+    except Exception:
+        return {"ok": False, "error": local_error}
 
 
 def handle_set(device_id, dps):
@@ -271,7 +353,7 @@ def handle_set(device_id, dps):
             device = make_device(config)
             result = device.set_multiple_values(dps)
             if isinstance(result, dict) and (result.get("Error") or result.get("Err")):
-                return {"ok": False, "error": error_text(result)}
+                raise ValueError(error_text(result))
             # tinytuya echoes the applied dps on the command reply; that echo is
             # itself the device's confirmation and costs no second exchange.
             echo = result.get("dps") if isinstance(result, dict) else None
@@ -285,7 +367,14 @@ def handle_set(device_id, dps):
             except Exception:
                 return {"ok": True, "confirmed": False}
     except Exception as exc:
-        return {"ok": False, "error": str(exc) or "set failed"}
+        local_error = str(exc) or "set failed"
+    # General rule: the local exchange failed, so retry through the cloud (the
+    # same route the official app uses). Only dps the codes map can name travel
+    # upstream; if the cloud is unavailable the ORIGINAL local error is kept.
+    try:
+        return cloud_set_dps(config, dps)
+    except Exception:
+        return {"ok": False, "error": local_error}
 
 
 def handle_rename(request):

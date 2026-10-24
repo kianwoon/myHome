@@ -961,5 +961,100 @@ class TestBridgeRescanCloudMerge(unittest.TestCase):
         self.assertEqual(roster['lan1']['ip'], '10.0.0.9')
 
 
+class TestBridgeCloudFallback(unittest.TestCase):
+    """A failed local exchange falls back to the Tuya cloud, device-agnostic."""
+
+    def setUp(self):
+        import bridge
+        self.bridge = bridge
+        self.old_devices = bridge._devices
+        self.old_make_device = bridge.make_device
+        self.old_make_cloud = bridge.make_cloud
+        bridge._devices = [
+            {'id': 'fan1', 'name': 'Fan', 'ip': '10.0.0.9', 'version': 3.4,
+             'category': 'fs', 'key': LOCAL_KEY,
+             'codes': {'switch': '1', 'mode': '2'}},
+            {'id': 'raw1', 'name': 'Raw', 'ip': '10.0.0.10', 'version': 3.5,
+             'category': 'fs', 'key': LOCAL_KEY},
+        ]
+        self.cloud = MagicMock()
+        bridge.make_cloud = MagicMock(return_value=self.cloud)
+        self.device = MagicMock()
+        self.device.status = MagicMock(return_value={
+            'Error': 914, 'Err': 'Check device key or version'})
+        self.device.set_multiple_values = MagicMock(return_value={
+            'Error': 914, 'Err': 'Check device key or version'})
+        bridge.make_device = MagicMock(return_value=self.device)
+
+    def tearDown(self):
+        self.bridge._devices = self.old_devices
+        self.bridge.make_device = self.old_make_device
+        self.bridge.make_cloud = self.old_make_cloud
+
+    def cloud_points(self):
+        return {'success': True, 'result': [
+            {'code': 'switch', 'value': True},
+            {'code': 'mode', 'value': 'auto'},
+        ]}
+
+    def test_local_status_failure_falls_back_to_cloud_via_codes(self):
+        self.cloud.getstatus = MagicMock(return_value=self.cloud_points())
+
+        result = self.bridge.handle_status('fan1')
+
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(result['via'], 'cloud')
+        self.assertEqual(result['dps'], {'1': True, '2': 'auto'})
+
+    def test_local_status_failure_without_codes_returns_raw(self):
+        self.cloud.getstatus = MagicMock(return_value=self.cloud_points())
+
+        result = self.bridge.handle_status('raw1')
+
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(result['via'], 'cloud')
+        self.assertEqual(result['dps'], {'switch': True, 'mode': 'auto'})
+
+    def test_local_and_cloud_failure_keeps_local_error(self):
+        self.cloud.getstatus = MagicMock(
+            side_effect=RuntimeError('secret-token-abc'))
+
+        result = self.bridge.handle_status('fan1')
+
+        self.assertFalse(result['ok'], result)
+        self.assertIn('device key', result['error'])
+        self.assertNotIn('secret', json.dumps(result))
+
+    def test_local_set_failure_maps_dp_to_cloud_code(self):
+        self.cloud.sendcommand = MagicMock(return_value={'success': True})
+
+        result = self.bridge.handle_set('fan1', {'1': True})
+
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(result['via'], 'cloud')
+        self.cloud.sendcommand.assert_called_once_with(
+            'fan1', {'commands': [{'code': 'switch', 'value': True}]})
+
+    def test_unmappable_dp_is_reported(self):
+        self.cloud.sendcommand = MagicMock(return_value={'success': True})
+
+        result = self.bridge.handle_set('raw1', {'1': True})
+
+        self.assertFalse(result['ok'], result)
+        self.assertIn('no cloud code for dp 1', result['error'])
+        self.cloud.sendcommand.assert_not_called()
+
+    def test_partial_codes_map_sends_mapped_and_reports_rest(self):
+        self.cloud.sendcommand = MagicMock(return_value={'success': True})
+
+        result = self.bridge.handle_set('fan1', {'1': True, '99': 5})
+
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(result['via'], 'cloud')
+        self.assertIn('no cloud code for dp 99', result['error'])
+        self.cloud.sendcommand.assert_called_once_with(
+            'fan1', {'commands': [{'code': 'switch', 'value': True}]})
+
+
 if __name__ == '__main__':
     unittest.main()
