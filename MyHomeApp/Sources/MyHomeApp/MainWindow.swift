@@ -920,6 +920,12 @@ struct FanControlView: View {
     private var speedKey: String { state.fanSpeedKey ?? "2" }
     private var showSpeed: Bool { !state.isDeclared(state.fanSpeedKey) }
     private var showOscillation: Bool { !state.isDeclared(state.oscillationKey) }
+    /// General rule: speed is a local-only dp for some firmwares, so when the
+    /// status itself came from the cloud AND no numeric speed dp is present,
+    /// say why the control is missing instead of leaving a silent gap.
+    private var speedNeedsLocal: Bool {
+        store.statusViaCloud[device.id] == true && !state.hasNumericFanSpeed
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -969,6 +975,12 @@ struct FanControlView: View {
                 }
                 .toggleStyle(.switch)
                 .controlSize(.mini)
+            }
+
+            if speedNeedsLocal {
+                Text("Speed control needs a local connection")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
     }

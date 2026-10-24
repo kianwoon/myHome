@@ -76,8 +76,8 @@ private struct CapabilityRow: View {
                         }
                     }
                 )) {
-                    ForEach(capability.range, id: \.self) { value in
-                        Text(value.capitalized).tag(value)
+                    ForEach(enumOptions(capability), id: \.self) { value in
+                        Text(enumLabel(value, in: capability)).tag(value)
                     }
                 }
                 .labelsHidden()
@@ -168,6 +168,24 @@ private struct CapabilityRow: View {
             return "\(text) \(unit)"
         }
         return text
+    }
+
+    /// General rule: an enum picker must never go blank. A status value the
+    /// spec's range does not include (degraded firmware, cloud fallback) is
+    /// appended as its own option so the current state stays visible and a
+    /// valid option is one click away.
+    private func enumOptions(_ capability: Capability) -> [String] {
+        let current = state.dps[capability.dpId]?.stringValue
+        guard let current, !current.isEmpty else { return capability.range }
+        return capability.range.contains(current)
+            ? capability.range
+            : capability.range + [current]
+    }
+
+    private func enumLabel(_ value: String, in capability: Capability) -> String {
+        capability.range.contains(value)
+            ? value.capitalized
+            : "\(value.capitalized) (custom)"
     }
 }
 

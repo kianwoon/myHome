@@ -104,6 +104,10 @@ public final class DeviceStore: ObservableObject {
     @Published public private(set) var cloudEnvBroken = false
     @Published public private(set) var statusLoading: Set<String> = []
     @Published public private(set) var statusErrors: [String: String] = [:]
+    /// True when that device's latest status reply came over the cloud fallback
+    /// (`"via":"cloud"`) rather than the local LAN path. Cleared by the next
+    /// successful local status, so it always describes the current reading.
+    @Published public private(set) var statusViaCloud: [String: Bool] = [:]
     @Published public private(set) var schedules: [DeviceSchedule] = []
     @Published public private(set) var schedulesLoading = false
     @Published public private(set) var schedulesError: String?
@@ -1148,6 +1152,7 @@ public final class DeviceStore: ObservableObject {
         guard !targets.isEmpty else { return }
 
         var dpsBatch: [String: [String: DPSValue]] = [:]
+        var viaBatch: [String: Bool] = [:]
         var errorBatch: [String: String] = [:]
 
         // Sliding window of 6: devices overlap instead of walking one at a
@@ -1164,8 +1169,9 @@ public final class DeviceStore: ObservableObject {
             }
             while let pair = await group.next() {
                 switch pair.1 {
-                case .success(let decoded):
+                case .success(let decoded, let viaCloud):
                     dpsBatch[pair.0] = decoded
+                    viaBatch[pair.0] = viaCloud
                 case .failure(let message):
                     errorBatch[pair.0] = message
                 }
@@ -1176,13 +1182,14 @@ public final class DeviceStore: ObservableObject {
             }
         }
 
-        applyPollBatch(dps: dpsBatch, errors: errorBatch)
+        applyPollBatch(dps: dpsBatch, viaCloud: viaBatch, errors: errorBatch)
     }
 
     /// Single coalesced write for one poll cycle: each published collection is
     /// assigned once, so SwiftUI sees one invalidation rather than dozens.
     private func applyPollBatch(
         dps: [String: [String: DPSValue]],
+        viaCloud: [String: Bool],
         errors: [String: String]
     ) {
         guard !dps.isEmpty || !errors.isEmpty else { return }
@@ -1202,6 +1209,7 @@ public final class DeviceStore: ObservableObject {
             }
             dpsById.merge(resolvedBatch) { _, new in new }
             isOn.merge(resolvedOn) { _, new in new }
+            statusViaCloud.merge(viaCloud) { _, new in new }
             loadedStatus.formUnion(dps.keys)
         }
         var mergedErrors = statusErrors
@@ -1231,15 +1239,15 @@ public final class DeviceStore: ObservableObject {
         defer { statusLoading.remove(device.id) }
 
         switch await fetchStatus(for: device.id) {
-        case .success(let decoded):
-            applyStatus(device.id, decoded: decoded)
+        case .success(let decoded, let viaCloud):
+            applyStatus(device.id, decoded: decoded, viaCloud: viaCloud)
         case .failure(let message):
             statusErrors[device.id] = message
         }
     }
 
     private enum StatusFetch {
-        case success([String: DPSValue])
+        case success([String: DPSValue], viaCloud: Bool)
         case failure(String)
     }
 
@@ -1252,7 +1260,10 @@ public final class DeviceStore: ObservableObject {
             guard let raw = reply["dps"] else {
                 return .failure("Device returned no dps.")
             }
-            return .success(try Self.decodeDps(raw))
+            return .success(
+                try Self.decodeDps(raw),
+                viaCloud: reply["via"] as? String == "cloud"
+            )
         } catch {
             return .failure(error.localizedDescription)
         }
@@ -1587,9 +1598,14 @@ public final class DeviceStore: ObservableObject {
         return resolved
     }
 
-    private func applyStatus(_ id: String, decoded: [String: DPSValue]) {
+    private func applyStatus(
+        _ id: String,
+        decoded: [String: DPSValue],
+        viaCloud: Bool = false
+    ) {
         let resolved = reconciled(id, decoded)
         dpsById[id] = resolved
+        statusViaCloud[id] = viaCloud
         statusErrors[id] = nil
         loadedStatus.insert(id)
         if let power = resolved["1"]?.boolValue {
@@ -1723,7 +1739,11 @@ public final class DeviceStore: ObservableObject {
     /// reply carries no dps the optimistic value is left in place.
     private func applyConfirmedReply(_ id: String, reply: [String: Any]) throws {
         guard let raw = reply["dps"] else { return }
-        applyStatus(id, decoded: try Self.decodeDps(raw))
+        applyStatus(
+            id,
+            decoded: try Self.decodeDps(raw),
+            viaCloud: reply["via"] as? String == "cloud"
+        )
     }
 
     private func revert(device: Device, isOn previousOn: Bool, dps previousDps: [String: DPSValue]?) {

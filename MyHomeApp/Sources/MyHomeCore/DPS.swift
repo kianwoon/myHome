@@ -226,6 +226,15 @@ public struct DeviceState {
         return dps[key]?.doubleValue != nil ? Self.numericFanSpeedMax : Self.stringFanSpeedMax
     }
 
+    /// General rule: a numeric gear-speed dp is settable locally but is often
+    /// absent from a cloud-fallback status reply (the cloud spec hides dp 3 on
+    /// custom-mode fans). Callers use this to explain the missing control
+    /// instead of silently rendering nothing.
+    public var hasNumericFanSpeed: Bool {
+        guard let key = fanSpeedKey else { return false }
+        return dps[key]?.doubleValue != nil
+    }
+
     public var oscillationKey: String? {
         for key in ["5", "4"] where dps[key]?.boolValue != nil {
             return key
