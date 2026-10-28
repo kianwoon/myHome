@@ -128,13 +128,31 @@ struct DashboardView: View {
     /// Sidebar room lens. Mutually exclusive with the category `group`: when
     /// set, the content shows every device in that room across all categories.
     /// The Plugs-internal `roomFilter` is preserved but dormant until the user
-    /// returns to the Plugs category.
-    @State private var selectedRoom: String?
+    /// returns to the Plugs category. MYHOME_ROOM is a diagnostic-only launch
+    /// hook (same contract as MYHOME_GROUP) so a room dashboard can be
+    /// screenshotted headlessly.
+    @State private var selectedRoom: String? = ProcessInfo.processInfo.environment["MYHOME_ROOM"].flatMap { $0.isEmpty ? nil : $0 }
     /// Detail pane width in points: user-owned state, clamped to a sane range
     /// and persisted so the chosen width survives relaunch. Never derived from
     /// the window width, so the pane never stretches to fill dead space.
     @AppStorage("dashboardDetailWidth") private var detailWidth: Double = 360
     @State private var detailDragStartWidth: CGFloat?
+
+    /// Height applied to every card in the CURRENT dashboard section: the
+    /// maximum NATURAL content height measured from that section's cards.
+    /// Never hardcoded, never global — a different device set (or dashboard)
+    /// simply produces a different maximum. `0` means "not measured yet"; the
+    /// cards then lay out at their own natural heights for the first pass.
+    @State private var sectionCardHeight: CGFloat = 0
+    /// Identity of the visible section. A change resets the measurement so the
+    /// previous dashboard's maximum can never pad a new one.
+    private var sectionIdentity: String {
+        if let room = selectedRoom { return "room:\(room)" }
+        var identity = "group:\(group.rawValue)"
+        if group == .briturn, let filter = briturnGroupFilter { identity += ":\(filter)" }
+        if group == .plugs, let filter = roomFilter { identity += ":\(filter)" }
+        return identity
+    }
 
     private let detailWidthRange: ClosedRange<CGFloat> = 300...560
 
@@ -260,11 +278,27 @@ struct DashboardView: View {
                         ForEach(filtered) { device in
                             DeviceCard(
                                 device: device,
-                                isSelected: selectedID == device.id
+                                isSelected: selectedID == device.id,
+                                contentHeight: sectionCardHeight
                             ) {
                                 selectedID = device.id
                             }
                         }
+                    }
+                    // Every rendered card publishes its natural content height;
+                    // the reducer keeps the maximum, which is then handed back
+                    // to ALL cards in this section. The guard below drops
+                    // no-op writes, so the applied height never re-triggers a
+                    // measurement round — the value stabilises after the first
+                    // layout pass.
+                    .onPreferenceChange(CardNaturalHeightKey.self) { height in
+                        guard height.isFinite, height > 0 else { return }
+                        if abs(height - sectionCardHeight) > 0.5 {
+                            sectionCardHeight = height
+                        }
+                    }
+                    .onChange(of: sectionIdentity) { _ in
+                        sectionCardHeight = 0
                     }
                     .padding()
                 }
@@ -383,20 +417,26 @@ struct CategoryRefreshButton: View {
 
 // MARK: - Card
 
+/// Natural content height of each card, aggregated to the section maximum.
+/// This is the ONLY input to card height: there is no global constant, so a
+/// dashboard's cards share the height of that dashboard's tallest card.
+struct CardNaturalHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 struct DeviceCard: View {
     @EnvironmentObject private var store: DeviceStore
     let device: Device
     let isSelected: Bool
+    /// Section max natural height measured by the dashboard. `0` = first layout
+    /// pass, when the card is simply as tall as its own content.
+    var contentHeight: CGFloat = 0
     let onSelect: () -> Void
     @State private var showingRename = false
     @State private var showingRoom = false
-
-    /// General rule: every card reserves the same vertical content box, so a
-    /// card's height is a property of the GRID, not of the device's control
-    /// count. 260pt is sized for the tallest current card (Water: header +
-    /// five spec controls + timer picker + readout) with headroom; content is
-    /// top-aligned, so sparse cards pad below rather than shrink.
-    static let uniformContentHeight: CGFloat = 260
 
     private var isBriturn: Bool { device.category.lowercased() == "briturn" }
 
@@ -526,7 +566,22 @@ struct DeviceCard: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(12)
-        .frame(maxWidth: .infinity, minHeight: Self.uniformContentHeight, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        // Measure the card's NATURAL content (padding included) before the
+        // section height is applied. The measurement view is a background of
+        // the content itself, not of the sized card, so applying a taller
+        // frame cannot feed back into the measured value.
+        .background(alignment: .topLeading) {
+            GeometryReader { proxy in
+                Color.clear.preference(
+                    key: CardNaturalHeightKey.self,
+                    value: proxy.size.height
+                )
+            }
+        }
+        // Shared section height, top-aligned: sparse cards pad below, tall
+        // content is never clipped (no ceiling is imposed here).
+        .frame(minHeight: contentHeight, alignment: .topLeading)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(Color(nsColor: .controlBackgroundColor))
