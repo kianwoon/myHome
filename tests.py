@@ -8,6 +8,8 @@ try:
 except ImportError:
     from mock import MagicMock  # py2 use https://pypi.python.org/pypi/mock
 import json
+import hashlib
+import hmac
 import os
 import shutil
 import struct
@@ -1132,6 +1134,248 @@ class TestBridgeCloudFallback(unittest.TestCase):
         self.assertIn('no cloud code for dp 99', result['error'])
         self.cloud.sendcommand.assert_called_once_with(
             'fan1', {'commands': [{'code': 'switch', 'value': True}]})
+
+
+class TestAppApiSigning(unittest.TestCase):
+    """The app API signing vector is fixed by the reference protocol."""
+
+    VECTOR = {
+        'a': 'tuya.m.user.email.token.create',
+        'clientId': 'vector-client',
+        'v': '1.0',
+        'time': '1700000000',
+    }
+    POST_DATA = '{"countryCode":"49","email":"user@example.com"}'
+
+    def setUp(self):
+        import appapi
+        self.api = appapi.TuyaAppAPI(
+            'vector-client', 'vector-secret', 'eu', '49',
+            'user@example.com', 'vector-password')
+
+    def test_reference_hmac_vector(self):
+        data = dict(self.VECTOR, postData=self.POST_DATA)
+
+        self.assertEqual(
+            self.api._sign(data),
+            '1b64c5c1ccc6160cc9176e356dfa74fa8071e91b3d956d4f17125a89c3340a69')
+
+    def test_postdata_swizzle_is_md5_reordered(self):
+        self.assertEqual(
+            self.api._mobile_hash(self.POST_DATA),
+            'f0678349a5373c39f5cbda410d1232a7')
+        raw = hashlib.md5(self.POST_DATA.encode('utf-8')).hexdigest()
+        self.assertNotEqual(self.api._mobile_hash(self.POST_DATA), raw)
+
+    def test_sign_varies_with_postdata_and_ignores_gid(self):
+        first = self.api._sign(dict(self.VECTOR, postData=self.POST_DATA))
+        second = self.api._sign(dict(self.VECTOR, postData=self.POST_DATA + ' '))
+        self.assertNotEqual(first, second)
+
+        with_gid = dict(self.VECTOR, postData=self.POST_DATA, gid='123')
+        self.assertEqual(self.api._sign(with_gid), first)
+
+    def test_sign_matches_manual_hmac(self):
+        data = dict(self.VECTOR, postData=self.POST_DATA)
+        swizzled = self.api._mobile_hash(self.POST_DATA)
+        str_to_sign = '||'.join([
+            'a=' + data['a'],
+            'clientId=' + data['clientId'],
+            'postData=' + swizzled,
+            'time=' + data['time'],
+            'v=' + data['v'],
+        ])
+        expected = hmac.new(b'vector-secret', str_to_sign.encode('utf-8'),
+                            hashlib.sha256).hexdigest()
+        self.assertEqual(self.api._sign(data), expected)
+
+
+class TestAppApiLogin(unittest.TestCase):
+    """Login flow, session caching and secret-safe failures."""
+
+    PASSWORD = 'sup3r-secret-password'
+    EMAIL = 'user@example.com'
+    TOKEN = {'success': True, 'result': {
+        'publicKey': '3233', 'exponent': '17', 'token': 'tok-123'}}
+    LOGIN = {'success': True, 'result': {'sid': 'sid-1'}}
+    GROUPS = {'success': True, 'result': [{'groupId': 'g1'}]}
+    DEVICES = {'success': True, 'result': [{
+        'devId': 'dev1', 'name': 'Plug', 'localKey': LOCAL_KEY,
+        'mac': 'aabbccddeeff', 'uuid': 'uuid-1', 'category': 'cz',
+        'productId': 'prod-1', 'iconUrl': 'icon.png', 'virtual': False,
+        'dps': {'1': True},
+    }]}
+
+    def setUp(self):
+        import appapi
+        self.appapi = appapi
+        self.api = appapi.TuyaAppAPI(
+            'cid', 'csecret', 'eu', '49', self.EMAIL, self.PASSWORD)
+        self.session = MagicMock()
+        self.api._session = self.session
+
+    @staticmethod
+    def reply(body):
+        response = MagicMock()
+        response.json = MagicMock(return_value=body)
+        return response
+
+    def test_login_caches_sid_and_encrypts_password(self):
+        self.session.post = MagicMock(side_effect=[
+            self.reply(self.TOKEN), self.reply(self.LOGIN)])
+
+        self.assertIsNone(self.api.login())
+        self.assertEqual(self.api._sid, 'sid-1')
+
+        login_call = self.session.post.call_args_list[1]
+        post_data = json.loads(login_call[1]['data']['postData'])
+        self.assertEqual(post_data['email'], self.EMAIL)
+        self.assertNotEqual(post_data['passwd'], self.PASSWORD)
+        self.assertEqual(len(post_data['passwd']), 512)
+
+    def test_getdevices_maps_roster_and_reuses_session(self):
+        self.session.post = MagicMock(side_effect=[
+            self.reply(self.TOKEN), self.reply(self.LOGIN),
+            self.reply(self.GROUPS), self.reply(self.DEVICES),
+            self.reply(self.GROUPS), self.reply(self.DEVICES)])
+
+        first = self.api.getdevices()
+        second = self.api.getdevices()
+
+        self.assertIsInstance(first, list)
+        self.assertEqual(first[0]['id'], 'dev1')
+        self.assertEqual(first[0]['key'], LOCAL_KEY)
+        self.assertEqual(first[0]['mac'], 'aa:bb:cc:dd:ee:ff')
+        self.assertEqual(first[0]['category'], 'cz')
+        self.assertEqual(first[0]['product_id'], 'prod-1')
+        # Second call reuses the cached sid: only the two list calls repeat.
+        self.assertEqual(first, second)
+        self.assertEqual(self.session.post.call_count, 6)
+
+    def test_expired_session_reauthenticates_once(self):
+        expired = {'success': False, 'errorCode': 'USER_SESSION_INVALID',
+                   'errorMsg': 'session expired'}
+        self.session.post = MagicMock(side_effect=[
+            self.reply(self.TOKEN), self.reply(self.LOGIN),
+            self.reply(expired),
+            self.reply(self.TOKEN), self.reply(self.LOGIN),
+            self.reply(self.GROUPS), self.reply(self.DEVICES)])
+
+        devices = self.api.getdevices()
+
+        self.assertIsInstance(devices, list)
+        self.assertEqual(devices[0]['id'], 'dev1')
+        self.assertEqual(self.session.post.call_count, 7)
+
+    def test_login_failure_returns_code_only(self):
+        failure = {'success': False, 'errorCode': 'USER_PASSWD_WRONG',
+                   'errorMsg': 'bad password %s for %s' % (self.PASSWORD,
+                                                           self.EMAIL)}
+        self.session.post = MagicMock(side_effect=[
+            self.reply(self.TOKEN), self.reply(failure)])
+
+        error = self.api.login()
+
+        text = json.dumps(error)
+        self.assertEqual(error['Err'], str(self.appapi.ERR_CLOUDTOKEN))
+        self.assertIn('USER_PASSWD_WRONG', text)
+        self.assertNotIn(self.PASSWORD, text)
+        self.assertNotIn(self.EMAIL, text)
+        self.assertNotIn('bad password', text)
+
+    def test_network_failure_returns_code_only(self):
+        self.session.post = MagicMock(side_effect=self.appapi.requests.Timeout())
+
+        error = self.api.login()
+
+        self.assertEqual(error['Err'], str(self.appapi.ERR_TIMEOUT))
+        self.assertNotIn('csecret', json.dumps(error))
+
+
+class TestBridgeAppApiFallback(unittest.TestCase):
+    """cloudsync/rescan fall back to the App API on a remote cloud failure."""
+
+    QUOTA = {'code': 28841004,
+             'msg': 'IoT Core trial quota is exhausted.', 'success': False}
+
+    def setUp(self):
+        import bridge
+        self.bridge = bridge
+        self.directory = tempfile.mkdtemp()
+        self.old_path = bridge.DEVICES_PATH
+        bridge.DEVICES_PATH = os.path.join(self.directory, 'devices.json')
+        with open(bridge.DEVICES_PATH, 'w', encoding='utf-8') as handle:
+            json.dump([
+                {'id': 'lan1', 'name': 'Plug', 'ip': '10.0.0.2', 'version': 3.1,
+                 'category': 'cz', 'key': LOCAL_KEY},
+            ], handle)
+        self.old_make_cloud = bridge.make_cloud
+        self.old_make_appapi = bridge.make_appapi
+        self.old_start_autoheal = bridge.start_autoheal
+        self.old_scan = bridge.tinytuya.deviceScan
+        self.cloud = MagicMock()
+        self.cloud.getdevices = MagicMock(return_value=self.QUOTA)
+        bridge.make_cloud = MagicMock(return_value=self.cloud)
+        bridge.start_autoheal = MagicMock()
+        bridge.tinytuya.deviceScan = MagicMock(return_value={})
+        self.client = MagicMock()
+        self.client.getdevices = MagicMock(return_value=[{
+            'id': 'appdev', 'name': 'App Plug', 'category': 'cz',
+            'key': LOCAL_KEY, 'mac': 'aa:bb:cc:dd:ee:ff'}])
+        bridge.make_appapi = MagicMock(return_value=self.client)
+
+    def tearDown(self):
+        self.bridge.DEVICES_PATH = self.old_path
+        self.bridge.make_cloud = self.old_make_cloud
+        self.bridge.make_appapi = self.old_make_appapi
+        self.bridge.start_autoheal = self.old_start_autoheal
+        self.bridge.tinytuya.deviceScan = self.old_scan
+        shutil.rmtree(self.directory)
+
+    def read_roster(self):
+        with open(self.bridge.DEVICES_PATH, 'r', encoding='utf-8') as handle:
+            return {device['id']: device for device in json.load(handle)}
+
+    def test_cloudsync_quota_uses_appapi(self):
+        result = self.bridge.handle_cloudsync()
+
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(result['source'], 'appapi')
+        self.assertEqual(result['added'], 1)
+        self.client.getdevices.assert_called_once_with()
+        self.bridge.start_autoheal.assert_not_called()
+        roster = self.read_roster()
+        self.assertIn('appdev', roster)
+        self.assertEqual(roster['appdev']['name'], 'App Plug')
+
+    def test_cloudsync_disabled_keeps_primary_error(self):
+        self.bridge.make_appapi = MagicMock(return_value=None)
+
+        result = self.bridge.handle_cloudsync()
+
+        self.assertFalse(result['ok'], result)
+        self.assertIn('28841004', result['error'])
+        self.assertNotIn('source', result)
+
+    def test_local_config_error_is_not_retried(self):
+        self.bridge.make_cloud = MagicMock(
+            side_effect=TypeError('Tuya Cloud Key and Secret required'))
+
+        result = self.bridge.handle_cloudsync()
+
+        self.assertFalse(result['ok'], result)
+        self.bridge.make_appapi.assert_not_called()
+
+    def test_rescan_quota_uses_appapi(self):
+        result = self.bridge.handle_rescan({'window': 15})
+
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(result['source'], 'appapi')
+        self.assertFalse(result['cloud'], result)
+        self.assertEqual(result['added'], 1)
+        roster = self.read_roster()
+        self.assertIn('appdev', roster)
+        self.assertIn('lan1', roster)
 
 
 if __name__ == '__main__':

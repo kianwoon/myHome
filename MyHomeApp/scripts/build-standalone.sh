@@ -52,7 +52,7 @@ mkdir -p "$STAGE/MyHome.app/Contents/MacOS" \
 cp "$BIN_DIR/MyHomeApp" "$STAGE/MyHome.app/Contents/MacOS/MyHome"
 cp "$APP_DIR/AppIcon.icns" "$STAGE/MyHome.app/Contents/Resources/AppIcon.icns"
 
-cp "$REPO_ROOT/bridge.py" "$REPO_ROOT/google_home.py" \
+cp "$REPO_ROOT/bridge.py" "$REPO_ROOT/google_home.py" "$REPO_ROOT/appapi.py" \
    "$STAGE/MyHome.app/Contents/Resources/bridge/"
 rsync -a --exclude '__pycache__' --exclude '*.pyc' --exclude '.DS_Store' \
       "$REPO_ROOT/tinytuya" "$STAGE/MyHome.app/Contents/Resources/bridge/"

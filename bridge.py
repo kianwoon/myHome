@@ -68,6 +68,11 @@ try:
 except Exception:  # pragma: no cover - import must never break the bridge
     google_home = None
 
+try:
+    import appapi
+except Exception:  # pragma: no cover - import must never break the bridge
+    appapi = None
+
 # Config lives beside the script for dev runs; a bundled app points this at a
 # writable user-data directory because the .app bundle itself is read-only.
 BASE_DIR = os.environ.get("MYHOME_DATA_DIR") or os.path.dirname(os.path.abspath(__file__))
@@ -500,21 +505,49 @@ def handle_rescan(request=None):
     # Add/refresh cloud-known identities first, so a device that only the
     # cloud reports is added, and a device found on both paths gets its LAN
     # address merged onto the cloud entry below.
-    cloud_ok = True
+    cloud_ok = False
     cloud_added = 0
+    source = None
+    failure = None
+    roster = None
     try:
         cloud = make_cloud()
         roster = cloud.getdevices(False)
         if isinstance(roster, dict):
-            raise ValueError("cloud error: " + _cloud_error_detail(roster))
-        if not isinstance(roster, list) or not roster:
-            raise ValueError("empty or unexpected cloud response")
-        cloud_added = _merge_cloud_roster(roster, prune=False)["added"]
+            failure = roster
+            roster = None
+        elif not isinstance(roster, list) or not roster:
+            roster = None
     except Exception as exc:
-        # Never include token/secret material in logs or the reply. The LAN
-        # merge must still run: cloud absence is not a rescan failure.
-        cloud_ok = False
-        log.warning("rescan cloud merge skipped: %s", type(exc).__name__)
+        failure = exc
+
+    if roster is not None:
+        cloud_ok = True
+        source = "cloud"
+    elif failure is not None and _appapi_allowed(failure):
+        # Same rule as cloudsync: the app API stands in for a REMOTE failure,
+        # never for a local config/credential problem. Cloud absence is not a
+        # rescan failure, so the LAN merge below always runs.
+        roster = _appapi_roster()
+        if roster is not None:
+            source = "appapi"
+
+    if roster is None:
+        # Never include token/secret material in logs or the reply.
+        if isinstance(failure, dict):
+            detail = "cloud error"
+        elif failure is not None:
+            detail = type(failure).__name__
+        else:
+            detail = "empty or unexpected response"
+        log.warning("rescan cloud merge skipped: %s", detail)
+    else:
+        try:
+            cloud_added = _merge_cloud_roster(roster, prune=False)["added"]
+        except Exception as exc:
+            cloud_ok = False
+            source = None
+            log.warning("rescan cloud merge skipped: %s", type(exc).__name__)
 
     scan = tinytuya.deviceScan(poll=False, color=False, maxretry=window)
     if not isinstance(scan, dict):
@@ -549,7 +582,7 @@ def handle_rescan(request=None):
     # Addresses may have moved, so drop cached sockets.
     _device_cache.clear()
     return {"ok": True, "merged": merged, "cloud": cloud_ok,
-            "added": cloud_added}
+            "source": source or "none", "added": cloud_added}
 
 
 def briturn_normalize_mac(mac):
@@ -1408,19 +1441,41 @@ def handle_cloudsync():
     tinytuya.json are never echoed. Room assignment is then refreshed from the
     cloud room map; devices the cloud does not place keep their local room.
     """
+    source = "cloud"
+    failure = None
+    cloud = None
     try:
         cloud = make_cloud()
         result = cloud.getdevices(False)
     except Exception as exc:
         # Never include token/secret material in the reply.
-        return _cloud_failure(exc)
+        result = None
+        failure = exc
 
-    if isinstance(result, dict):
+    if failure is None and isinstance(result, dict):
         # General rule: getdevices() returns a list on success, so any dict is
         # a propagated cloud failure (error_json or a raw Tuya error body like
         # the quota-exhausted reply). Surface the cloud's message; never
         # token/secret material.
-        return _cloud_failure(None, _cloud_error_detail(result))
+        failure = result
+        result = None
+
+    if failure is not None:
+        # General rule: the fallback trigger is the primary cloud FAILING, not
+        # a literal error code — quota exhaustion, an expired token, a timeout
+        # or a 5xx all take the same path. A local config/credential failure
+        # is never retried: the app API would fail for the same reason.
+        if not _appapi_allowed(failure):
+            if isinstance(failure, dict):
+                return _cloud_failure(None, _cloud_error_detail(failure))
+            return _cloud_failure(failure)
+        result = _appapi_roster()
+        if result is None:
+            if isinstance(failure, dict):
+                return _cloud_failure(None, _cloud_error_detail(failure))
+            return _cloud_failure(failure)
+        source = "appapi"
+        cloud = None
 
     if not isinstance(result, list) or not result:
         return {"ok": False, "error": "cloud sync failed: empty or unexpected response"}
@@ -1434,19 +1489,22 @@ def handle_cloudsync():
 
     # Room assignment is additive metadata: a room-fetch failure must not
     # undo the identity merge above. Never log anything but the error type.
+    # The app API fallback carries no room map, so rooms stay local.
     rooms = 0
-    try:
-        mapping = _cloud_room_map(cloud, result)
-        if mapping:
-            rooms = _apply_cloud_rooms(mapping)
-    except Exception as exc:
-        log.warning("cloudsync room fill skipped: %s", type(exc).__name__)
+    if cloud is not None:
+        try:
+            mapping = _cloud_room_map(cloud, result)
+            if mapping:
+                rooms = _apply_cloud_rooms(mapping)
+        except Exception as exc:
+            log.warning("cloudsync room fill skipped: %s", type(exc).__name__)
 
-    # Do not block the serial stdio protocol on a 35s LAN scan.
-    start_autoheal(cloud)
+        # Do not block the serial stdio protocol on a 35s LAN scan.
+        start_autoheal(cloud)
 
     return {
         "ok": True,
+        "source": source,
         "renamed": counts["renamed"],
         "added": counts["added"],
         "pruned": counts["pruned"],
@@ -1593,6 +1651,70 @@ def load_credentials():
     except (OSError, ValueError):
         return {}
     return credentials if isinstance(credentials, dict) else {}
+
+
+def make_appapi():
+    """Build the App API fallback from tinytuya.json; None when unconfigured.
+
+    General rule: the fallback is opt-in via appApiEmail/appApiPassword (with
+    optional appApiCountryCode/appApiClientId/appApiSecret). Absent keys mean
+    "feature off" — never a prompt. Credentials stay in this path and are not
+    logged anywhere.
+    """
+    if appapi is None:
+        return None
+    credentials = load_credentials()
+    email = credentials.get("appApiEmail")
+    password = credentials.get("appApiPassword")
+    if not isinstance(email, str) or not email:
+        return None
+    if not isinstance(password, str) or not password:
+        return None
+    region = credentials.get("apiRegion")
+    if not isinstance(region, str) or not region:
+        region = "eu"
+    country = credentials.get("appApiCountryCode")
+    country = str(country) if country not in (None, "") else ""
+    client_id = credentials.get("appApiClientId") or appapi.DEFAULT_CLIENT_ID
+    secret = credentials.get("appApiSecret") or appapi.DEFAULT_SECRET
+    return appapi.TuyaAppAPI(
+        client_id, secret, region, country, email, password)
+
+
+def _appapi_allowed(failure):
+    """Fallback rule: retry remotely, never for a local config problem.
+
+    General rule: the trigger is the primary cloud FAILING, not any literal
+    error code — quota exhaustion (28841004), an expired/invalid token, a
+    request timeout or a 5xx all qualify. Missing requests support or missing
+    apiKey/apiSecret do not: the app API would fail identically, so the
+    primary error is surfaced unchanged.
+    """
+    if failure is None:
+        return False
+    if isinstance(failure, CloudEnvError):
+        return False
+    if isinstance(failure, TypeError):
+        return False
+    if isinstance(failure, dict):
+        return str(failure.get("Err")) != str(tinytuya.ERR_CLOUDKEY)
+    return True
+
+
+def _appapi_roster():
+    """Device roster from the App API fallback, or None when unavailable.
+
+    Same identity shape as the primary cloud roster so both paths feed the
+    existing merge unchanged. Error details are swallowed here: the caller
+    reports the PRIMARY cloud failure, which is the actionable one.
+    """
+    client = make_appapi()
+    if client is None:
+        return None
+    devices = client.getdevices()
+    if not isinstance(devices, list) or not devices:
+        return None
+    return devices
 
 
 def mask_secret(secret):
