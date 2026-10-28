@@ -14,6 +14,7 @@ import os
 import shutil
 import struct
 import tempfile
+import time
 
 # Enable info logging to see version information
 log = logging.getLogger('tinytuya')
@@ -1799,6 +1800,293 @@ class TestBridgeConfigAppApi(unittest.TestCase):
         with open(self.bridge.CREDENTIALS_PATH, 'r',
                   encoding='utf-8') as handle:
             self.assertNotIn('appApiEmail', json.load(handle))
+
+
+class TestAppApiTimers(unittest.TestCase):
+    """App API timer actions translate to/from the bridge's REST shapes."""
+
+    TIMER_BEAN = [{
+        'category': {'category': 'myhomeapp', 'status': 1},
+        'groups': [{'id': 'g1', 'timers': [{
+            'time': '03:07', 'loops': '1000000', 'status': 1,
+            'aliasName': 'Test', 'dps': {'1': True},
+        }]}],
+    }]
+
+    def setUp(self):
+        import appapi
+        self.appapi = appapi
+        self.api = appapi.TuyaAppAPI('cid', 'csecret', 'eu', '49',
+                                     'user@example.com', 'pw')
+        self.api.restore_session('sid-1', 'at-1', time.time())
+        self.session = MagicMock()
+        self.api._session = self.session
+
+    @staticmethod
+    def reply(body):
+        response = MagicMock()
+        response.json = MagicMock(return_value=body)
+        return response
+
+    def test_timer_list_normalises_to_iothub_shape(self):
+        self.session.post = MagicMock(return_value=self.reply(
+            {'success': True, 'result': self.TIMER_BEAN}))
+
+        entries, error = self.api.timer_list('dev1')
+
+        self.assertIsNone(error)
+        self.assertEqual(entries[0]['category']['category'], 'myhomeapp')
+        timer = entries[0]['groups'][0]['timers'][0]
+        self.assertEqual(timer['time'], '03:07')
+        self.assertEqual(timer['alias_name'], 'Test')
+        self.assertEqual(timer['functions'], [{'code': '1', 'value': True}])
+        params = self.session.post.call_args[1]['params']
+        self.assertEqual(params['a'], 'thing.m.timer.all.list')
+        self.assertEqual(params['v'], '2.0')
+
+    def test_timer_add_translates_rest_body(self):
+        self.session.post = MagicMock(return_value=self.reply(
+            {'success': True, 'result': {'groupId': 'g9'}}))
+        body = {
+            'category': 'myhomeapp',
+            'loops': '1000000',
+            'time_zone': '+02:00',
+            'timezone_id': 'Europe/Berlin',
+            'instruct': [{'time': '03:07',
+                          'functions': [{'code': '1', 'value': True}]}],
+            'alias_name': 'Test',
+        }
+
+        result, error = self.api.timer_add('dev1', body)
+
+        self.assertIsNone(error)
+        self.assertEqual(result, {'group_id': 'g9'})
+        params = self.session.post.call_args[1]['params']
+        data = json.loads(self.session.post.call_args[1]['data']['postData'])
+        self.assertEqual(params['a'], 'thing.m.timer.group.add')
+        self.assertEqual(data['bizId'], 'dev1')
+        self.assertEqual(data['category'], 'myhomeapp')
+        self.assertEqual(data['loops'], '1000000')
+        self.assertEqual(data['timeZone'], '+02:00')
+        self.assertEqual(data['type'], 'device')
+        self.assertEqual(data['aliasName'], 'Test')
+        instruct = json.loads(data['instruct'])
+        self.assertEqual(instruct, [{'time': '03:07', 'dps': {'1': True}}])
+
+    def test_timer_add_recovers_group_id_when_reply_is_empty(self):
+        self.session.post = MagicMock(side_effect=[
+            self.reply({'success': True, 'result': {}}),
+            self.reply({'success': True, 'result': self.TIMER_BEAN}),
+        ])
+        body = {'category': 'myhomeapp', 'loops': '1000000',
+                'time_zone': '+02:00',
+                'instruct': [{'time': '03:07',
+                              'functions': [{'code': '1', 'value': True}]}]}
+
+        result, error = self.api.timer_add('dev1', body)
+
+        self.assertIsNone(error)
+        self.assertEqual(result, {'group_id': 'g1'})
+
+    def test_timer_update_remove_and_status_payloads(self):
+        self.session.post = MagicMock(return_value=self.reply(
+            {'success': True, 'result': True}))
+        body = {'category': 'myhomeapp', 'loops': '1111111',
+                'time_zone': '+00:00',
+                'instruct': [{'time': '03:07',
+                              'functions': [{'code': '1', 'value': False}]}]}
+
+        self.assertEqual(self.api.timer_update('d', 'g1', 'myhomeapp', body),
+                         (True, None))
+        update_data = json.loads(
+            self.session.post.call_args[1]['data']['postData'])
+        self.assertEqual(update_data['groupId'], 'g1')
+        self.assertEqual(update_data['category'], 'myhomeapp')
+
+        self.assertEqual(self.api.timer_remove('d', 'myhomeapp', 'g1'),
+                         (True, None))
+        self.assertEqual(
+            self.session.post.call_args[1]['params']['a'],
+            'thing.m.timer.group.remove')
+
+        self.assertEqual(
+            self.api.timer_status_update('d', 'g1', 'myhomeapp', 0),
+            (True, None))
+        status_data = json.loads(
+            self.session.post.call_args[1]['data']['postData'])
+        self.assertEqual(status_data['status'], 0)
+        self.assertEqual(status_data['groupId'], 'g1')
+
+    def test_timer_call_retries_once_after_session_expiry(self):
+        expired = {'success': False, 'errorCode': 'USER_SESSION_INVALID',
+                   'errorMsg': 'session expired'}
+        token = {'success': True, 'result': {'publicKey': '3233',
+                                             'exponent': '17',
+                                             'token': 'tok'}}
+        login = {'success': True, 'result': {'sid': 'sid-2'}}
+        self.session.post = MagicMock(side_effect=[
+            self.reply(expired), self.reply(token), self.reply(login),
+            self.reply({'success': True, 'result': self.TIMER_BEAN})])
+
+        entries, error = self.api.timer_list('dev1')
+
+        self.assertIsNone(error)
+        self.assertEqual(entries[0]['groups'][0]['id'], 'g1')
+        self.assertEqual(self.api._sid, 'sid-2')
+        self.assertEqual(self.session.post.call_count, 4)
+
+
+class TestBridgeScheduleFallback(unittest.TestCase):
+    """Schedule handlers ride the App API when the primary cloud fails."""
+
+    QUOTA = {'code': 28841004, 'msg': 'IoT Core trial quota is exhausted.',
+             'success': False}
+    DEVICE = 'bff338test'
+    TIMER_BEAN = [{
+        'category': {'category': 'myhomeapp', 'status': 1},
+        'groups': [{'id': 'g1', 'timers': [{
+            'time': '03:07', 'loops': '1000000', 'status': 1,
+            'dps': {'1': True},
+        }]}],
+    }]
+
+    def setUp(self):
+        import bridge
+        import appapi
+        self.bridge = bridge
+        self.directory = tempfile.mkdtemp()
+        self.old_devices = bridge._devices
+        self.old_devices_path = bridge.DEVICES_PATH
+        self.old_credentials = bridge.CREDENTIALS_PATH
+        self.old_session = bridge.APAPI_SESSION_PATH
+        self.old_make_cloud = bridge.make_cloud
+        self.old_make_appapi = bridge.make_appapi
+        bridge._devices = [{
+            'id': self.DEVICE, 'name': 'Main computer', 'ip': '',
+            'version': 3.4, 'category': 'fs', 'key': LOCAL_KEY,
+            'spec': {'1': {'code': 'switch', 'type': 'Boolean'}},
+        }]
+        bridge.DEVICES_PATH = os.path.join(self.directory, 'devices.json')
+        bridge.CREDENTIALS_PATH = os.path.join(self.directory, 'tinytuya.json')
+        bridge.APAPI_SESSION_PATH = os.path.join(self.directory,
+                                                 'appapi-session.json')
+        with open(bridge.DEVICES_PATH, 'w', encoding='utf-8') as handle:
+            json.dump(bridge._devices, handle)
+        self.cloud = MagicMock()
+        self.cloud.cloudrequest = MagicMock(return_value=self.QUOTA)
+        bridge.make_cloud = MagicMock(return_value=self.cloud)
+        self.client = appapi.TuyaAppAPI('cid', 'csecret', 'eu', '49',
+                                        'user@example.com', 'pw')
+        self.client.restore_session('sid-1', 'at-1', time.time())
+        self.session = MagicMock()
+        self.client._session = self.session
+        bridge.make_appapi = MagicMock(return_value=self.client)
+
+    def tearDown(self):
+        self.bridge._devices = self.old_devices
+        self.bridge.DEVICES_PATH = self.old_devices_path
+        self.bridge.CREDENTIALS_PATH = self.old_credentials
+        self.bridge.APAPI_SESSION_PATH = self.old_session
+        self.bridge.make_cloud = self.old_make_cloud
+        self.bridge.make_appapi = self.old_make_appapi
+        shutil.rmtree(self.directory)
+
+    @staticmethod
+    def reply(body):
+        response = MagicMock()
+        response.json = MagicMock(return_value=body)
+        return response
+
+    def test_schedules_list_falls_back(self):
+        self.session.post = MagicMock(return_value=self.reply(
+            {'success': True, 'result': self.TIMER_BEAN}))
+
+        result = self.bridge.handle_schedules({'id': self.DEVICE})
+
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(result['source'], 'appapi')
+        self.assertEqual(len(result['schedules']), 1)
+        entry = result['schedules'][0]
+        self.assertEqual(entry['group_id'], 'g1')
+        self.assertEqual(entry['time'], '03:07')
+        self.assertEqual(entry['action'], 'ON')
+
+    def test_schedadd_falls_back_and_keeps_group_id(self):
+        self.session.post = MagicMock(return_value=self.reply(
+            {'success': True, 'result': {'groupId': 'g9'}}))
+
+        result = self.bridge.handle_schedadd({
+            'id': self.DEVICE, 'days': [True, False, False, False, False,
+                                        False, False],
+            'time': '03:07', 'on': True, 'name': 'Test'})
+
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(result['group_id'], 'g9')
+        data = json.loads(self.session.post.call_args[1]['data']['postData'])
+        self.assertEqual(data['bizId'], self.DEVICE)
+        self.assertEqual(data['category'], 'myhomeapp')
+        self.assertEqual(data['loops'], '1000000')
+        self.assertEqual(data['instruct'],
+                         '[{"time":"03:07","dps":{"switch":true}}]')
+
+    def test_scheddel_falls_back(self):
+        self.session.post = MagicMock(return_value=self.reply(
+            {'success': True, 'result': True}))
+
+        result = self.bridge.handle_scheddel({
+            'id': self.DEVICE, 'category': 'myhomeapp', 'group_id': 'g1'})
+
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(self.session.post.call_args[1]['params']['a'],
+                         'thing.m.timer.group.remove')
+
+    def test_schedtoggle_falls_back_to_update_and_readback(self):
+        disabled = [{
+            'category': {'category': 'myhomeapp', 'status': 1},
+            'groups': [{'id': 'g1', 'timers': [{
+                'time': '03:07', 'loops': '1000000', 'status': 0,
+                'dps': {'1': True},
+            }]}],
+        }]
+        self.session.post = MagicMock(side_effect=[
+            self.reply({'success': True, 'result': self.TIMER_BEAN}),
+            self.reply({'success': True, 'result': True}),
+            self.reply({'success': True, 'result': disabled}),
+        ])
+
+        result = self.bridge.handle_schedtoggle({
+            'id': self.DEVICE, 'category': 'myhomeapp', 'group_id': 'g1',
+            'enable': False})
+
+        self.assertTrue(result['ok'], result)
+        actions = [call[1]['params']['a']
+                   for call in self.session.post.call_args_list]
+        self.assertEqual(actions,
+                         ['thing.m.timer.all.list',
+                          'thing.m.timer.group.update',
+                          'thing.m.timer.all.list'])
+
+    def test_missing_session_flags_signin_required(self):
+        self.bridge.make_appapi = MagicMock(return_value=None)
+        with open(self.bridge.CREDENTIALS_PATH, 'w',
+                  encoding='utf-8') as handle:
+            json.dump({'appApiEmail': 'user@example.com'}, handle)
+
+        result = self.bridge.handle_schedules({'id': self.DEVICE})
+
+        self.assertFalse(result['ok'], result)
+        self.assertEqual(result['appapi'], 'signin_required')
+        self.assertIn('schedule request failed', result['error'])
+        self.assertNotIn('user@example.com', json.dumps(result))
+
+    def test_local_config_error_does_not_fall_back(self):
+        self.bridge.make_cloud = MagicMock(
+            side_effect=TypeError('Tuya Cloud Key and Secret required'))
+
+        result = self.bridge.handle_schedules({'id': self.DEVICE})
+
+        self.assertFalse(result['ok'], result)
+        self.bridge.make_appapi.assert_not_called()
 
 
 if __name__ == '__main__':

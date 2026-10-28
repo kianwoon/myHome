@@ -46,6 +46,86 @@ SESSION_TTL = 3600
 SESSION_ERRORS = ("USER_SESSION_INVALID", "USER_TOKEN_INVALID",
                   "USER_SESSION_EXPIRED")
 
+# TimerTypeEnum.DEVICE in the app. GwBroadcastMonitorService.mVersion (3.0)
+# is what the app sends for group add/update; list/remove/status use 2.0.
+TIMER_TYPE = "device"
+TIMER_VERSION = "3.0"
+
+
+def _timer_instruct_json(instruct):
+    """IoT Core instruct[time/functions] -> app API [{time, dps}] JSON string."""
+    points = []
+    if isinstance(instruct, list):
+        for item in instruct:
+            if not isinstance(item, dict):
+                continue
+            dps = {}
+            functions = item.get("functions")
+            if isinstance(functions, list):
+                for function in functions:
+                    if not isinstance(function, dict):
+                        continue
+                    code = function.get("code")
+                    if isinstance(code, str) and code:
+                        dps[code] = function.get("value")
+            points.append({"time": str(item.get("time") or ""), "dps": dps})
+    return json.dumps(points, separators=(",", ":"))
+
+
+def _normalise_timer_entries(result):
+    """App DpTimerListBean list -> the IoT Core category/group/timer shape."""
+    entries = []
+    if not isinstance(result, list):
+        return entries
+    for bean in result:
+        if not isinstance(bean, dict):
+            continue
+        raw_category = bean.get("category")
+        if isinstance(raw_category, dict):
+            category = {
+                "category": raw_category.get("category", ""),
+                "status": raw_category.get("status", 1),
+            }
+        else:
+            category = {"category": str(raw_category or ""), "status": 1}
+        groups = []
+        raw_groups = bean.get("groups")
+        if isinstance(raw_groups, list):
+            for group in raw_groups:
+                if not isinstance(group, dict):
+                    continue
+                timers = []
+                raw_timers = group.get("timers")
+                if isinstance(raw_timers, list):
+                    for timer in raw_timers:
+                        if not isinstance(timer, dict):
+                            continue
+                        dps = timer.get("dps")
+                        if isinstance(dps, str):
+                            try:
+                                dps = json.loads(dps)
+                            except ValueError:
+                                dps = {}
+                        if not isinstance(dps, dict):
+                            dps = {}
+                        timers.append({
+                            "time": str(timer.get("time") or ""),
+                            "loops": str(timer.get("loops") or ""),
+                            "status": timer.get("status", 1),
+                            "alias_name": timer.get("aliasName")
+                                          or timer.get("alias_name") or "",
+                            "functions": [
+                                {"code": code, "value": value}
+                                for code, value in dps.items()
+                            ],
+                        })
+                groups.append({
+                    "id": str(group.get("id") or group.get("groupId") or ""),
+                    "timers": timers,
+                })
+        entries.append({"category": category, "groups": groups})
+    return entries
+
 
 class AppApiError(RuntimeError):
     """One failed App API call. Holds a code only — never request material."""
@@ -281,14 +361,142 @@ class TuyaAppAPI(object):
             "icon": device.get("iconUrl", ""),
         }
 
+    # MARK: - Timer API (mirrors the IoT Core timer REST semantics)
+
+    def timer_list(self, device_id, category=None):
+        """All timer groups, normalised to the IoT Core timers shape.
+
+        Returns (list, None) or (None, code). Timers are mapped from the app's
+        dps map to the bridge's functions[] form; categories/groups keep the
+        same nesting the flatten helper already consumes.
+        """
+        result, error = self._timer_call(
+            "thing.m.timer.all.list",
+            {"bizId": device_id, "type": TIMER_TYPE}, version="2.0")
+        if error is not None:
+            return None, error
+        entries = _normalise_timer_entries(result)
+        if category is not None:
+            entries = [entry for entry in entries
+                       if entry.get("category", {}).get("category") == category]
+        return entries, None
+
+    def timer_add(self, device_id, body):
+        """Create a timer group. Returns ({"group_id": id}, None) or code."""
+        payload = self._timer_payload(device_id, body)
+        result, error = self._timer_call(
+            "thing.m.timer.group.add", payload, version=TIMER_VERSION)
+        if error is not None:
+            return None, error
+        group_id = ""
+        if isinstance(result, dict):
+            group_id = (result.get("groupId") or result.get("group_id")
+                        or result.get("id") or "")
+        elif isinstance(result, str):
+            group_id = result
+        if not group_id:
+            # The app API returns {} for a successful add; recover the new
+            # group id from the refreshed list (match time + loops).
+            group_id = self._find_added_group(device_id, payload)
+        return {"group_id": str(group_id)}, None
+
+    def _find_added_group(self, device_id, payload):
+        """Recover the id of a just-added group from the refreshed list."""
+        try:
+            points = json.loads(payload.get("instruct") or "[]")
+        except ValueError:
+            points = []
+        wanted_time = str(points[0].get("time") or "") if points else ""
+        entries, error = self.timer_list(
+            device_id, category=payload.get("category"))
+        if error is not None:
+            return ""
+        for entry in entries:
+            for group in entry.get("groups") or []:
+                for timer in group.get("timers") or []:
+                    if (wanted_time and timer.get("time") == wanted_time
+                            and timer.get("loops") == payload.get("loops")):
+                        return str(group.get("id") or "")
+        return ""
+
+    def timer_update(self, device_id, group_id, category, body):
+        """Replace one timer group's content (time/loops/instruct)."""
+        payload = self._timer_payload(device_id, body)
+        payload["groupId"] = group_id
+        if category:
+            payload["category"] = category
+        return self._timer_call(
+            "thing.m.timer.group.update", payload, version=TIMER_VERSION)
+
+    def timer_remove(self, device_id, category, group_id):
+        """Delete one timer group."""
+        payload = {
+            "bizId": device_id,
+            "category": category,
+            "groupId": group_id,
+            "type": TIMER_TYPE,
+        }
+        return self._timer_call(
+            "thing.m.timer.group.remove", payload, version="2.0")
+
+    def timer_status_update(self, device_id, group_id, category, status):
+        """Enable (1) or disable (0) one timer group."""
+        payload = {
+            "bizId": device_id,
+            "groupId": group_id,
+            "category": category,
+            "status": 1 if status else 0,
+            "type": TIMER_TYPE,
+        }
+        return self._timer_call(
+            "thing.m.timer.group.status.update", payload, version="2.0")
+
+    def _timer_payload(self, device_id, body):
+        """Translate one IoT Core timer body into an app API group payload."""
+        body = body if isinstance(body, dict) else {}
+        payload = {
+            "bizId": device_id,
+            "category": body.get("category") or "",
+            "loops": body.get("loops") or "1111111",
+            "timeZone": body.get("time_zone") or "+00:00",
+            "type": TIMER_TYPE,
+            "instruct": _timer_instruct_json(body.get("instruct")),
+        }
+        alias = body.get("alias_name")
+        if isinstance(alias, str) and alias:
+            payload["aliasName"] = alias
+        return payload
+
+    def _timer_call(self, action, payload, version):
+        """One timer action, retrying once after a session expiry.
+
+        Returns (result, None) or (None, code). A code-login session cannot be
+        refreshed here; its server code is surfaced unchanged.
+        """
+        try:
+            return self._api(action, payload, version=version), None
+        except AppApiSessionError as exc:
+            if not self._password:
+                return None, str(exc.code)
+            self._sid = None
+            error = self.login()
+            if error is not None:
+                return None, str(error.get("Payload") or error.get("Err"))
+            try:
+                return self._api(action, payload, version=version), None
+            except AppApiError as retry_exc:
+                return None, str(retry_exc.code)
+        except AppApiError as exc:
+            return None, str(exc.code)
+
     # MARK: - Transport and signing
 
     def _api(self, action, payload=None, extra_params=None, requires_sid=True,
-             number=ERR_CLOUD):
+             number=ERR_CLOUD, version=API_VERSION):
         params = {
             "a": action,
             "clientId": self._client_id,
-            "v": API_VERSION,
+            "v": version,
             "time": str(int(time.time())),
         }
         if extra_params:

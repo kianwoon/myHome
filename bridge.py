@@ -2375,16 +2375,92 @@ def _flatten_schedules(result, spec_by_code=None):
 
 
 def _cloud_reply(cloud, url, action=None, post=None):
-    """Call the cloud API and return (result, error string), never raising."""
+    """Call the primary cloud, falling back to the App API for timer calls.
+
+    General rule: the fallback trigger is the primary cloud failing REMOTELY
+    (quota exhaustion, expired token, timeout, 5xx), never a local
+    config/credential problem. Returns (result, error, hint, source); hint is
+    "signin_required" when the app API is configured without a session, and
+    source names the path that produced the result.
+    """
+    failure = None
     try:
         response = cloud.cloudrequest(url, action, post=post)
     except Exception as exc:
-        return None, "cloud request failed: " + (
-            str(exc) if isinstance(exc, CloudEnvError) else type(exc).__name__
-        )
-    if not isinstance(response, dict) or not response.get("success"):
-        return None, "schedule request failed"
-    return response.get("result"), None
+        failure = exc
+    else:
+        if isinstance(response, dict) and response.get("success"):
+            return response.get("result"), None, None, "cloud"
+        failure = response
+
+    if not _appapi_allowed(failure):
+        return None, _primary_error(failure), None, None
+
+    result, appapi_error = _appapi_timer_reply(url, action, post)
+    if appapi_error is None:
+        return result, None, None, "appapi"
+
+    hint = None
+    if appapi is not None and appapi_configured() and not appapi_session_ready():
+        hint = "signin_required"
+    return None, _primary_error(failure), hint, None
+
+
+def _primary_error(failure):
+    """The bridge's historical error text for a primary cloud failure."""
+    if isinstance(failure, Exception):
+        detail = (str(failure) if isinstance(failure, CloudEnvError)
+                  else type(failure).__name__)
+        return "cloud request failed: " + detail
+    return "schedule request failed"
+
+
+def _appapi_timer_reply(url, action, post):
+    """Translate one IoT Core timer REST call into the matching App API call.
+
+    The URL is the bridge's own REST route, so the translation stays in one
+    place: list/add, group update, delete and the group-status endpoint.
+    """
+    client = make_appapi()
+    if client is None:
+        return None, "app api not configured"
+    match = re.match(r"^/v1\.0/devices/([^/]+)/timers(.*)$", url)
+    if match is None:
+        return None, "unsupported timer route"
+    device_id = match.group(1)
+    rest = match.group(2)
+    method = (action or "GET").upper()
+    if rest == "":
+        if method == "GET":
+            return client.timer_list(device_id)
+        if method == "POST":
+            return client.timer_add(device_id, post or {})
+        return None, "unsupported timer action"
+    match = re.match(r"^/categories/([^/]+)/groups/([^/]+)/status$", rest)
+    if match is not None and method == "PUT":
+        status = (post or {}).get("status", 1)
+        return client.timer_status_update(
+            device_id, match.group(2), match.group(1), status)
+    match = re.match(r"^/categories/([^/]+)/groups/([^/]+)$", rest)
+    if match is not None and method == "DELETE":
+        return client.timer_remove(device_id, match.group(1), match.group(2))
+    match = re.match(r"^/categories/([^/]+)$", rest)
+    if match is not None and method == "GET":
+        return client.timer_list(device_id, category=match.group(1))
+    match = re.match(r"^/groups/([^/]+)$", rest)
+    if match is not None and method == "PUT":
+        body = post if isinstance(post, dict) else {}
+        return client.timer_update(
+            device_id, match.group(1), body.get("category") or "", body)
+    return None, "unsupported timer action"
+
+
+def _schedule_error(error, hint=None):
+    """Schedule failure reply, with a session hint when the UI can act on it."""
+    reply = {"ok": False, "error": error}
+    if hint:
+        reply["appapi"] = hint
+    return reply
 
 
 def _cloud_error_detail(response):
@@ -2427,9 +2503,9 @@ def handle_schedules(request):
         cloud = make_cloud()
     except Exception as exc:
         return _cloud_failure(exc)
-    result, error = _cloud_reply(cloud, "/v1.0/devices/%s/timers" % device_id)
+    result, error, hint, source = _cloud_reply(cloud, "/v1.0/devices/%s/timers" % device_id)
     if error is not None:
-        return {"ok": False, "error": error}
+        return _schedule_error(error, hint)
     device = find_device(device_id) or {}
     spec = device.get("spec")
     spec_by_code = {}
@@ -2437,7 +2513,8 @@ def handle_schedules(request):
         for entry in spec.values():
             if isinstance(entry, dict) and isinstance(entry.get("code"), str):
                 spec_by_code[entry["code"]] = entry
-    return {"ok": True, "schedules": _flatten_schedules(result, spec_by_code)}
+    return {"ok": True, "schedules": _flatten_schedules(result, spec_by_code),
+            "source": source or "cloud"}
 
 
 def handle_schedadd(request):
@@ -2478,9 +2555,9 @@ def handle_schedadd(request):
         cloud = make_cloud()
     except Exception as exc:
         return _cloud_failure(exc)
-    result, error = _cloud_reply(cloud, "/v1.0/devices/%s/timers" % device_id, "POST", body)
+    result, error, hint, source = _cloud_reply(cloud, "/v1.0/devices/%s/timers" % device_id, "POST", body)
     if error is not None:
-        return {"ok": False, "error": error}
+        return _schedule_error(error, hint)
     group_id = result.get("group_id") if isinstance(result, dict) else result
     return {"ok": True, "group_id": str(group_id or "")}
 
@@ -2508,9 +2585,9 @@ def handle_scheddel(request):
     except Exception as exc:
         return _cloud_failure(exc)
     url = "/v1.0/devices/%s/timers/categories/%s/groups/%s" % (device_id, category, group_id)
-    _, error = _cloud_reply(cloud, url, "DELETE")
+    _, error, hint, source = _cloud_reply(cloud, url, "DELETE")
     if error is not None:
-        return {"ok": False, "error": error}
+        return _schedule_error(error, hint)
     return {"ok": True}
 
 
@@ -2680,14 +2757,14 @@ def handle_schededit(request):
     except Exception as exc:
         return _cloud_failure(exc)
     read_url = "/v1.0/devices/%s/timers/categories/%s" % (device_id, category)
-    result, error = _cloud_reply(cloud, read_url)
+    result, error, hint, source = _cloud_reply(cloud, read_url)
     if error is not None:
-        return {"ok": False, "error": error}
+        return _schedule_error(error, hint)
     group, _ = _find_timer_group(result, group_id)
     if group is None:
-        result, error = _cloud_reply(cloud, "/v1.0/devices/%s/timers" % device_id)
+        result, error, hint, source = _cloud_reply(cloud, "/v1.0/devices/%s/timers" % device_id)
         if error is not None:
-            return {"ok": False, "error": error}
+            return _schedule_error(error, hint)
         group, _ = _find_timer_group(result, group_id)
     if group is None:
         return {"ok": False, "error": "schedule not found"}
@@ -2740,13 +2817,13 @@ def handle_schededit(request):
     if isinstance(current_alias, str):
         body["alias_name"] = current_alias
     update_url = "/v1.0/devices/%s/timers/groups/%s" % (device_id, group_id)
-    _, error = _cloud_reply(cloud, update_url, "PUT", body)
+    _, error, hint, source = _cloud_reply(cloud, update_url, "PUT", body)
     if error is not None:
-        return {"ok": False, "error": error}
+        return _schedule_error(error, hint)
 
-    readback, error = _cloud_reply(cloud, read_url)
+    readback, error, hint, source = _cloud_reply(cloud, read_url)
     if error is not None:
-        return {"ok": False, "error": error}
+        return _schedule_error(error, hint)
     current, _ = _find_timer_group(readback, group_id)
     if current is None:
         return {"ok": False, "error": "edit did not take effect"}
@@ -2764,12 +2841,12 @@ def handle_schededit(request):
         legacy_url = "/v1.0/devices/%s/timers/categories/%s/groups/%s/status" % (
             device_id, category, group_id
         )
-        _, error = _cloud_reply(cloud, legacy_url, "PUT", {"status": original_status})
+        _, error, hint, source = _cloud_reply(cloud, legacy_url, "PUT", {"status": original_status})
         if error is not None:
-            return {"ok": False, "error": error}
-        readback, error = _cloud_reply(cloud, read_url)
+            return _schedule_error(error, hint)
+        readback, error, hint, source = _cloud_reply(cloud, read_url)
         if error is not None:
-            return {"ok": False, "error": error}
+            return _schedule_error(error, hint)
         current, _ = _find_timer_group(readback, group_id)
         if current is None:
             return {"ok": False, "error": "edit did not take effect"}
@@ -2805,15 +2882,15 @@ def handle_schedtoggle(request):
     except Exception as exc:
         return _cloud_failure(exc)
     read_url = "/v1.0/devices/%s/timers/categories/%s" % (device_id, category)
-    result, error = _cloud_reply(cloud, read_url)
+    result, error, hint, source = _cloud_reply(cloud, read_url)
     if error is not None:
-        return {"ok": False, "error": error}
+        return _schedule_error(error, hint)
     group, _ = _find_timer_group(result, group_id)
     if group is None:
         # Category-scoped read may omit entries; fall back to the full list.
-        result, error = _cloud_reply(cloud, "/v1.0/devices/%s/timers" % device_id)
+        result, error, hint, source = _cloud_reply(cloud, "/v1.0/devices/%s/timers" % device_id)
         if error is not None:
-            return {"ok": False, "error": error}
+            return _schedule_error(error, hint)
         group, _ = _find_timer_group(result, group_id)
     if group is None:
         return {"ok": False, "error": "schedule not found"}
@@ -2830,12 +2907,12 @@ def handle_schedtoggle(request):
     if isinstance(alias_name, str):
         body["alias_name"] = alias_name
     update_url = "/v1.0/devices/%s/timers/groups/%s" % (device_id, group_id)
-    _, error = _cloud_reply(cloud, update_url, "PUT", body)
+    _, error, hint, source = _cloud_reply(cloud, update_url, "PUT", body)
     if error is not None:
-        return {"ok": False, "error": error}
-    readback, error = _cloud_reply(cloud, read_url)
+        return _schedule_error(error, hint)
+    readback, error, hint, source = _cloud_reply(cloud, read_url)
     if error is not None:
-        return {"ok": False, "error": error}
+        return _schedule_error(error, hint)
     current, _ = _find_timer_group(readback, group_id)
     if current is not None and _timer_group_status(current) == [status]:
         return {"ok": True}
@@ -2844,12 +2921,12 @@ def handle_schedtoggle(request):
     legacy_url = "/v1.0/devices/%s/timers/categories/%s/groups/%s/status" % (
         device_id, category, group_id
     )
-    _, error = _cloud_reply(cloud, legacy_url, "PUT", {"status": status})
+    _, error, hint, source = _cloud_reply(cloud, legacy_url, "PUT", {"status": status})
     if error is not None:
-        return {"ok": False, "error": error}
-    readback, error = _cloud_reply(cloud, read_url)
+        return _schedule_error(error, hint)
+    readback, error, hint, source = _cloud_reply(cloud, read_url)
     if error is not None:
-        return {"ok": False, "error": error}
+        return _schedule_error(error, hint)
     current, _ = _find_timer_group(readback, group_id)
     if current is None or _timer_group_status(current) != [status]:
         return {"ok": False, "error": "toggle did not take effect"}
