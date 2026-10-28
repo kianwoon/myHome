@@ -15,7 +15,6 @@ shape, and every failure is an error_json() dict carrying only a code.
 import hashlib
 import hmac
 import json
-import logging
 import time
 
 import requests
@@ -28,8 +27,6 @@ from tinytuya.core.error_helper import (
     ERR_TIMEOUT,
     error_json,
 )
-
-log = logging.getLogger(__name__)
 
 USER_AGENT = "TY-UA=APP/Android/1.1.6/SDK/null"
 API_VERSION = "1.0"
