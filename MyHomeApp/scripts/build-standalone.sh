@@ -113,3 +113,12 @@ rm -rf "$BUNDLE"
 mv "$STAGE/MyHome.app" "$BUNDLE"
 echo "==> done: $BUNDLE"
 du -sh "$BUNDLE"
+
+# Distributable zip: ditto (not zip) preserves the signature and Finder
+# metadata; without --sequesterRsrc symlinks/ACLs in the Python runtime and
+# code-signing layout would be mangled.
+ZIP="$APP_DIR/MyHome-standalone.zip"
+rm -f "$ZIP"
+ditto -c -k --sequesterRsrc --keepParent "$BUNDLE" "$ZIP"
+echo "==> zip: $ZIP"
+du -h "$ZIP"
