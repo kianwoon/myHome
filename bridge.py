@@ -68,7 +68,9 @@ try:
 except Exception:  # pragma: no cover - import must never break the bridge
     google_home = None
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# Config lives beside the script for dev runs; a bundled app points this at a
+# writable user-data directory because the .app bundle itself is read-only.
+BASE_DIR = os.environ.get("MYHOME_DATA_DIR") or os.path.dirname(os.path.abspath(__file__))
 DEVICES_PATH = os.path.join(BASE_DIR, "devices.json")
 CREDENTIALS_PATH = os.path.join(BASE_DIR, "tinytuya.json")
 

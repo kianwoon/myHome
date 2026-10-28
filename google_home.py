@@ -37,7 +37,9 @@ import urllib.request
 
 log = logging.getLogger("google_home")
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# Config lives beside the script for dev runs; a bundled app points this at a
+# writable user-data directory because the .app bundle itself is read-only.
+BASE_DIR = os.environ.get("MYHOME_DATA_DIR") or os.path.dirname(os.path.abspath(__file__))
 ENV_PATH = os.path.join(BASE_DIR, ".env.txt")
 CLIENT_GLOB = os.path.join(BASE_DIR, "client_secret_*.apps.googleusercontent.com.json")
 TOKEN_PATH = os.environ.get(

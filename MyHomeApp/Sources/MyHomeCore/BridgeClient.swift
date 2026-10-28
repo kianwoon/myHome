@@ -88,6 +88,51 @@ public final class BridgeClient: @unchecked Sendable {
         return candidates.last ?? URL(fileURLWithPath: manager.currentDirectoryPath)
     }
 
+    /// Resources directory of a bundle that carries an embedded bridge.
+    ///
+    /// General rule: an embedded bridge wins whenever those resources exist,
+    /// regardless of where the .app sits on disk — a copied bundle in /tmp or
+    /// a user's Applications folder behaves exactly like the built one. The
+    /// running bundle is the default; MYHOME_APP_BUNDLE lets a test harness
+    /// point at another bundle (e.g. a copied one) without moving the binary.
+    public static func bundledResourcesDirectory() -> URL? {
+        let manager = FileManager.default
+        let resources: URL?
+        if let override = ProcessInfo.processInfo.environment["MYHOME_APP_BUNDLE"], !override.isEmpty {
+            let root = URL(fileURLWithPath: override, isDirectory: true)
+            let nested = root.appendingPathComponent("Contents/Resources", isDirectory: true)
+            let probe = nested.appendingPathComponent("bridge-runtime/bin/python3")
+            resources = manager.fileExists(atPath: probe.path) ? nested : root
+        } else {
+            resources = Bundle.main.resourceURL
+        }
+
+        guard let resources = resources else { return nil }
+        let python = resources.appendingPathComponent("bridge-runtime/bin/python3")
+        let script = resources.appendingPathComponent("bridge/bridge.py")
+        guard manager.isExecutableFile(atPath: python.path),
+              manager.fileExists(atPath: script.path) else {
+            return nil
+        }
+        return resources
+    }
+
+    /// Writable directory the bridge keeps devices.json/tinytuya.json in when
+    /// it runs from a bundle. The bundle is read-only and relocatable, so
+    /// config belongs in Application Support; an explicit override wins.
+    private static func bundledDataDirectory() -> URL? {
+        let manager = FileManager.default
+        if let override = ProcessInfo.processInfo.environment["MYHOME_DATA_DIR"], !override.isEmpty {
+            return URL(fileURLWithPath: override, isDirectory: true)
+        }
+        guard let support = manager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            return nil
+        }
+        let directory = support.appendingPathComponent("MyHome", isDirectory: true)
+        try? manager.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
+    }
+
     // MARK: - Public API
 
     public func ping() async throws -> Bool {
@@ -140,29 +185,44 @@ public final class BridgeClient: @unchecked Sendable {
         }
         resetLocked()
 
-        let directory = BridgeClient.bridgeDirectory()
-        let script = directory.appendingPathComponent("bridge.py")
-        let venvPython = directory.appendingPathComponent(".venv/bin/python")
-
-        guard fileManager.fileExists(atPath: script.path) else {
-            throw BridgeError.unavailable("bridge.py not found at \(script.path)")
-        }
-
+        var environment = ProcessInfo.processInfo.environment
         let executable: URL
         let arguments: [String]
-        if fileManager.isExecutableFile(atPath: venvPython.path) {
-            executable = venvPython
-            arguments = [script.path]
+        let workingDirectory: URL
+
+        if let resources = BridgeClient.bundledResourcesDirectory() {
+            // Embedded runtime first: the bundle is self-contained, so never
+            // depend on a repo checkout or a system python.
+            executable = resources.appendingPathComponent("bridge-runtime/bin/python3")
+            workingDirectory = resources.appendingPathComponent("bridge", isDirectory: true)
+            arguments = [workingDirectory.appendingPathComponent("bridge.py").path]
+            if let dataDirectory = BridgeClient.bundledDataDirectory() {
+                environment["MYHOME_DATA_DIR"] = dataDirectory.path
+            }
         } else {
-            executable = URL(fileURLWithPath: "/usr/bin/env")
-            arguments = ["python3", script.path]
+            let directory = BridgeClient.bridgeDirectory()
+            let script = directory.appendingPathComponent("bridge.py")
+            let venvPython = directory.appendingPathComponent(".venv/bin/python")
+
+            guard fileManager.fileExists(atPath: script.path) else {
+                throw BridgeError.unavailable("bridge.py not found at \(script.path)")
+            }
+
+            if fileManager.isExecutableFile(atPath: venvPython.path) {
+                executable = venvPython
+                arguments = [script.path]
+            } else {
+                executable = URL(fileURLWithPath: "/usr/bin/env")
+                arguments = ["python3", script.path]
+            }
+            workingDirectory = directory
         }
 
         let task = Process()
         task.executableURL = executable
         task.arguments = arguments
-        task.currentDirectoryURL = directory
-        task.environment = ProcessInfo.processInfo.environment
+        task.currentDirectoryURL = workingDirectory
+        task.environment = environment
 
         let stdinPipe = Pipe()
         let stdoutPipe = Pipe()
