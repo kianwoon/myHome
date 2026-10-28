@@ -358,6 +358,7 @@ def handle_set(device_id, dps):
         return {"ok": False, "error": "device has no known ip"}
     if not isinstance(dps, dict) or not dps:
         return {"ok": False, "error": "dps must be a non-empty object"}
+    local_error = "set failed"
     try:
         with device_lock(device_id):
             device = make_device(config)
@@ -584,8 +585,13 @@ def handle_rescan(request=None):
 
     # Addresses may have moved, so drop cached sockets.
     _device_cache.clear()
-    return {"ok": True, "merged": merged, "cloud": cloud_ok,
-            "source": source or "none", "added": cloud_added}
+    reply = {"ok": True, "merged": merged, "cloud": cloud_ok,
+             "source": source or "none", "added": cloud_added}
+    if (roster is None and failure is not None and _appapi_allowed(failure)
+            and appapi is not None and appapi_configured()
+            and not appapi_session_ready()):
+        reply["appapi"] = "signin_required"
+    return reply
 
 
 def briturn_normalize_mac(mac):
@@ -1475,8 +1481,13 @@ def handle_cloudsync():
         result = _appapi_roster()
         if result is None:
             if isinstance(failure, dict):
-                return _cloud_failure(None, _cloud_error_detail(failure))
-            return _cloud_failure(failure)
+                reply = _cloud_failure(None, _cloud_error_detail(failure))
+            else:
+                reply = _cloud_failure(failure)
+            if (appapi is not None and appapi_configured()
+                    and not appapi_session_ready()):
+                reply["appapi"] = "signin_required"
+            return reply
         source = "appapi"
         cloud = None
 
@@ -1697,8 +1708,10 @@ def _appapi_identity(request=None):
     credentials = load_credentials()
     saved = load_appapi_session()
     email = (request or {}).get("email")
-    if not isinstance(email, str) or not email:
+    if not isinstance(email, str) or not email.strip():
         email = credentials.get("appApiEmail") or saved.get("email")
+    if isinstance(email, str):
+        email = email.strip()
     country = (request or {}).get("countryCode")
     if country in (None, ""):
         country = credentials.get("appApiCountryCode")
@@ -1722,12 +1735,14 @@ def make_appapi(email=None, country_code=None, request=None):
         return None
     credentials = load_credentials()
     saved = load_appapi_session()
-    if not email:
+    if not isinstance(email, str) or not email.strip():
         email, country_code = _appapi_identity(request)
-    if not isinstance(email, str) or not email:
+    if not isinstance(email, str) or not email.strip():
         return None
+    email = email.strip()
+    # Whitespace-only is "no password": the account signs in by email code.
     password = credentials.get("appApiPassword")
-    if not isinstance(password, str):
+    if not isinstance(password, str) or not password.strip():
         password = ""
     region = credentials.get("apiRegion")
     if not isinstance(region, str) or not region:
@@ -1745,6 +1760,26 @@ def make_appapi(email=None, country_code=None, request=None):
         client.restore_session(saved.get("sid"), saved.get("at"),
                                saved.get("savedAt"))
     return client
+
+
+def appapi_configured():
+    """Enablement rule: a non-empty appApiEmail — nothing else is required.
+
+    appApiPassword is optional; without it the account signs in by emailed
+    code and the bridge relies on the persisted session. A blank or
+    whitespace-only email means "feature off".
+    """
+    email, _ = _appapi_identity()
+    return isinstance(email, str) and bool(email.strip())
+
+
+def appapi_session_ready():
+    """True when a persisted session exists for the configured account."""
+    saved = load_appapi_session()
+    email, _ = _appapi_identity()
+    sid = saved.get("sid")
+    return (isinstance(sid, str) and bool(sid)
+            and saved.get("email") == email)
 
 
 def handle_appapi_signin(request):

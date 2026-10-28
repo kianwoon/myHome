@@ -1558,5 +1558,150 @@ class TestBridgeAppApiSignin(unittest.TestCase):
         self.assertFalse(result['ok'], result)
 
 
+class TestAppApiEnablement(unittest.TestCase):
+    """Enablement is appApiEmail presence; password is optional."""
+
+    QUOTA = {'code': 28841004,
+             'msg': 'IoT Core trial quota is exhausted.', 'success': False}
+
+    def setUp(self):
+        import bridge
+        self.bridge = bridge
+        self.directory = tempfile.mkdtemp()
+        self.old_credentials = bridge.CREDENTIALS_PATH
+        self.old_session = bridge.APAPI_SESSION_PATH
+        self.old_devices = bridge.DEVICES_PATH
+        bridge.CREDENTIALS_PATH = os.path.join(self.directory, 'tinytuya.json')
+        bridge.APAPI_SESSION_PATH = os.path.join(self.directory,
+                                                 'appapi-session.json')
+        bridge.DEVICES_PATH = os.path.join(self.directory, 'devices.json')
+        with open(bridge.DEVICES_PATH, 'w', encoding='utf-8') as handle:
+            json.dump([{'id': 'lan1', 'name': 'Plug', 'ip': '10.0.0.2',
+                        'version': 3.1, 'category': 'cz', 'key': LOCAL_KEY}],
+                      handle)
+        self.old_make_cloud = bridge.make_cloud
+        self.old_make_appapi = bridge.make_appapi
+        self.old_start_autoheal = bridge.start_autoheal
+        self.old_scan = bridge.tinytuya.deviceScan
+        self.cloud = MagicMock()
+        self.cloud.getdevices = MagicMock(return_value=self.QUOTA)
+        bridge.make_cloud = MagicMock(return_value=self.cloud)
+        bridge.start_autoheal = MagicMock()
+        bridge.tinytuya.deviceScan = MagicMock(return_value={})
+
+    def tearDown(self):
+        self.bridge.CREDENTIALS_PATH = self.old_credentials
+        self.bridge.APAPI_SESSION_PATH = self.old_session
+        self.bridge.DEVICES_PATH = self.old_devices
+        self.bridge.make_cloud = self.old_make_cloud
+        self.bridge.make_appapi = self.old_make_appapi
+        self.bridge.start_autoheal = self.old_start_autoheal
+        self.bridge.tinytuya.deviceScan = self.old_scan
+        shutil.rmtree(self.directory)
+
+    def write_config(self, **values):
+        with open(self.bridge.CREDENTIALS_PATH, 'w',
+                  encoding='utf-8') as handle:
+            json.dump(values, handle)
+
+    def write_session(self, values):
+        with open(self.bridge.APAPI_SESSION_PATH, 'w',
+                  encoding='utf-8') as handle:
+            json.dump(values, handle)
+
+    def unauthenticated_client(self):
+        client = MagicMock()
+        client.getdevices = MagicMock(return_value={
+            'Error': 'Unable to Get Cloud Token', 'Err': '911',
+            'Payload': 'NO_SESSION'})
+        self.bridge.make_appapi = MagicMock(return_value=client)
+        return client
+
+    def test_email_only_enables_fallback(self):
+        self.write_config(apiRegion='eu', appApiEmail='user@example.com')
+
+        self.assertTrue(self.bridge.appapi_configured())
+        client = self.bridge.make_appapi()
+        self.assertIsNotNone(client)
+        self.assertEqual(client._password, '')
+
+    def test_email_and_password_prefers_password_login(self):
+        self.write_config(apiRegion='eu', appApiEmail='user@example.com',
+                          appApiPassword='pw')
+        client = self.bridge.make_appapi()
+
+        self.assertEqual(client._password, 'pw')
+
+        def reply(body):
+            response = MagicMock()
+            response.json = MagicMock(return_value=body)
+            return response
+
+        client._session.post = MagicMock(side_effect=[
+            reply({'success': True, 'result': {'publicKey': '3233',
+                                               'exponent': '17',
+                                               'token': 'tok'}}),
+            reply({'success': True, 'result': {'sid': 'sid-1'}})])
+        self.assertIsNone(client.login())
+        actions = [call[1]['params']['a']
+                   for call in client._session.post.call_args_list]
+        self.assertEqual(actions[1], 'tuya.m.user.email.password.login')
+
+    def test_no_email_disables_fallback(self):
+        self.write_config(apiRegion='eu', appApiPassword='pw')
+
+        self.assertFalse(self.bridge.appapi_configured())
+        self.assertIsNone(self.bridge.make_appapi())
+
+    def test_whitespace_email_disables_fallback(self):
+        self.write_config(apiRegion='eu', appApiEmail='   ')
+
+        self.assertFalse(self.bridge.appapi_configured())
+        self.assertIsNone(self.bridge.make_appapi())
+
+    def test_whitespace_password_counts_as_no_password(self):
+        self.write_config(apiRegion='eu', appApiEmail='user@example.com',
+                          appApiPassword='   ')
+
+        client = self.bridge.make_appapi()
+        self.assertIsNotNone(client)
+        self.assertEqual(client._password, '')
+
+    def test_missing_session_flags_signin_required(self):
+        self.write_config(apiRegion='eu', appApiEmail='user@example.com')
+        self.unauthenticated_client()
+
+        result = self.bridge.handle_cloudsync()
+
+        self.assertFalse(result['ok'], result)
+        self.assertEqual(result['appapi'], 'signin_required')
+        self.assertIn('28841004', result['error'])
+        self.assertNotIn('user@example.com', json.dumps(result))
+
+    def test_rescan_missing_session_flags_signin_required(self):
+        self.write_config(apiRegion='eu', appApiEmail='user@example.com')
+        self.unauthenticated_client()
+
+        result = self.bridge.handle_rescan({'window': 15})
+
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(result['appapi'], 'signin_required')
+
+    def test_persisted_session_uses_fallback_without_hint(self):
+        self.write_config(apiRegion='eu', appApiEmail='user@example.com')
+        self.write_session({'email': 'user@example.com', 'sid': 'sid-1'})
+        client = MagicMock()
+        client.getdevices = MagicMock(return_value=[{
+            'id': 'appdev', 'name': 'App Plug', 'category': 'cz',
+            'key': LOCAL_KEY}])
+        self.bridge.make_appapi = MagicMock(return_value=client)
+
+        result = self.bridge.handle_cloudsync()
+
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(result['source'], 'appapi')
+        self.assertNotIn('appapi', result)
+
+
 if __name__ == '__main__':
     unittest.main()
