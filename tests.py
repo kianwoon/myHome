@@ -831,6 +831,8 @@ class TestBridgeCloudsyncRooms(unittest.TestCase):
         self.directory = tempfile.mkdtemp()
         self.old_path = bridge.DEVICES_PATH
         self.old_start_autoheal = bridge.start_autoheal
+        self.old_appapi_configured = bridge.appapi_configured
+        bridge.appapi_configured = MagicMock(return_value=False)
         bridge.DEVICES_PATH = os.path.join(self.directory, 'devices.json')
         with open(bridge.DEVICES_PATH, 'w', encoding='utf-8') as handle:
             json.dump([
@@ -850,6 +852,7 @@ class TestBridgeCloudsyncRooms(unittest.TestCase):
     def tearDown(self):
         self.bridge.DEVICES_PATH = self.old_path
         self.bridge.start_autoheal = self.old_start_autoheal
+        self.bridge.appapi_configured = self.old_appapi_configured
         shutil.rmtree(self.directory)
 
     def read_roster(self):
@@ -941,9 +944,11 @@ class TestBridgeCloudsyncCloudError(unittest.TestCase):
         self.bridge = bridge
         self.old_make_cloud = bridge.make_cloud
         self.old_make_appapi = bridge.make_appapi
+        self.old_appapi_configured = bridge.appapi_configured
         # Hermetic: these tests assert the PRIMARY cloud error is surfaced,
         # so the app API fallback must be off regardless of local config.
         bridge.make_appapi = MagicMock(return_value=None)
+        bridge.appapi_configured = MagicMock(return_value=False)
         self.cloud = MagicMock()
         self.cloud.getdevices = MagicMock(return_value={
             'Error': 'Error Response from Tuya Cloud',
@@ -956,6 +961,7 @@ class TestBridgeCloudsyncCloudError(unittest.TestCase):
     def tearDown(self):
         self.bridge.make_cloud = self.old_make_cloud
         self.bridge.make_appapi = self.old_make_appapi
+        self.bridge.appapi_configured = self.old_appapi_configured
 
     def test_error_dict_reports_cloud_message(self):
         result = self.bridge.handle_cloudsync()
@@ -994,7 +1000,9 @@ class TestBridgeRescanCloudMerge(unittest.TestCase):
         ])
         self.old_make_cloud = bridge.make_cloud
         self.old_make_appapi = bridge.make_appapi
+        self.old_appapi_configured = bridge.appapi_configured
         self.old_device_scan = bridge.tinytuya.deviceScan
+        bridge.appapi_configured = MagicMock(return_value=False)
         bridge.make_appapi = MagicMock(return_value=None)
         bridge.tinytuya.deviceScan = MagicMock(return_value={
             'lan1': {'ip': '10.0.0.9', 'version': 3.3},
@@ -1004,6 +1012,7 @@ class TestBridgeRescanCloudMerge(unittest.TestCase):
         self.bridge.DEVICES_PATH = self.old_path
         self.bridge.make_cloud = self.old_make_cloud
         self.bridge.make_appapi = self.old_make_appapi
+        self.bridge.appapi_configured = self.old_appapi_configured
         self.bridge.tinytuya.deviceScan = self.old_device_scan
         shutil.rmtree(self.directory)
 
@@ -1060,6 +1069,8 @@ class TestBridgeCloudFallback(unittest.TestCase):
         self.old_make_device = bridge.make_device
         self.old_make_cloud = bridge.make_cloud
         self.old_make_appapi = bridge.make_appapi
+        self.old_appapi_configured = bridge.appapi_configured
+        bridge.appapi_configured = MagicMock(return_value=False)
         # Hermetic: a cloud failure must not reach the real app session.
         bridge.make_appapi = MagicMock(return_value=None)
         bridge._devices = [
@@ -1083,6 +1094,7 @@ class TestBridgeCloudFallback(unittest.TestCase):
         self.bridge.make_device = self.old_make_device
         self.bridge.make_cloud = self.old_make_cloud
         self.bridge.make_appapi = self.old_make_appapi
+        self.bridge.appapi_configured = self.old_appapi_configured
 
     def cloud_points(self):
         return {'success': True, 'result': [

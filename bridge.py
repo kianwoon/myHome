@@ -75,9 +75,34 @@ try:
 except Exception:  # pragma: no cover - import must never break the bridge
     appapi = None
 
+def _default_base_dir(script_dir=None):
+    """Pick the writable data directory.
+
+    General rule: MYHOME_DATA_DIR always wins. A dev run uses the script's own
+    directory. A bundled .app is read-only, so it uses
+    ~/Library/Application Support/MyHome (created owner-only) instead of
+    looking for devices.json inside Contents/Resources.
+    """
+    override = os.environ.get("MYHOME_DATA_DIR")
+    if override:
+        return override
+    if script_dir is None:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+    if ".app/Contents/" in script_dir.replace(os.sep, "/") + "/":
+        data_dir = os.path.join(os.path.expanduser("~"),
+                                "Library", "Application Support", "MyHome")
+        try:
+            os.makedirs(data_dir, mode=0o700, exist_ok=True)
+            os.chmod(data_dir, 0o700)
+        except OSError:
+            pass
+        return data_dir
+    return script_dir
+
+
 # Config lives beside the script for dev runs; a bundled app points this at a
 # writable user-data directory because the .app bundle itself is read-only.
-BASE_DIR = os.environ.get("MYHOME_DATA_DIR") or os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = _default_base_dir()
 DEVICES_PATH = os.path.join(BASE_DIR, "devices.json")
 CREDENTIALS_PATH = os.path.join(BASE_DIR, "tinytuya.json")
 APAPI_SESSION_PATH = os.path.join(BASE_DIR, "appapi-session.json")
@@ -568,27 +593,47 @@ def handle_rescan(request=None):
     source = None
     failure = None
     roster = None
-    try:
-        cloud = make_cloud()
-        roster = cloud.getdevices(False)
-        if isinstance(roster, dict):
-            failure = roster
-            roster = None
-        elif not isinstance(roster, list) or not roster:
-            roster = None
-    except Exception as exc:
-        failure = exc
-
-    if roster is not None:
-        cloud_ok = True
-        source = "cloud"
-    elif failure is not None and _appapi_allowed(failure):
-        # Same rule as cloudsync: the app API stands in for a REMOTE failure,
-        # never for a local config/credential problem. Cloud absence is not a
-        # rescan failure, so the LAN merge below always runs.
+    if appapi is not None and appapi_configured():
+        # Retire order: the app roster is primary; IoT Core is the last
+        # resort when the app API cannot answer (no session, mid-flight
+        # failure) — and a sessionless account flags signin_required.
         roster = _appapi_roster()
         if roster is not None:
+            cloud_ok = True
             source = "appapi"
+        elif appapi_session_ready():
+            try:
+                cloud = make_cloud()
+                roster = cloud.getdevices(False)
+                if isinstance(roster, list) and roster:
+                    cloud_ok = True
+                    source = "cloud"
+                elif isinstance(roster, dict):
+                    failure = roster
+                    roster = None
+            except Exception as exc:
+                failure = exc
+    else:
+        try:
+            cloud = make_cloud()
+            roster = cloud.getdevices(False)
+            if isinstance(roster, dict):
+                failure = roster
+                roster = None
+            elif not isinstance(roster, list) or not roster:
+                roster = None
+        except Exception as exc:
+            failure = exc
+
+        if roster is not None:
+            cloud_ok = True
+            source = "cloud"
+        elif failure is not None and _appapi_allowed(failure):
+            # App API unconfigured: keep the historical remote-failure retry
+            # so an account being signed in does not regress LAN-only use.
+            roster = _appapi_roster()
+            if roster is not None:
+                source = "appapi"
 
     if roster is None:
         # Never include token/secret material in logs or the reply.
@@ -641,8 +686,7 @@ def handle_rescan(request=None):
     _device_cache.clear()
     reply = {"ok": True, "merged": merged, "cloud": cloud_ok,
              "source": source or "none", "added": cloud_added}
-    if (roster is None and failure is not None and _appapi_allowed(failure)
-            and appapi is not None and appapi_configured()
+    if (appapi is not None and appapi_configured()
             and not appapi_session_ready()):
         reply["appapi"] = "signin_required"
     return reply
@@ -1526,46 +1570,53 @@ def handle_cloudsync():
     tinytuya.json are never echoed. Room assignment is then refreshed from the
     cloud room map; devices the cloud does not place keep their local room.
     """
-    source = "cloud"
+    source = None
     failure = None
     cloud = None
-    try:
-        cloud = make_cloud()
-        result = cloud.getdevices(False)
-    except Exception as exc:
-        # Never include token/secret material in the reply.
-        result = None
-        failure = exc
+    appapi_failure = None
 
-    if failure is None and isinstance(result, dict):
-        # General rule: getdevices() returns a list on success, so any dict is
-        # a propagated cloud failure (error_json or a raw Tuya error body like
-        # the quota-exhausted reply). Surface the cloud's message; never
-        # token/secret material.
-        failure = result
-        result = None
-
-    if failure is not None:
-        # General rule: the fallback trigger is the primary cloud FAILING, not
-        # a literal error code — quota exhaustion, an expired token, a timeout
-        # or a 5xx all take the same path. A local config/credential failure
-        # is never retried: the app API would fail for the same reason.
-        if not _appapi_allowed(failure):
-            if isinstance(failure, dict):
-                return _cloud_failure(None, _cloud_error_detail(failure))
-            return _cloud_failure(failure)
+    if appapi is not None and appapi_configured():
+        # General rule (retire): the app roster is the hot path. IoT Core is
+        # the last resort when the app API cannot answer (no session yet, or
+        # a mid-flight failure) — and the reported error stays the app API's
+        # when both paths fail, since re-linking is the actionable fix.
         result = _appapi_roster()
-        if result is None:
-            if isinstance(failure, dict):
-                reply = _cloud_failure(None, _cloud_error_detail(failure))
-            else:
-                reply = _cloud_failure(failure)
-            if (appapi is not None and appapi_configured()
-                    and not appapi_session_ready()):
-                reply["appapi"] = "signin_required"
-            return reply
-        source = "appapi"
-        cloud = None
+        if result is not None:
+            source = "appapi"
+        else:
+            appapi_failure = "app api unavailable"
+    if source is None:
+        source = None
+        try:
+            cloud = make_cloud()
+            result = cloud.getdevices(False)
+        except Exception as exc:
+            # Never include token/secret material in the reply.
+            result = None
+            failure = exc
+
+        if failure is None and isinstance(result, dict):
+            # Any dict is a propagated cloud failure (error_json or a raw Tuya
+            # error body like the quota-exhausted reply).
+            failure = result
+            result = None
+
+        if failure is not None:
+            # Local config/credential failures are never retried: the app API
+            # is not configured here, so it would fail for the same reason.
+            if not _appapi_allowed(failure):
+                if isinstance(failure, dict):
+                    return _cloud_failure(None, _cloud_error_detail(failure))
+                return _cloud_failure(failure)
+            result = _appapi_roster()
+            if result is None:
+                if isinstance(failure, dict):
+                    reply = _cloud_failure(None, _cloud_error_detail(failure))
+                else:
+                    reply = _cloud_failure(failure)
+                return reply
+            source = "appapi"
+            cloud = None
 
     if not isinstance(result, list) or not result:
         return {"ok": False, "error": "cloud sync failed: empty or unexpected response"}
@@ -1988,40 +2039,62 @@ class _FallbackMiss(ValueError):
 
 
 def _remote_call(primary, translate, ok=None):
-    """THE shared fallback dispatch for every Tuya cloud call site.
+    """THE shared dispatch for every Tuya cloud call site.
 
-    General rule: run the primary; only a REMOTE failure may be retried through
-    the app API. translate() returns (result, appapi_error). Local/config
-    failures are never retried. Returns (result, failure, hint, source):
-    source is "cloud" or "appapi" on success, None on failure, and hint is
-    "signin_required" when the app API is configured without a session.
+    General rule (2026-10 retire): the APP API is PRIMARY whenever it is
+    configured AND has a live session; a remote primary failure retries the
+    app API exactly once (the original fallback rule, still covering never-
+    signed-in accounts); a configured-but-sessionless account keeps the
+    PRIMARY error and attaches the "signin_required" hint. translate()
+    returns (result, appapi_error); primary() is the IoT Core call. Returns
+    (result, failure, hint, source): source is "cloud" or "appapi" on
+    success, None on failure.
     """
-    failure = None
+    if ok is None:
+        ok = lambda value: not (
+            isinstance(value, dict)
+            and (value.get("success") is False
+                 or value.get("Error") or value.get("Err")))
+
+    appapi_primary = (appapi is not None and appapi_configured()
+                      and appapi_session_ready())
+
+    def try_appapi():
+        return translate()
+
+    def sessionless_hint():
+        return ("signin_required"
+                if appapi is not None and appapi_configured()
+                and not appapi_session_ready() else None)
+
+    if appapi_primary:
+        result, appapi_error = try_appapi()
+        if appapi_error is None:
+            return result, None, None, "appapi"
+
     try:
         result = primary()
     except Exception as exc:
-        failure = exc
+        result, failure = None, exc
     else:
-        if ok is None:
-            ok = lambda value: not (
-                isinstance(value, dict)
-                and (value.get("success") is False
-                     or value.get("Error") or value.get("Err")))
         if ok(result):
             return result, None, None, "cloud"
         failure = result
 
-    if not _appapi_allowed(failure):
-        return None, failure, None, None
+    # Remote primary failure: one app API attempt, whichever direction.
+    if _appapi_allowed(failure):
+        result, appapi_error = try_appapi()
+        if appapi_error is None:
+            return result, None, None, "appapi"
+        if appapi_primary:
+            # App API was primary and failed; IoT Core is unreachable too,
+            # so the actionable error is the app API's own.
+            return None, appapi_error, None, None
+        return None, failure, sessionless_hint(), None
 
-    result, appapi_error = translate()
-    if appapi_error is None:
-        return result, None, None, "appapi"
-
-    hint = None
-    if appapi is not None and appapi_configured() and not appapi_session_ready():
-        hint = "signin_required"
-    return None, failure, hint, None
+    if appapi_primary:
+        return None, appapi_error, None, None
+    return None, failure, None, None
 
 
 def _appapi_roster():
@@ -2146,18 +2219,18 @@ def handle_setconfig(request):
             return {"ok": False, "error": field + " required"}
         credentials[field] = value
 
-    iot_ready = bool(credentials.get("apiKey") and credentials.get("apiSecret"))
+    # Retire order: a ready app session is the cloud test's primary answer.
     appapi_ready = appapi_configured() and appapi_session_ready()
+    if appapi_ready:
+        try:
+            write_credentials(credentials)
+        except Exception as exc:
+            return {"ok": False,
+                    "error": "credentials write failed: " + type(exc).__name__}
+        return {"ok": True, "tested": True, "source": "appapi"}
+
+    iot_ready = bool(credentials.get("apiKey") and credentials.get("apiSecret"))
     if not iot_ready:
-        # General rule: EITHER cloud path may satisfy "cloud configured";
-        # state which one did so the Settings screen can label it honestly.
-        if appapi_ready:
-            try:
-                write_credentials(credentials)
-            except Exception as exc:
-                return {"ok": False,
-                        "error": "credentials write failed: " + type(exc).__name__}
-            return {"ok": True, "tested": True, "source": "appapi"}
         return {"ok": False, "error": "apiKey and apiSecret required"}
     if not credentials.get("apiRegion"):
         return {"ok": False, "error": "apiRegion required"}
@@ -2728,13 +2801,19 @@ def _cloud_error_detail(response):
 
 
 def _cloud_failure(exc, detail=None, hint=None):
-    """Uniform error dict for cloud-path failures the UI can show directly."""
+    """Uniform error dict for cloud-path failures the UI can show directly.
+
+    General rule: a configured-but-sessionless app API account gets the
+    "signin_required" hint on every cloud failure reply — the primary error
+    stays the actionable one, the hint names the fix.
+    """
     if detail is None:
         detail = str(exc) if isinstance(exc, CloudEnvError) else type(exc).__name__
     reply = {"ok": False, "error": "cloud request failed: " + detail,
              "cloud_capable": CLOUD_CAPABLE}
-    if hint:
-        reply["appapi"] = hint
+    if hint or (appapi is not None and appapi_configured()
+                and not appapi_session_ready()):
+        reply["appapi"] = hint or "signin_required"
     return reply
 
 
