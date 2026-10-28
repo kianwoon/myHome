@@ -67,14 +67,44 @@ struct AutoOpenTrigger: View {
         Color.clear
             .frame(width: 0, height: 0)
             .onAppear {
-                guard ProcessInfo.processInfo.environment["MYHOME_AUTOOPEN"] == "1" else {
-                    return
+                let environment = ProcessInfo.processInfo.environment
+                if environment["MYHOME_AUTOOPEN"] == "1" {
+                    Task {
+                        try? await Task.sleep(nanoseconds: 2_000_000_000)
+                        openWindow(id: "dashboard")
+                        NSApp.activate(ignoringOtherApps: true)
+                    }
                 }
-                Task {
-                    try? await Task.sleep(nanoseconds: 2_000_000_000)
-                    openWindow(id: "dashboard")
-                    NSApp.activate(ignoringOtherApps: true)
+                // Same diagnostic contract for Settings: MYHOME_SETTINGS=1
+                // opens the Cloud tab, and MYHOME_SNAPSHOT_PATH writes a PNG
+                // of the settings window so a UI change can be reviewed
+                // without screen-recording permissions or manual clicks.
+                if environment["MYHOME_SETTINGS"] == "1" {
+                    Task {
+                        try? await Task.sleep(nanoseconds: 1_500_000_000)
+                        NSApp.sendAction(Selector(("showSettingsWindow:")),
+                                         to: nil, from: nil)
+                        NSApp.activate(ignoringOtherApps: true)
+                        if let path = environment["MYHOME_SNAPSHOT_PATH"], !path.isEmpty {
+                            try? await Task.sleep(nanoseconds: 8_000_000_000)
+                            writeKeyWindowSnapshot(to: path)
+                        }
+                    }
                 }
             }
+    }
+
+    private func writeKeyWindowSnapshot(to path: String) {
+        guard let window = NSApp.keyWindow
+                ?? NSApp.windows.first(where: { $0.isVisible }),
+              let view = window.contentView,
+              let representation = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
+            return
+        }
+        view.cacheDisplay(in: view.bounds, to: representation)
+        guard let data = representation.representation(using: .png, properties: [:]) else {
+            return
+        }
+        try? data.write(to: URL(fileURLWithPath: path))
     }
 }

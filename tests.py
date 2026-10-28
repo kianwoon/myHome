@@ -939,6 +939,10 @@ class TestBridgeCloudsyncCloudError(unittest.TestCase):
         import bridge
         self.bridge = bridge
         self.old_make_cloud = bridge.make_cloud
+        self.old_make_appapi = bridge.make_appapi
+        # Hermetic: these tests assert the PRIMARY cloud error is surfaced,
+        # so the app API fallback must be off regardless of local config.
+        bridge.make_appapi = MagicMock(return_value=None)
         self.cloud = MagicMock()
         self.cloud.getdevices = MagicMock(return_value={
             'Error': 'Error Response from Tuya Cloud',
@@ -950,6 +954,7 @@ class TestBridgeCloudsyncCloudError(unittest.TestCase):
 
     def tearDown(self):
         self.bridge.make_cloud = self.old_make_cloud
+        self.bridge.make_appapi = self.old_make_appapi
 
     def test_error_dict_reports_cloud_message(self):
         result = self.bridge.handle_cloudsync()
@@ -987,7 +992,9 @@ class TestBridgeRescanCloudMerge(unittest.TestCase):
              'version': 3.1, 'category': 'cz', 'key': LOCAL_KEY},
         ])
         self.old_make_cloud = bridge.make_cloud
+        self.old_make_appapi = bridge.make_appapi
         self.old_device_scan = bridge.tinytuya.deviceScan
+        bridge.make_appapi = MagicMock(return_value=None)
         bridge.tinytuya.deviceScan = MagicMock(return_value={
             'lan1': {'ip': '10.0.0.9', 'version': 3.3},
         })
@@ -995,6 +1002,7 @@ class TestBridgeRescanCloudMerge(unittest.TestCase):
     def tearDown(self):
         self.bridge.DEVICES_PATH = self.old_path
         self.bridge.make_cloud = self.old_make_cloud
+        self.bridge.make_appapi = self.old_make_appapi
         self.bridge.tinytuya.deviceScan = self.old_device_scan
         shutil.rmtree(self.directory)
 
@@ -1701,6 +1709,96 @@ class TestAppApiEnablement(unittest.TestCase):
         self.assertTrue(result['ok'], result)
         self.assertEqual(result['source'], 'appapi')
         self.assertNotIn('appapi', result)
+
+
+class TestBridgeConfigAppApi(unittest.TestCase):
+    """config/setconfig expose only the non-secret app API identity."""
+
+    def setUp(self):
+        import bridge
+        self.bridge = bridge
+        self.directory = tempfile.mkdtemp()
+        self.old_credentials = bridge.CREDENTIALS_PATH
+        self.old_session = bridge.APAPI_SESSION_PATH
+        bridge.CREDENTIALS_PATH = os.path.join(self.directory, 'tinytuya.json')
+        bridge.APAPI_SESSION_PATH = os.path.join(self.directory,
+                                                 'appapi-session.json')
+        self.old_cloud = bridge.tinytuya.Cloud
+        cloud = MagicMock()
+        cloud.token = 'token'
+        cloud.error = None
+        cloud.getdevices = MagicMock(return_value=[])
+        bridge.tinytuya.Cloud = MagicMock(return_value=cloud)
+        self.cloud = cloud
+        self.write_config({'apiKey': 'key-1', 'apiSecret': 'secret-1',
+                           'apiRegion': 'eu'})
+
+    def tearDown(self):
+        self.bridge.CREDENTIALS_PATH = self.old_credentials
+        self.bridge.APAPI_SESSION_PATH = self.old_session
+        self.bridge.tinytuya.Cloud = self.old_cloud
+        shutil.rmtree(self.directory)
+
+    def write_config(self, values):
+        with open(self.bridge.CREDENTIALS_PATH, 'w',
+                  encoding='utf-8') as handle:
+            json.dump(values, handle)
+
+    def test_config_reports_unsigned_email_and_no_session(self):
+        self.write_config({'apiKey': 'key-1', 'apiSecret': 'secret-1',
+                           'apiRegion': 'eu',
+                           'appApiEmail': 'user@example.com',
+                           'appApiCountryCode': '49'})
+
+        reply = self.bridge.handle_config()
+
+        config = reply['config']
+        self.assertEqual(config['appApiEmail'], 'user@example.com')
+        self.assertEqual(config['appApiCountryCode'], '49')
+        self.assertFalse(config['appApiSignedIn'])
+        self.assertEqual(config['appApiEmailMasked'], '')
+        text = json.dumps(reply)
+        self.assertNotIn('secret-1', text)
+        self.assertNotIn('appApiPassword', text)
+        self.assertNotIn('"sid"', text)
+
+    def test_config_reports_signed_in_masked_email(self):
+        self.write_config({'apiKey': 'key-1', 'apiSecret': 'secret-1',
+                           'apiRegion': 'eu',
+                           'appApiEmail': 'user@example.com'})
+        with open(self.bridge.APAPI_SESSION_PATH, 'w',
+                  encoding='utf-8') as handle:
+            json.dump({'email': 'user@example.com', 'sid': 'sid-1'},
+                      handle)
+
+        config = self.bridge.handle_config()['config']
+
+        self.assertTrue(config['appApiSignedIn'])
+        self.assertEqual(config['appApiEmailMasked'], 'u…@example.com')
+        self.assertNotIn('sid-1', json.dumps(config))
+
+    def test_setconfig_persists_appapi_fields(self):
+        result = self.bridge.handle_setconfig({
+            'appApiEmail': ' user@example.com ',
+            'appApiCountryCode': '49'})
+
+        self.assertTrue(result['ok'], result)
+        with open(self.bridge.CREDENTIALS_PATH, 'r',
+                  encoding='utf-8') as handle:
+            saved = json.load(handle)
+        self.assertEqual(saved['appApiEmail'], 'user@example.com')
+        self.assertEqual(saved['appApiCountryCode'], '49')
+        self.assertEqual(saved['apiKey'], 'key-1')
+
+    def test_setconfig_rejects_non_digit_country(self):
+        result = self.bridge.handle_setconfig({
+            'appApiEmail': 'user@example.com',
+            'appApiCountryCode': 'DE'})
+
+        self.assertFalse(result['ok'], result)
+        with open(self.bridge.CREDENTIALS_PATH, 'r',
+                  encoding='utf-8') as handle:
+            self.assertNotIn('appApiEmail', json.load(handle))
 
 
 if __name__ == '__main__':

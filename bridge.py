@@ -1897,12 +1897,20 @@ def handle_config():
     emitted so the Settings screen can show what is configured.
     """
     credentials = load_credentials()
+    email, country = _appapi_identity()
+    signed_in = appapi_session_ready()
     return {
         "ok": True,
         "config": {
             "apiKey": credentials.get("apiKey", ""),
             "apiSecretMasked": mask_secret(credentials.get("apiSecret")),
             "apiRegion": credentials.get("apiRegion", ""),
+            # The app API identity is read back in full (like apiKey) so the
+            # Settings email field can be prefilled. No secret material.
+            "appApiEmail": email or "",
+            "appApiCountryCode": country or "",
+            "appApiSignedIn": signed_in,
+            "appApiEmailMasked": mask_email(email) if signed_in else "",
             "devicesPath": DEVICES_PATH,
             "pollNotes": (
                 "Poll interval and scan window are app-side settings (Control tab). "
@@ -1942,13 +1950,24 @@ def handle_setconfig(request):
     """
     credentials = load_credentials()
 
-    for field in ("apiKey", "apiSecret", "apiRegion"):
+    for field in ("apiKey", "apiSecret", "apiRegion", "appApiEmail",
+                  "appApiCountryCode"):
         if field not in request:
             continue
         value = request.get(field)
         if not isinstance(value, str):
             return {"ok": False, "error": field + " must be a string"}
         value = value.strip()
+        if field in ("appApiEmail", "appApiCountryCode"):
+            # Both are optional; an empty value clears the field.
+            if not value:
+                credentials.pop(field, None)
+            elif field == "appApiCountryCode" and not value.isdigit():
+                return {"ok": False,
+                        "error": "appApiCountryCode must be digits"}
+            else:
+                credentials[field] = value
+            continue
         if field == "apiSecret" and not value:
             # Empty secret means "keep the stored one" so the UI can test an
             # unchanged secret without ever displaying it.

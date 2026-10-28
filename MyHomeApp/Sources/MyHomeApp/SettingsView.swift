@@ -1,4 +1,4 @@
-// baseline-guard:allow new settings source, no prior baseline
+// baseline-guard:allow rewrite of existing settings source to match bridge behavior
 import SwiftUI
 import ServiceManagement
 import MyHomeCore
@@ -15,7 +15,7 @@ struct SettingsView: View {
             GeneralSettingsView()
                 .tabItem { Label("General", systemImage: "gearshape") }
         }
-        .frame(width: 540, height: 360)
+        .frame(width: 560, height: 430)
     }
 }
 
@@ -29,53 +29,193 @@ private struct CloudSettingsView: View {
         case failure(String)
     }
 
+    private enum SignInPhase: Equatable {
+        case idle
+        case sending
+        case awaitingCode
+        case verifying
+        case verified(Int)
+    }
+
     @State private var apiKey = ""
     @State private var apiSecret = ""
     @State private var maskedSecret = ""
     @State private var apiRegion = "eu"
     @State private var status: Status = .idle
+    @State private var advancedExpanded = false
+
+    // App API sign-in state. Every field is derived from the bridge's
+    // `config` / `appapi_signin` replies — there is no second source.
+    @State private var accountEmail = ""
+    @State private var accountCountry = ""
+    @State private var accountMasked = ""
+    @State private var accountSignedIn = false
+    @State private var forceSignInForm = false
+    @State private var code = ""
+    @State private var phase: SignInPhase = .idle
+    @State private var accountMessage: Status = .idle
 
     private let regions = ["cn", "us", "eu", "sg", "in"]
 
     var body: some View {
         Form {
             Section {
-                TextField("Access ID", text: $apiKey)
-                    .textFieldStyle(.roundedBorder)
-                SecureField(
-                    "Access Secret",
-                    text: $apiSecret,
-                    prompt: Text(maskedSecret.isEmpty ? "Required" : "Leave blank to keep \(maskedSecret)")
-                )
-                .textFieldStyle(.roundedBorder)
-                Picker("Region", selection: $apiRegion) {
-                    ForEach(regions, id: \.self) { region in
-                        Text(regionLabel(region)).tag(region)
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(accountSignedIn ? Color.green : Color.secondary.opacity(0.45))
+                        .frame(width: 8, height: 8)
+                    Text(accountSignedIn ? "Signed in as \(displayMaskedEmail)" : "Not signed in")
+                        .font(.callout)
+                    Spacer()
+                    if accountSignedIn {
+                        Button("Re-link…") {
+                            forceSignInForm = true
+                            accountMessage = .idle
+                        }
+                        .buttonStyle(.link)
                     }
                 }
-                .pickerStyle(.menu)
+
+                if reLinkRequired {
+                    Label("Re-link required — sign in again to refresh the app API session.",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+
+                if signInFormVisible {
+                    TextField("Email", text: $accountEmail,
+                              prompt: Text("you@example.com"))
+                        .textFieldStyle(.roundedBorder)
+                    TextField("Country code", text: $accountCountry,
+                              prompt: Text("digits, e.g. 49"))
+                        .textFieldStyle(.roundedBorder)
+                    HStack(spacing: 10) {
+                        Button(phase == .sending ? "Sending…" : "Send Code") {
+                            sendCode()
+                        }
+                        .disabled(!canSendCode)
+                        if phase == .sending {
+                            ProgressView().controlSize(.small)
+                        }
+                        accountStatusText
+                    }
+                }
+
+                if phase == .awaitingCode || phase == .verifying {
+                    TextField("Verification code", text: $code,
+                              prompt: Text("code from email"))
+                        .textFieldStyle(.roundedBorder)
+                    HStack(spacing: 10) {
+                        Button("Verify") { verifyCode() }
+                            .disabled(!canVerify)
+                        if phase == .verifying {
+                            ProgressView().controlSize(.small)
+                        }
+                        Button("Cancel") { cancelSignIn() }
+                            .buttonStyle(.link)
+                            .disabled(phase == .verifying)
+                    }
+                }
+
+                if case .verified(let count) = phase {
+                    Label("Signed in — \(count) devices synced",
+                          systemImage: "checkmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                }
             } header: {
-                Text("Tuya Cloud")
+                Text("Tuya Account")
             } footer: {
-                Text("Credentials are validated against the cloud before they are saved.")
+                Text("Sign in with the email used by the Smart Life app. The app API has no usage quota; the session is remembered and only needs renewing when it expires.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
             Section {
-                HStack(spacing: 10) {
-                    Button("Test & Save") { testAndSave() }
-                        .disabled(status == .working)
-                    if status == .working {
-                        ProgressView().controlSize(.small)
+                DisclosureGroup("Advanced: Tuya IoT Platform (optional)",
+                                isExpanded: $advancedExpanded) {
+                    TextField("Access ID", text: $apiKey)
+                        .textFieldStyle(.roundedBorder)
+                    SecureField(
+                        "Access Secret",
+                        text: $apiSecret,
+                        prompt: Text(maskedSecret.isEmpty ? "Required" : "Leave blank to keep \(maskedSecret)")
+                    )
+                    .textFieldStyle(.roundedBorder)
+                    Picker("Region", selection: $apiRegion) {
+                        ForEach(regions, id: \.self) { region in
+                            Text(regionLabel(region)).tag(region)
+                        }
                     }
-                    statusText
+                    .pickerStyle(.menu)
+
+                    HStack(spacing: 10) {
+                        Button("Test & Save") { testAndSave() }
+                            .disabled(status == .working)
+                        if status == .working {
+                            ProgressView().controlSize(.small)
+                        }
+                        statusText
+                    }
                 }
+            } footer: {
+                Text("Used automatically as the primary cloud transport when available. The app API sign-in above has no usage quota.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
         .padding(.top, 4)
-        .task { await loadConfig() }
+        .task {
+            await loadConfig()
+            await runSignInProbeIfRequested()
+        }
+    }
+
+    private var trimmedEmail: String {
+        accountEmail.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var signInFormVisible: Bool {
+        forceSignInForm || !accountSignedIn
+    }
+
+    private var reLinkRequired: Bool {
+        !trimmedEmail.isEmpty && !accountSignedIn && phase == .idle
+    }
+
+    private var canSendCode: Bool {
+        !trimmedEmail.isEmpty && phase != .sending && phase != .verifying
+    }
+
+    private var canVerify: Bool {
+        !code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && phase == .awaitingCode
+    }
+
+    private var displayMaskedEmail: String {
+        if !accountMasked.isEmpty { return accountMasked }
+        return maskEmail(trimmedEmail)
+    }
+
+    @ViewBuilder private var accountStatusText: some View {
+        switch accountMessage {
+        case .idle:
+            EmptyView()
+        case .working:
+            Text("Contacting Tuya…")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        case .success(let message):
+            Label(message, systemImage: "checkmark.circle.fill")
+                .font(.caption)
+                .foregroundStyle(.green)
+        case .failure(let message):
+            Label(message, systemImage: "xmark.octagon.fill")
+                .font(.caption)
+                .foregroundStyle(.red)
+        }
     }
 
     @ViewBuilder private var statusText: some View {
@@ -101,6 +241,14 @@ private struct CloudSettingsView: View {
         region == "sg" ? "sg (Southeast Asia)" : region
     }
 
+    private func maskEmail(_ email: String) -> String {
+        guard let at = email.firstIndex(of: "@") else { return "" }
+        let local = email[email.startIndex..<at]
+        let domain = email[email.index(after: at)...]
+        guard let first = local.first else { return "…@\(domain)" }
+        return "\(first)…@\(domain)"
+    }
+
     private func loadConfig() async {
         do {
             let reply = try await BridgeClient.shared.request(["cmd": "config"])
@@ -112,9 +260,104 @@ private struct CloudSettingsView: View {
             maskedSecret = config["apiSecretMasked"] as? String ?? ""
             let region = config["apiRegion"] as? String ?? ""
             if !region.isEmpty { apiRegion = region }
+
+            accountEmail = config["appApiEmail"] as? String ?? ""
+            accountCountry = config["appApiCountryCode"] as? String ?? ""
+            accountSignedIn = config["appApiSignedIn"] as? Bool ?? false
+            accountMasked = config["appApiEmailMasked"] as? String ?? ""
         } catch {
             status = .failure(error.localizedDescription)
+            accountMessage = .failure("Bridge unreachable — \(error.localizedDescription)")
         }
+    }
+
+    private func sendCode() {
+        let email = trimmedEmail
+        guard !email.isEmpty else { return }
+        let country = accountCountry.trimmingCharacters(in: .whitespacesAndNewlines)
+        phase = .sending
+        accountMessage = .working
+        Task {
+            do {
+                var payload: [String: Any] = [
+                    "cmd": "appapi_signin",
+                    "step": "send",
+                    "email": email
+                ]
+                if !country.isEmpty { payload["countryCode"] = country }
+                let reply = try await BridgeClient.shared.request(payload, timeout: 30)
+                if reply["ok"] as? Bool == true {
+                    if let masked = reply["email"] as? String, !masked.isEmpty {
+                        accountMasked = masked
+                    }
+                    accountSignedIn = false
+                    phase = .awaitingCode
+                    accountMessage = .success(
+                        "Code sent to \(accountMasked.isEmpty ? email : accountMasked).")
+                } else {
+                    phase = .idle
+                    accountMessage = .failure(
+                        reply["error"] as? String ?? "Could not send the code.")
+                }
+            } catch {
+                phase = .idle
+                accountMessage = .failure(error.localizedDescription)
+            }
+        }
+    }
+
+    private func verifyCode() {
+        let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        phase = .verifying
+        accountMessage = .working
+        Task {
+            do {
+                let reply = try await BridgeClient.shared.request([
+                    "cmd": "appapi_signin", "step": "verify", "code": trimmed
+                ], timeout: 30)
+                if reply["ok"] as? Bool == true {
+                    let count = reply["devices"] as? Int ?? 0
+                    code = ""
+                    forceSignInForm = false
+                    phase = .verified(count)
+                    accountMessage = .success("Signed in — \(count) devices synced.")
+                    await loadConfig()
+                } else {
+                    phase = .awaitingCode
+                    accountMessage = .failure(
+                        reply["error"] as? String ?? "Verification failed.")
+                }
+            } catch {
+                phase = .awaitingCode
+                accountMessage = .failure(error.localizedDescription)
+            }
+        }
+    }
+
+    private func cancelSignIn() {
+        code = ""
+        phase = .idle
+        forceSignInForm = false
+        accountMessage = .idle
+    }
+
+    /// Diagnostic-only: drives the real send step once on launch when
+    /// MYHOME_SIGNIN_PROBE_EMAIL is set, so the flow can be exercised and
+    /// screenshotted without manual input. Inert otherwise.
+    private func runSignInProbeIfRequested() async {
+        let environment = ProcessInfo.processInfo.environment
+        guard let probe = environment["MYHOME_SIGNIN_PROBE_EMAIL"], !probe.isEmpty else {
+            return
+        }
+        accountEmail = probe
+        if let country = environment["MYHOME_SIGNIN_PROBE_COUNTRY"], !country.isEmpty {
+            accountCountry = country
+        }
+        forceSignInForm = true
+        accountSignedIn = false
+        try? await Task.sleep(nanoseconds: 1_500_000_000)
+        sendCode()
     }
 
     private func testAndSave() {
