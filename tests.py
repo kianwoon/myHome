@@ -893,6 +893,84 @@ class TestBridgeCloudsyncRooms(unittest.TestCase):
         self.assertEqual(roster['cloudcz']['name'], 'New Name')
 
 
+class TestCloudDeviceListErrorPropagation(unittest.TestCase):
+    """A cloud error dict must never be masked as an empty device roster."""
+
+    ERROR = {
+        'Error': 'Error Response from Tuya Cloud',
+        'Err': '913',
+        'Payload': "Error from Tuya Cloud: Code 28841004: "
+                   "'IoT Core trial quota is exhausted.'",
+    }
+
+    def make_cloud(self):
+        cloud = tinytuya.Cloud.__new__(tinytuya.Cloud)
+        cloud.apiDeviceID = None
+        cloud.use_old_device_list = True
+        return cloud
+
+    def test_get_all_devices_returns_error_dict(self):
+        cloud = self.make_cloud()
+        cloud.cloudrequest = MagicMock(return_value=self.ERROR)
+
+        self.assertEqual(cloud._get_all_devices(), self.ERROR)
+
+    def test_getdevices_passes_error_dict_through(self):
+        cloud = self.make_cloud()
+        cloud._get_all_devices = MagicMock(return_value=self.ERROR)
+
+        self.assertEqual(cloud.getdevices(False), self.ERROR)
+
+    def test_get_all_devices_returns_raw_tuya_error_body(self):
+        cloud = self.make_cloud()
+        error = {'code': 28841004,
+                 'msg': 'IoT Core trial quota is exhausted.', 'success': False}
+        cloud.cloudrequest = MagicMock(return_value=error)
+
+        self.assertEqual(cloud._get_all_devices(), error)
+
+
+class TestBridgeCloudsyncCloudError(unittest.TestCase):
+    """cloudsync surfaces the cloud's error message, not a fake empty roster."""
+
+    def setUp(self):
+        import bridge
+        self.bridge = bridge
+        self.old_make_cloud = bridge.make_cloud
+        self.cloud = MagicMock()
+        self.cloud.getdevices = MagicMock(return_value={
+            'Error': 'Error Response from Tuya Cloud',
+            'Err': '913',
+            'Payload': "Error from Tuya Cloud: Code 28841004: "
+                       "'IoT Core trial quota is exhausted.'",
+        })
+        bridge.make_cloud = MagicMock(return_value=self.cloud)
+
+    def tearDown(self):
+        self.bridge.make_cloud = self.old_make_cloud
+
+    def test_error_dict_reports_cloud_message(self):
+        result = self.bridge.handle_cloudsync()
+
+        self.assertFalse(result['ok'], result)
+        self.assertIn('IoT Core trial quota is exhausted.', result['error'])
+        self.assertNotIn('empty or unexpected response', result['error'])
+        self.assertNotIn('secret', json.dumps(result))
+
+    def test_raw_tuya_error_body_reports_code_and_message(self):
+        self.cloud.getdevices = MagicMock(return_value={
+            'code': 28841004,
+            'msg': 'IoT Core trial quota is exhausted.',
+            'success': False,
+        })
+
+        result = self.bridge.handle_cloudsync()
+
+        self.assertFalse(result['ok'], result)
+        self.assertIn('28841004', result['error'])
+        self.assertIn('IoT Core trial quota is exhausted.', result['error'])
+
+
 class TestBridgeRescanCloudMerge(unittest.TestCase):
     """handle_rescan reconciles the cloud roster, not just LAN ip deltas."""
 

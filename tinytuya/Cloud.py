@@ -383,6 +383,14 @@ class Cloud(object):
             else:
                 log.debug( 'Cloud response: %r', result )
 
+            # General rule: a successful page is a dict carrying 'result'.
+            # Anything else (error_json dict, a raw Tuya error body such as the
+            # quota-exhausted reply, or non-dict junk) is returned unchanged.
+            # Propagating it keeps the failure visible instead of dissolving the
+            # error keys into a fake {'result': []} roster.
+            if not isinstance( result, dict ) or 'result' not in result:
+                return result
+
             # format it the same as before, basically just moves result->devices into result
             for i in result:
                 if i == 'result':
@@ -463,6 +471,12 @@ class Cloud(object):
                         json_data[k] += json_run[k]
         else:
             json_data = self._get_all_devices()
+            # General rule: only a dict carrying 'result' is a roster. A cloud
+            # failure propagated by _get_all_devices (error dict / raw Tuya
+            # error body) is passed straight back to the caller, which handles
+            # error dicts; it is never treated as an empty list of devices.
+            if not isinstance( json_data, dict ) or 'result' not in json_data:
+                return json_data
             users = {}
             # loop through all devices and build a list of user IDs
             for dev in json_data['result']:

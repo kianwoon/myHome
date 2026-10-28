@@ -503,6 +503,8 @@ def handle_rescan(request=None):
     try:
         cloud = make_cloud()
         roster = cloud.getdevices(False)
+        if isinstance(roster, dict):
+            raise ValueError("cloud error: " + _cloud_error_detail(roster))
         if not isinstance(roster, list) or not roster:
             raise ValueError("empty or unexpected cloud response")
         cloud_added = _merge_cloud_roster(roster, prune=False)["added"]
@@ -1411,6 +1413,13 @@ def handle_cloudsync():
         # Never include token/secret material in the reply.
         return _cloud_failure(exc)
 
+    if isinstance(result, dict):
+        # General rule: getdevices() returns a list on success, so any dict is
+        # a propagated cloud failure (error_json or a raw Tuya error body like
+        # the quota-exhausted reply). Surface the cloud's message; never
+        # token/secret material.
+        return _cloud_failure(None, _cloud_error_detail(result))
+
     if not isinstance(result, list) or not result:
         return {"ok": False, "error": "cloud sync failed: empty or unexpected response"}
 
@@ -2072,9 +2081,33 @@ def _cloud_reply(cloud, url, action=None, post=None):
     return response.get("result"), None
 
 
-def _cloud_failure(exc):
+def _cloud_error_detail(response):
+    """Message-only summary of a cloud error dict (never credentials).
+
+    Handles both shapes the library can surface: error_json() dicts
+    (Error/Err/Payload) and raw Tuya error bodies (code/msg/success=false).
+    """
+    if not isinstance(response, dict):
+        return "unexpected response"
+    message = response.get("msg") or response.get("message")
+    if message:
+        code = response.get("code")
+        if code is None:
+            return str(message)
+        return "Code %r: %s" % (code, message)
+    payload = response.get("Payload")
+    if payload:
+        return str(payload)
+    error = response.get("Error")
+    if error:
+        return str(error)
+    return "unexpected response"
+
+
+def _cloud_failure(exc, detail=None):
     """Uniform error dict for cloud-path failures the UI can show directly."""
-    detail = str(exc) if isinstance(exc, CloudEnvError) else type(exc).__name__
+    if detail is None:
+        detail = str(exc) if isinstance(exc, CloudEnvError) else type(exc).__name__
     return {"ok": False, "error": "cloud request failed: " + detail,
             "cloud_capable": CLOUD_CAPABLE}
 
