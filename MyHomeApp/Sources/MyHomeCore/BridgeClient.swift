@@ -199,6 +199,9 @@ public final class BridgeClient: @unchecked Sendable {
             if let dataDirectory = BridgeClient.bundledDataDirectory() {
                 environment["MYHOME_DATA_DIR"] = dataDirectory.path
             }
+            // Keep the signed bundle immutable: bytecode caches written beside
+            // the bridge script would invalidate its code signature.
+            environment["PYTHONDONTWRITEBYTECODE"] = "1"
         } else {
             let directory = BridgeClient.bridgeDirectory()
             let script = directory.appendingPathComponent("bridge.py")
