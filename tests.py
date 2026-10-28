@@ -1059,6 +1059,9 @@ class TestBridgeCloudFallback(unittest.TestCase):
         self.old_devices = bridge._devices
         self.old_make_device = bridge.make_device
         self.old_make_cloud = bridge.make_cloud
+        self.old_make_appapi = bridge.make_appapi
+        # Hermetic: a cloud failure must not reach the real app session.
+        bridge.make_appapi = MagicMock(return_value=None)
         bridge._devices = [
             {'id': 'fan1', 'name': 'Fan', 'ip': '10.0.0.9', 'version': 3.4,
              'category': 'fs', 'key': LOCAL_KEY,
@@ -1079,6 +1082,7 @@ class TestBridgeCloudFallback(unittest.TestCase):
         self.bridge._devices = self.old_devices
         self.bridge.make_device = self.old_make_device
         self.bridge.make_cloud = self.old_make_cloud
+        self.bridge.make_appapi = self.old_make_appapi
 
     def cloud_points(self):
         return {'success': True, 'result': [
@@ -2087,6 +2091,333 @@ class TestBridgeScheduleFallback(unittest.TestCase):
 
         self.assertFalse(result['ok'], result)
         self.bridge.make_appapi.assert_not_called()
+
+
+class TestBridgeDeviceFallback(unittest.TestCase):
+    """Every device/room/online/spec path rides the app API on a remote fail."""
+
+    QUOTA = {'code': 28841004, 'msg': 'IoT Core trial quota is exhausted.',
+             'success': False}
+    DEV1 = 'dev1'
+    DEV2 = 'dev2'
+
+    def setUp(self):
+        import bridge
+        self.bridge = bridge
+        self.directory = tempfile.mkdtemp()
+        self.old_devices = bridge._devices
+        self.old_devices_path = bridge.DEVICES_PATH
+        self.old_credentials = bridge.CREDENTIALS_PATH
+        self.old_session = bridge.APAPI_SESSION_PATH
+        self.old_make_cloud = bridge.make_cloud
+        self.old_make_appapi = bridge.make_appapi
+        bridge.DEVICES_PATH = os.path.join(self.directory, 'devices.json')
+        bridge.CREDENTIALS_PATH = os.path.join(self.directory, 'tinytuya.json')
+        bridge.APAPI_SESSION_PATH = os.path.join(self.directory,
+                                                 'appapi-session.json')
+        self.roster = [
+            {'id': self.DEV1, 'name': 'Desk Plug', 'ip': '10.0.0.5',
+             'version': 3.3, 'category': 'cz', 'key': LOCAL_KEY,
+             'product_id': 'pid1', 'codes': {'switch_1': '1'}},
+            {'id': self.DEV2, 'name': 'Study Light', 'ip': '',
+             'version': 3.3, 'category': 'cz', 'key': LOCAL_KEY,
+             'product_id': 'pid2', 'codes': {'switch_1': '1'}},
+        ]
+        with open(bridge.DEVICES_PATH, 'w', encoding='utf-8') as handle:
+            json.dump(self.roster, handle)
+        bridge._devices = list(self.roster)
+        self.cloud = MagicMock()
+        self.client = MagicMock()
+        bridge.make_cloud = MagicMock(return_value=self.cloud)
+        bridge.make_appapi = MagicMock(return_value=self.client)
+        self.old_device = bridge.make_device
+        self.device = MagicMock()
+        self.device.status = MagicMock(side_effect=RuntimeError('lan down'))
+        self.device.set_multiple_values = MagicMock(
+            side_effect=RuntimeError('lan down'))
+        bridge.make_device = MagicMock(return_value=self.device)
+        self.old_autoheal = bridge.start_autoheal
+        bridge.start_autoheal = MagicMock()
+
+    def tearDown(self):
+        self.bridge._devices = self.old_devices
+        self.bridge.DEVICES_PATH = self.old_devices_path
+        self.bridge.CREDENTIALS_PATH = self.old_credentials
+        self.bridge.APAPI_SESSION_PATH = self.old_session
+        self.bridge.make_cloud = self.old_make_cloud
+        self.bridge.make_appapi = self.old_make_appapi
+        self.bridge.make_device = self.old_device
+        self.bridge.start_autoheal = self.old_autoheal
+        shutil.rmtree(self.directory)
+
+    def configure_unsigned(self):
+        """App API configured (email) but no persisted session."""
+        with open(self.bridge.CREDENTIALS_PATH, 'w', encoding='utf-8') as handle:
+            json.dump({'appApiEmail': 'user@example.com'}, handle)
+
+    def read_roster(self):
+        with open(self.bridge.DEVICES_PATH, 'r', encoding='utf-8') as handle:
+            return {device['id']: device for device in json.load(handle)}
+
+    def test_rename_remote_failure_uses_appapi(self):
+        self.cloud.cloudrequest = MagicMock(return_value=self.QUOTA)
+        self.client.rename_device = MagicMock(return_value=(True, None))
+
+        result = self.bridge.handle_rename({'id': self.DEV1, 'name': 'New'})
+
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(set(result), {'ok', 'name'})
+        self.assertEqual(result['name'], 'New')
+        self.client.rename_device.assert_called_once_with(self.DEV1, 'New')
+        self.assertEqual(self.read_roster()[self.DEV1]['name'], 'New')
+
+    def test_rename_local_config_error_never_retried(self):
+        self.bridge.make_cloud = MagicMock(
+            side_effect=TypeError('Tuya Cloud Key and Secret required'))
+
+        result = self.bridge.handle_rename({'id': self.DEV1, 'name': 'New'})
+
+        self.assertFalse(result['ok'], result)
+        self.bridge.make_appapi.assert_not_called()
+
+    def test_status_remote_failure_uses_appapi(self):
+        self.cloud.getstatus = MagicMock(return_value=self.QUOTA)
+        self.client.device_status = MagicMock(return_value=({'1': True}, None))
+
+        result = self.bridge.handle_status(self.DEV1)
+
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(result['via'], 'appapi')
+        self.assertEqual(result['dps'], {'1': True})
+        self.assertEqual(set(result), {'ok', 'dps', 'via'})
+
+    def test_set_remote_failure_uses_appapi(self):
+        self.cloud.sendcommand = MagicMock(return_value=self.QUOTA)
+        self.client.publish_dps = MagicMock(return_value=(True, None))
+
+        result = self.bridge.handle_set(self.DEV1, {'1': True})
+
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(result['via'], 'appapi')
+        self.client.publish_dps.assert_called_once_with(self.DEV1, {'1': True})
+
+    def test_status_missing_session_flags_signin_required(self):
+        self.configure_unsigned()
+        self.cloud.getstatus = MagicMock(return_value=self.QUOTA)
+        self.client.device_status = MagicMock(return_value=(None, 'NO_SESSION'))
+
+        result = self.bridge.handle_status(self.DEV1)
+
+        self.assertFalse(result['ok'], result)
+        self.assertEqual(result['appapi'], 'signin_required')
+        self.assertIn('lan down', result['error'])
+        self.assertNotIn('user@example.com', json.dumps(result))
+
+    def test_cloudsync_quota_uses_appapi_room_map(self):
+        self.cloud.getdevices = MagicMock(return_value=self.QUOTA)
+        self.client.getdevices = MagicMock(return_value=[
+            {'id': self.DEV1, 'name': 'Desk Plug', 'category': 'cz',
+             'key': LOCAL_KEY},
+            {'id': self.DEV2, 'name': 'Study Light', 'category': 'cz',
+             'key': LOCAL_KEY},
+        ])
+        self.client.room_map = MagicMock(
+            return_value=({self.DEV1: 'Office'}, None))
+
+        result = self.bridge.handle_cloudsync()
+
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(result['source'], 'appapi')
+        self.assertEqual(result['rooms'], 1)
+        self.assertEqual(self.read_roster()[self.DEV1]['room'], 'Office')
+
+    def test_cloudstatus_uses_one_appapi_list_call(self):
+        self.cloud.getconnectstatus = MagicMock(side_effect=RuntimeError('quota'))
+        self.client.device_online = MagicMock(
+            return_value=({self.DEV1: True, self.DEV2: False}, None))
+
+        result = self.bridge.handle_cloudstatus({})
+
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(result['status'], {self.DEV1: True, self.DEV2: False})
+        self.client.device_online.assert_called_once_with()
+
+    def test_specs_remote_failure_uses_appapi_product_schema(self):
+        self.cloud.cloudrequest = MagicMock(return_value=self.QUOTA)
+        spec = {'1': {'code': 'switch_1', 'type': 'Boolean', 'values': {}}}
+        codes = {'switch_1': '1'}
+        self.client.product_specs = MagicMock(
+            return_value=({'pid1': (spec, codes), 'pid2': (spec, codes)}, None))
+
+        result = self.bridge.handle_specs({'id': self.DEV1})
+
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(set(result), {'ok', 'updated'})
+        self.assertEqual(result['updated'], 1)
+        roster = self.read_roster()
+        self.assertEqual(roster[self.DEV1]['spec'], spec)
+        self.assertEqual(roster[self.DEV1]['codes'], codes)
+
+    def test_specs_missing_session_flags_signin_required(self):
+        self.configure_unsigned()
+        self.cloud.cloudrequest = MagicMock(return_value=self.QUOTA)
+        self.client.product_specs = MagicMock(return_value=(None, 'NO_SESSION'))
+
+        result = self.bridge.handle_specs({'id': self.DEV1})
+
+        self.assertFalse(result['ok'], result)
+        self.assertEqual(result['appapi'], 'signin_required')
+        self.assertIn('spec fetch failed', result['error'])
+
+
+class TestBridgeCloudTestEitherPath(unittest.TestCase):
+    """The cloud test accepts the IoT Core account OR a ready app session."""
+
+    def setUp(self):
+        import bridge
+        self.bridge = bridge
+        self.directory = tempfile.mkdtemp()
+        self.old_credentials = bridge.CREDENTIALS_PATH
+        self.old_session = bridge.APAPI_SESSION_PATH
+        self.old_cloud = bridge.tinytuya.Cloud
+        bridge.CREDENTIALS_PATH = os.path.join(self.directory, 'tinytuya.json')
+        bridge.APAPI_SESSION_PATH = os.path.join(self.directory,
+                                                 'appapi-session.json')
+        self.cloud = MagicMock()
+        self.cloud.token = 'token'
+        self.cloud.getdevices = MagicMock(return_value=[])
+        bridge.tinytuya.Cloud = MagicMock(return_value=self.cloud)
+
+    def tearDown(self):
+        self.bridge.CREDENTIALS_PATH = self.old_credentials
+        self.bridge.APAPI_SESSION_PATH = self.old_session
+        self.bridge.tinytuya.Cloud = self.old_cloud
+        shutil.rmtree(self.directory)
+
+    def write(self, name, payload):
+        with open(os.path.join(self.directory, name), 'w',
+                  encoding='utf-8') as handle:
+            json.dump(payload, handle)
+
+    def test_appapi_session_alone_is_cloud_configured(self):
+        self.write('tinytuya.json', {'appApiEmail': 'user@example.com'})
+        self.write('appapi-session.json', {
+            'sid': 'sid', 'email': 'user@example.com'})
+
+        result = self.bridge.handle_setconfig({})
+
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(result['source'], 'appapi')
+
+    def test_quota_failure_reports_appapi_source(self):
+        self.write('tinytuya.json', {
+            'apiKey': 'key', 'apiSecret': 'secret', 'apiRegion': 'eu',
+            'appApiEmail': 'user@example.com'})
+        self.write('appapi-session.json', {
+            'sid': 'sid', 'email': 'user@example.com'})
+        self.cloud.getdevices = MagicMock(return_value={
+            'code': 28841004, 'msg': 'quota exhausted', 'success': False})
+
+        result = self.bridge.handle_setconfig({})
+
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(result['source'], 'appapi')
+        self.assertNotIn('secret', json.dumps(result))
+
+    def test_working_iot_core_reports_cloud_source(self):
+        self.write('tinytuya.json', {
+            'apiKey': 'key', 'apiSecret': 'secret', 'apiRegion': 'eu'})
+
+        result = self.bridge.handle_setconfig({})
+
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(result['source'], 'cloud')
+
+
+class TestAppApiDeviceOps(unittest.TestCase):
+    """Device-op transport shapes, offline, against a mocked session."""
+
+    def setUp(self):
+        import appapi
+        self.appapi = appapi
+        self.api = appapi.TuyaAppAPI(
+            'cid', 'csecret', 'eu', '49', 'user@example.com', 'password')
+        self.session = MagicMock()
+        self.api._session = self.session
+        self.api._sid = 'sid'
+
+    @staticmethod
+    def reply(body):
+        response = MagicMock()
+        response.json = MagicMock(return_value=body)
+        return response
+
+    def test_publish_dps_sends_app_shape(self):
+        self.session.post = MagicMock(
+            return_value=self.reply({'success': True, 'result': True}))
+
+        self.assertEqual(self.api.publish_dps('dev1', {'1': True}), (True, None))
+        call = self.session.post.call_args
+        self.assertEqual(call[1]['params']['a'], 'thing.m.device.dp.publish')
+        data = json.loads(call[1]['data']['postData'])
+        self.assertEqual(data, {'devId': 'dev1', 'dps': '{"1":true}'})
+
+    def test_device_status_reads_data_point_info(self):
+        self.session.post = MagicMock(return_value=self.reply({
+            'success': True, 'result': {'dataPointInfo': {'dps': {'1': True}}}}))
+
+        self.assertEqual(self.api.device_status('dev1'), ({'1': True}, None))
+        call = self.session.post.call_args
+        self.assertEqual(call[1]['params']['a'], 'thing.m.device.get')
+        self.assertEqual(call[1]['params']['v'], '4.1')
+
+    def test_device_online_uses_one_list_call(self):
+        self.session.post = MagicMock(side_effect=[
+            self.reply({'success': True, 'result': [{'groupId': 'g1'}]}),
+            self.reply({'success': True, 'result': [
+                {'devId': 'dev1', 'moduleMap': {'wifi': {'isOnline': True}}},
+                {'devId': 'dev2', 'moduleMap': {'wifi': {'isOnline': False}}},
+            ]}),
+        ])
+
+        mapping, error = self.api.device_online()
+
+        self.assertIsNone(error)
+        self.assertEqual(mapping, {'dev1': True, 'dev2': False})
+        self.assertEqual(self.session.post.call_count, 2)
+
+    def test_product_specs_normalise_schema(self):
+        schema = [
+            {'id': 1, 'code': 'switch_1', 'property': {'type': 'bool'}},
+            {'id': 2, 'code': 'mode',
+             'property': {'type': 'enum', 'range': ['a', 'b']}},
+        ]
+        self.session.post = MagicMock(return_value=self.reply({
+            'success': True, 'result': [{'id': 'pid1', 'schemaInfo': {
+                'schema': json.dumps(schema)}}]}))
+
+        specs, error = self.api.product_specs(['pid1'])
+
+        self.assertIsNone(error)
+        spec, codes = specs['pid1']
+        self.assertEqual(spec['1']['type'], 'Boolean')
+        self.assertEqual(spec['2']['type'], 'Enum')
+        self.assertEqual(spec['2']['values'], {'range': ['a', 'b']})
+        self.assertEqual(codes, {'switch_1': '1', 'mode': '2'})
+
+    def test_room_map_reads_room_members(self):
+        self.session.post = MagicMock(side_effect=[
+            self.reply({'success': True, 'result': [{'groupId': 'g1'}]}),
+            self.reply({'success': True, 'result': [
+                {'id': 7, 'name': 'Office'}]}),
+            self.reply({'success': True, 'result': {'deviceSortList': [
+                {'bizId': 'dev1', 'bizType': 6}]}}),
+        ])
+
+        mapping, error = self.api.room_map()
+
+        self.assertIsNone(error)
+        self.assertEqual(mapping, {'dev1': 'Office'})
 
 
 if __name__ == '__main__':

@@ -260,33 +260,47 @@ def cloud_status_dps(config):
     the cloud reply must look exactly like a local one. The device's "codes"
     map is code -> dp (see handle_specs); invert it. A device without a map
     still returns the cloud's raw code -> value pairs, which is more useful
-    than an error. Raises on a cloud failure; the caller keeps the local error.
+    than an error. Both paths go through the shared fallback dispatch;
+    returns (dps, source). Raises _FallbackMiss when no path answered.
     """
     cloud = make_cloud()
-    result = cloud.getstatus(config.get("id"))
-    if not isinstance(result, dict) or result.get("Error") or result.get("Err"):
-        raise ValueError(error_text(result))
-    if result.get("success") is False:
-        raise ValueError("cloud status failed")
-    points = result.get("result", result)
-    if isinstance(points, list):
-        # Live iot-03 status replies carry a list of {code, value} points.
-        values = {}
-        for item in points:
-            if isinstance(item, dict) and item.get("code"):
-                values[item["code"]] = item.get("value")
-        points = values
-    if not isinstance(points, dict):
-        raise ValueError("cloud status failed")
-
     codes = config.get("codes")
-    if not isinstance(codes, dict) or not codes:
-        return dict(points)
-    dps = {}
-    for code, value in points.items():
-        dp_id = codes.get(code)
-        dps[dp_id if dp_id is not None else code] = value
-    return dps
+
+    def primary():
+        result = cloud.getstatus(config.get("id"))
+        if not isinstance(result, dict) or result.get("Error") or result.get("Err"):
+            raise ValueError(error_text(result))
+        if result.get("success") is False:
+            raise ValueError("cloud status failed")
+        points = result.get("result", result)
+        if isinstance(points, list):
+            # Live iot-03 status replies carry a list of {code, value} points.
+            values = {}
+            for item in points:
+                if isinstance(item, dict) and item.get("code"):
+                    values[item["code"]] = item.get("value")
+            points = values
+        if not isinstance(points, dict):
+            raise ValueError("cloud status failed")
+        if not isinstance(codes, dict) or not codes:
+            return dict(points)
+        dps = {}
+        for code, value in points.items():
+            dp_id = codes.get(code)
+            dps[dp_id if dp_id is not None else code] = value
+        return dps
+
+    def fallback():
+        client = make_appapi()
+        if client is None:
+            return None, "app api not configured"
+        return client.device_status(config.get("id"))
+
+    dps, failure, hint, source = _remote_call(
+        primary, fallback, ok=lambda value: isinstance(value, dict))
+    if source is None:
+        raise _FallbackMiss("cloud status failed", hint)
+    return dps, source
 
 
 def cloud_set_dps(config, dps):
@@ -295,7 +309,8 @@ def cloud_set_dps(config, dps):
     General rule: a dp only travels upstream when the device's "codes" map
     (code -> dp) names a code for it; unmappable dps are reported, never
     silently dropped. Nothing here depends on a device id or a dp number.
-    Raises on a cloud failure; the caller keeps the local error.
+    Both paths go through the shared fallback dispatch. Raises _FallbackMiss
+    when no path answered; the caller keeps the local error.
     """
     codes = config.get("codes")
     code_by_dp = {}
@@ -314,12 +329,26 @@ def cloud_set_dps(config, dps):
         return {"ok": False,
                 "error": "no cloud code for dp " + ", ".join(missing)}
     cloud = make_cloud()
-    result = cloud.sendcommand(config.get("id"), {"commands": commands})
-    if not isinstance(result, dict) or result.get("Error") or result.get("Err"):
-        raise ValueError(error_text(result))
-    if result.get("success") is False:
-        raise ValueError("cloud send failed")
-    reply = {"ok": True, "via": "cloud"}
+
+    def primary():
+        result = cloud.sendcommand(config.get("id"), {"commands": commands})
+        if not isinstance(result, dict) or result.get("Error") or result.get("Err"):
+            raise ValueError(error_text(result))
+        if result.get("success") is False:
+            raise ValueError("cloud send failed")
+        return result
+
+    def fallback():
+        client = make_appapi()
+        if client is None:
+            return None, "app api not configured"
+        return client.publish_dps(config.get("id"), dps)
+
+    result, failure, hint, source = _remote_call(
+        primary, fallback, ok=lambda value: isinstance(value, dict))
+    if source is None:
+        raise _FallbackMiss("cloud send failed", hint)
+    reply = {"ok": True, "via": source}
     echo = result.get("dps") if isinstance(result, dict) else None
     if isinstance(echo, dict):
         reply["dps"] = echo
@@ -345,7 +374,13 @@ def handle_status(device_id):
     # cloud exactly as the official app does; if the cloud is unconfigured or
     # also fails, the ORIGINAL local error is what the caller sees.
     try:
-        return {"ok": True, "dps": cloud_status_dps(config), "via": "cloud"}
+        dps, source = cloud_status_dps(config)
+        return {"ok": True, "dps": dps, "via": source}
+    except _FallbackMiss as exc:
+        reply = {"ok": False, "error": local_error}
+        if exc.hint:
+            reply["appapi"] = exc.hint
+        return reply
     except Exception:
         return {"ok": False, "error": local_error}
 
@@ -384,6 +419,11 @@ def handle_set(device_id, dps):
     # upstream; if the cloud is unavailable the ORIGINAL local error is kept.
     try:
         return cloud_set_dps(config, dps)
+    except _FallbackMiss as exc:
+        reply = {"ok": False, "error": local_error}
+        if exc.hint:
+            reply["appapi"] = exc.hint
+        return reply
     except Exception:
         return {"ok": False, "error": local_error}
 
@@ -410,15 +450,29 @@ def handle_rename(request):
 
     try:
         cloud = make_cloud()
-        response = cloud.cloudrequest(
-            "/v1.0/devices/%s" % device_id, "PUT", post={"name": name}
-        )
     except Exception as exc:
         # Never include token/secret material in the reply.
         return _cloud_failure(exc)
 
-    if not isinstance(response, dict) or not response.get("success") or not response.get("result"):
-        return {"ok": False, "error": "cloud rename failed"}
+    def fallback():
+        client = make_appapi()
+        if client is None:
+            return None, "app api not configured"
+        return client.rename_device(device_id, name)
+
+    response, failure, hint, source = _remote_call(
+        lambda: cloud.cloudrequest(
+            "/v1.0/devices/%s" % device_id, "PUT", post={"name": name}),
+        fallback,
+        ok=lambda value: isinstance(value, dict)
+        and bool(value.get("success")) and bool(value.get("result")))
+    if source is None:
+        if isinstance(failure, Exception):
+            return _cloud_failure(failure, hint=hint)
+        reply = {"ok": False, "error": "cloud rename failed"}
+        if hint:
+            reply["appapi"] = hint
+        return reply
 
     def merge(fresh):
         for config in fresh:
@@ -1357,7 +1411,7 @@ def _cloud_result(response):
     return response.get("result")
 
 
-def _cloud_room_map(cloud, devices):
+def _primary_room_map(cloud, devices):
     """Map device id -> room name from the Tuya home room endpoints.
 
     General rule: the cloud is authoritative for a device's room when it
@@ -1415,6 +1469,28 @@ def _cloud_room_map(cloud, devices):
                 if device_id:
                     mapping[device_id] = room_name
     return mapping
+
+
+def _appapi_room_map():
+    """Room map from the app API, or (None, code) when unavailable."""
+    client = make_appapi()
+    if client is None:
+        return None, "app api not configured"
+    return client.room_map()
+
+
+def _cloud_room_map(cloud, devices):
+    """Room map through the shared fallback dispatch.
+
+    A remote room-API failure is retried against the app roster's home/room
+    endpoints; the room fill stays non-fatal either way. An empty mapping is
+    a valid answer (a home with no rooms), not a failure.
+    """
+    mapping, failure, hint, source = _remote_call(
+        lambda: _primary_room_map(cloud, devices),
+        _appapi_room_map,
+        ok=lambda value: isinstance(value, dict))
+    return mapping, None
 
 
 def _apply_cloud_rooms(mapping):
@@ -1503,16 +1579,22 @@ def handle_cloudsync():
 
     # Room assignment is additive metadata: a room-fetch failure must not
     # undo the identity merge above. Never log anything but the error type.
-    # The app API fallback carries no room map, so rooms stay local.
     rooms = 0
     if cloud is not None:
+        mapper = lambda: _cloud_room_map(cloud, result)
+    elif source == "appapi":
+        mapper = _appapi_room_map
+    else:
+        mapper = None
+    if mapper is not None:
         try:
-            mapping = _cloud_room_map(cloud, result)
+            mapping, _ = mapper()
             if mapping:
                 rooms = _apply_cloud_rooms(mapping)
         except Exception as exc:
             log.warning("cloudsync room fill skipped: %s", type(exc).__name__)
 
+    if cloud is not None:
         # Do not block the serial stdio protocol on a 35s LAN scan.
         start_autoheal(cloud)
 
@@ -1525,6 +1607,43 @@ def handle_cloudsync():
         "total": counts["total"],
         "rooms": rooms,
     }
+
+
+def _code_for_dp(config, dp_id):
+    """Reverse the device's code -> dp map for one dp id."""
+    codes = config.get("codes") if isinstance(config, dict) else None
+    if not isinstance(codes, dict):
+        return None
+    for code, mapped_dp in codes.items():
+        if str(mapped_dp) == str(dp_id):
+            return code
+    return None
+
+
+def _cloud_autoheal_dps(cloud, config):
+    """Current dps for a sleeping device, keyed by dp id, or {} when absent."""
+    status = cloud.getstatus(config.get("id"))
+    if not isinstance(status, dict) or status.get("Error") or status.get("Err"):
+        return {}
+    points = status.get("status")
+    if not isinstance(points, list):
+        return {}
+    dps = {}
+    for point in points:
+        if not isinstance(point, dict) or not point.get("code"):
+            continue
+        dp_id = _code_for_dp(config, point.get("code"))
+        dp_id = point.get("code") if dp_id is None else dp_id
+        dps[str(dp_id)] = point.get("value")
+    return dps
+
+
+def _appapi_autoheal_dps(config):
+    """Current dps from the app API for the same sleeping device."""
+    client = make_appapi()
+    if client is None:
+        return None, "app api not configured"
+    return client.device_status(config.get("id"))
 
 
 def autoheal(cloud):
@@ -1552,27 +1671,29 @@ def autoheal(cloud):
         device_id = config.get("id")
         if not device_id:
             continue
-        try:
-            status = cloud.getstatus(device_id)
-        except Exception:
-            continue
-        if not isinstance(status, dict) or status.get("Error") or status.get("Err"):
-            continue
-        points = status.get("status")
-        if not isinstance(points, list):
-            continue
-        nudge = None
-        for point in points:
-            if not isinstance(point, dict):
-                continue
-            if isinstance(point.get("value"), bool) and point.get("code"):
-                nudge = {"code": point["code"], "value": point["value"]}
-                break
-        if nudge is None:
+        dps, _, _, source = _remote_call(
+            lambda config=config: _cloud_autoheal_dps(cloud, config),
+            lambda config=config: _appapi_autoheal_dps(config),
+            ok=lambda value: isinstance(value, dict) and bool(value))
+        dp_id = next((key for key, value in (dps or {}).items()
+                      if isinstance(value, bool)), None)
+        if dp_id is None:
             continue
         try:
-            cloud.sendcommand(device_id, [nudge])
-            woke += 1
+            if source == "appapi":
+                client = make_appapi()
+                if client is None:
+                    continue
+                applied, _ = client.publish_dps(
+                    device_id, {dp_id: dps[dp_id]})
+            else:
+                code = _code_for_dp(config, dp_id)
+                if not code:
+                    continue
+                cloud.sendcommand(device_id, [{"code": code, "value": dps[dp_id]}])
+                applied = True
+            if applied:
+                woke += 1
         except Exception:
             continue
 
@@ -1854,6 +1975,55 @@ def _appapi_allowed(failure):
     return True
 
 
+class _FallbackMiss(ValueError):
+    """A cloud path failed and no app API answer replaced it.
+
+    Carries the UI hint ("signin_required") so callers can keep their
+    historical error text while still telling the user what to fix.
+    """
+
+    def __init__(self, message, hint=None):
+        super().__init__(message)
+        self.hint = hint
+
+
+def _remote_call(primary, translate, ok=None):
+    """THE shared fallback dispatch for every Tuya cloud call site.
+
+    General rule: run the primary; only a REMOTE failure may be retried through
+    the app API. translate() returns (result, appapi_error). Local/config
+    failures are never retried. Returns (result, failure, hint, source):
+    source is "cloud" or "appapi" on success, None on failure, and hint is
+    "signin_required" when the app API is configured without a session.
+    """
+    failure = None
+    try:
+        result = primary()
+    except Exception as exc:
+        failure = exc
+    else:
+        if ok is None:
+            ok = lambda value: not (
+                isinstance(value, dict)
+                and (value.get("success") is False
+                     or value.get("Error") or value.get("Err")))
+        if ok(result):
+            return result, None, None, "cloud"
+        failure = result
+
+    if not _appapi_allowed(failure):
+        return None, failure, None, None
+
+    result, appapi_error = translate()
+    if appapi_error is None:
+        return result, None, None, "appapi"
+
+    hint = None
+    if appapi is not None and appapi_configured() and not appapi_session_ready():
+        hint = "signin_required"
+    return None, failure, hint, None
+
+
 def _appapi_roster():
     """Device roster from the App API fallback, or None when unavailable.
 
@@ -1976,10 +2146,30 @@ def handle_setconfig(request):
             return {"ok": False, "error": field + " required"}
         credentials[field] = value
 
-    if not credentials.get("apiKey") or not credentials.get("apiSecret"):
+    iot_ready = bool(credentials.get("apiKey") and credentials.get("apiSecret"))
+    appapi_ready = appapi_configured() and appapi_session_ready()
+    if not iot_ready:
+        # General rule: EITHER cloud path may satisfy "cloud configured";
+        # state which one did so the Settings screen can label it honestly.
+        if appapi_ready:
+            try:
+                write_credentials(credentials)
+            except Exception as exc:
+                return {"ok": False,
+                        "error": "credentials write failed: " + type(exc).__name__}
+            return {"ok": True, "tested": True, "source": "appapi"}
         return {"ok": False, "error": "apiKey and apiSecret required"}
     if not credentials.get("apiRegion"):
         return {"ok": False, "error": "apiRegion required"}
+
+    def appapi_accepts():
+        """Accept the app session when the IoT Core failure is not auth."""
+        try:
+            write_credentials(credentials)
+        except Exception as exc:
+            return {"ok": False,
+                    "error": "credentials write failed: " + type(exc).__name__}
+        return {"ok": True, "tested": True, "source": "appapi"}
 
     try:
         cloud = tinytuya.Cloud(
@@ -2000,25 +2190,33 @@ def handle_setconfig(request):
         error = cloud.error if isinstance(cloud.error, dict) else {}
         if str(error.get("Err")) in ("909", "911"):
             return {"ok": False, "error": "auth failed"}
+        if appapi_ready:
+            return appapi_accepts()
         return {"ok": False, "error": "cloud test failed: " + str(error.get("Err"))}
 
     try:
         result = cloud.getdevices(False)
     except Exception as exc:
+        if appapi_ready and _appapi_allowed(exc):
+            return appapi_accepts()
         return {"ok": False, "error": "cloud test failed: " + type(exc).__name__}
 
     if isinstance(result, dict) and result.get("Error"):
         if str(result.get("Err")) in ("909", "911"):
             return {"ok": False, "error": "auth failed"}
+        if appapi_ready and _appapi_allowed(result):
+            return appapi_accepts()
         return {"ok": False, "error": "cloud test failed: " + str(result.get("Err"))}
     if not isinstance(result, list):
+        if appapi_ready:
+            return appapi_accepts()
         return {"ok": False, "error": "cloud test failed"}
 
     try:
         write_credentials(credentials)
     except Exception as exc:
         return {"ok": False, "error": "credentials write failed: " + type(exc).__name__}
-    return {"ok": True, "tested": True}
+    return {"ok": True, "tested": True, "source": "cloud"}
 
 
 def fetch_spec(cloud, device_id):
@@ -2095,22 +2293,46 @@ def handle_specs(request):
     except Exception as exc:
         return _cloud_failure(exc)
 
-    updated = 0
-    failures = 0
-    fetched = {}
-    for config in targets:
-        if device_id is None and config.get("spec") and not request.get("refresh"):
-            continue
-        try:
-            spec, codes = fetch_spec(cloud, config.get("id"))
-        except Exception:
-            failures += 1
-            continue
-        if spec:
-            fetched[config.get("id")] = (spec, codes or {})
-            updated += 1
-        else:
-            failures += 1
+    wanted = [
+        config for config in targets
+        if not (device_id is None and config.get("spec")
+                and not request.get("refresh"))
+    ]
+
+    def primary():
+        fetched = {}
+        for config in wanted:
+            try:
+                spec, codes = fetch_spec(cloud, config.get("id"))
+            except Exception:
+                continue
+            if spec:
+                fetched[config.get("id")] = (spec, codes or {})
+        return fetched
+
+    def fallback():
+        client = make_appapi()
+        if client is None:
+            return None, "app api not configured"
+        specs, error = client.product_specs(
+            [config.get("product_id") for config in wanted])
+        if error is not None:
+            return None, error
+        fetched = {}
+        for config in wanted:
+            entry = specs.get(config.get("product_id"))
+            if entry is not None:
+                fetched[config.get("id")] = entry
+        if not fetched:
+            return None, "BAD_RESPONSE"
+        return fetched, None
+
+    fetched, failure, hint, source = _remote_call(
+        primary, fallback,
+        ok=lambda value: isinstance(value, dict) and bool(value))
+    fetched = fetched if isinstance(fetched, dict) else {}
+    updated = len(fetched)
+    failures = len(wanted) - updated
 
     if fetched:
         # General rule: shared mutable state — merge only the spec/codes delta by id
@@ -2129,7 +2351,10 @@ def handle_specs(request):
             return {"ok": False, "error": "devices write failed: " + type(exc).__name__}
 
     if updated == 0 and failures > 0:
-        return {"ok": False, "error": "spec fetch failed"}
+        reply = {"ok": False, "error": "spec fetch failed"}
+        if hint:
+            reply["appapi"] = hint
+        return reply
     return {"ok": True, "updated": updated}
 
 
@@ -2177,21 +2402,41 @@ def handle_cloudstatus(request):
             )
         return {"ok": False, "error": error, "cloud_capable": CLOUD_CAPABLE}
 
-    status = {}
-    failures = 0
-    for config in targets:
-        try:
-            online = cloud.getconnectstatus(config.get("id"))
-        except Exception:
-            failures += 1
-            continue
-        if isinstance(online, bool):
-            status[config.get("id")] = online
-        else:
-            failures += 1
+    def primary():
+        online_map = {}
+        for config in targets:
+            try:
+                online = cloud.getconnectstatus(config.get("id"))
+            except Exception:
+                continue
+            if isinstance(online, bool):
+                online_map[config.get("id")] = online
+        if not online_map:
+            raise ValueError("cloud status failed")
+        return online_map
 
-    if not status and failures > 0:
-        return {"ok": False, "error": "cloud status failed"}
+    def fallback():
+        client = make_appapi()
+        if client is None:
+            return None, "app api not configured"
+        mapping, error = client.device_online()
+        if error is not None:
+            return None, error
+        wanted = {config.get("id"): mapping.get(config.get("id"))
+                  for config in targets}
+        online_map = {device_id: online for device_id, online in wanted.items()
+                      if isinstance(online, bool)}
+        if not online_map:
+            return None, "BAD_RESPONSE"
+        return online_map, None
+
+    status, failure, hint, source = _remote_call(
+        primary, fallback, ok=lambda value: isinstance(value, dict) and bool(value))
+    if source is None:
+        reply = {"ok": False, "error": "cloud status failed"}
+        if hint:
+            reply["appapi"] = hint
+        return reply
     return {"ok": True, "status": status}
 
 
@@ -2374,35 +2619,31 @@ def _flatten_schedules(result, spec_by_code=None):
     return items
 
 
-def _cloud_reply(cloud, url, action=None, post=None):
+def _cloud_reply(cloud, url, action=None, post=None, translate=None):
     """Call the primary cloud, falling back to the App API for timer calls.
 
     General rule: the fallback trigger is the primary cloud failing REMOTELY
     (quota exhaustion, expired token, timeout, 5xx), never a local
-    config/credential problem. Returns (result, error, hint, source); hint is
-    "signin_required" when the app API is configured without a session, and
-    source names the path that produced the result.
+    config/credential problem. The decision itself lives in _remote_call;
+    this wrapper only unwraps cloudrequest's success envelope. translate may
+    replace the default timer translator for another REST family.
+    Returns (result, error, hint, source).
     """
-    failure = None
-    try:
-        response = cloud.cloudrequest(url, action, post=post)
-    except Exception as exc:
-        failure = exc
-    else:
-        if isinstance(response, dict) and response.get("success"):
-            return response.get("result"), None, None, "cloud"
-        failure = response
+    def primary():
+        return cloud.cloudrequest(url, action, post=post)
 
-    if not _appapi_allowed(failure):
-        return None, _primary_error(failure), None, None
+    def fallback():
+        if translate is not None:
+            return translate()
+        return _appapi_timer_reply(url, action, post)
 
-    result, appapi_error = _appapi_timer_reply(url, action, post)
-    if appapi_error is None:
-        return result, None, None, "appapi"
-
-    hint = None
-    if appapi is not None and appapi_configured() and not appapi_session_ready():
-        hint = "signin_required"
+    response, failure, hint, source = _remote_call(
+        primary, fallback,
+        ok=lambda value: isinstance(value, dict) and bool(value.get("success")))
+    if source == "cloud":
+        return response.get("result"), None, None, "cloud"
+    if source == "appapi":
+        return response, None, None, "appapi"
     return None, _primary_error(failure), hint, None
 
 
@@ -2486,12 +2727,15 @@ def _cloud_error_detail(response):
     return "unexpected response"
 
 
-def _cloud_failure(exc, detail=None):
+def _cloud_failure(exc, detail=None, hint=None):
     """Uniform error dict for cloud-path failures the UI can show directly."""
     if detail is None:
         detail = str(exc) if isinstance(exc, CloudEnvError) else type(exc).__name__
-    return {"ok": False, "error": "cloud request failed: " + detail,
-            "cloud_capable": CLOUD_CAPABLE}
+    reply = {"ok": False, "error": "cloud request failed: " + detail,
+             "cloud_capable": CLOUD_CAPABLE}
+    if hint:
+        reply["appapi"] = hint
+    return reply
 
 
 def handle_schedules(request):

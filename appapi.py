@@ -127,6 +127,48 @@ def _normalise_timer_entries(result):
     return entries
 
 
+_SCHEMA_TYPES = {
+    "bool": "Boolean",
+    "enum": "Enum",
+    "value": "Value",
+    "string": "String",
+    "bitmap": "Bitmap",
+    "raw": "Raw",
+}
+
+
+def _normalise_schema(schema):
+    """App product schema -> (spec by dp id, code -> dp id) like IoT Core."""
+    spec = {}
+    codes = {}
+    for entry in schema:
+        if not isinstance(entry, dict):
+            continue
+        dp_id = entry.get("id")
+        code = entry.get("code")
+        if dp_id is None or not isinstance(code, str) or not code:
+            continue
+        prop = entry.get("property")
+        prop = prop if isinstance(prop, dict) else {}
+        raw_type = str(prop.get("type") or "").lower()
+        values = {}
+        if raw_type == "enum":
+            values = {"range": list(prop.get("range") or [])}
+        elif raw_type == "value":
+            values = {
+                key: prop[key]
+                for key in ("min", "max", "scale", "step", "unit")
+                if key in prop
+            }
+        spec[str(dp_id)] = {
+            "code": code,
+            "type": _SCHEMA_TYPES.get(raw_type, entry.get("type", "")),
+            "values": values,
+        }
+        codes[code] = str(dp_id)
+    return spec, codes
+
+
 class AppApiError(RuntimeError):
     """One failed App API call. Holds a code only — never request material."""
 
@@ -318,7 +360,8 @@ class TuyaAppAPI(object):
         self._at = access if isinstance(access, str) and access else None
         self._sid_time = time.time()
 
-    def _list_devices(self):
+    def _raw_devices(self):
+        """Every raw app device across the account's homes (unmapped)."""
         devices = []
         groups = self._api("tuya.m.location.list")
         if not isinstance(groups, list):
@@ -334,9 +377,16 @@ class TuyaAppAPI(object):
             if not isinstance(found, list):
                 continue
             for device in found:
-                mapped = self._map_device(device)
-                if mapped is not None:
-                    devices.append(mapped)
+                if isinstance(device, dict) and device.get("devId"):
+                    devices.append(device)
+        return devices
+
+    def _list_devices(self):
+        devices = []
+        for device in self._raw_devices():
+            mapped = self._map_device(device)
+            if mapped is not None:
+                devices.append(mapped)
         return devices
 
     @staticmethod
@@ -360,6 +410,168 @@ class TuyaAppAPI(object):
             "sub": bool(device.get("virtual")),
             "icon": device.get("iconUrl", ""),
         }
+
+    # MARK: - Device actions (fallback for the IoT Core device routes)
+
+    def _session_retry(self, operation):
+        """Run one device call, retrying exactly once after a session expiry.
+
+        Returns (value, None) or (None, code). A passwordless (code-login)
+        session cannot be refreshed here; its server code is surfaced.
+        """
+        try:
+            return operation(), None
+        except AppApiSessionError as exc:
+            if not self._password:
+                return None, str(exc.code)
+            self._sid = None
+            error = self.login()
+            if error is not None:
+                return None, str(error.get("Payload") or error.get("Err"))
+            try:
+                return operation(), None
+            except AppApiError as retry_exc:
+                return None, str(retry_exc.code)
+        except AppApiError as exc:
+            return None, str(exc.code)
+
+    def _device_call(self, action, payload, version=API_VERSION):
+        """One device action through the session retry helper."""
+        return self._session_retry(
+            lambda: self._api(action, payload, version=version))
+
+    def rename_device(self, device_id, name):
+        """Rename one device upstream. (True, None) or (None, code)."""
+        result, error = self._device_call(
+            "thing.m.device.name.update", {"devId": device_id, "name": name})
+        if error is not None:
+            return None, error
+        if result is False:
+            return None, "NAME_UPDATE_FAILED"
+        return True, None
+
+    def device_status(self, device_id):
+        """Dps keyed by dp id from the device detail call. (dps, code)."""
+        result, error = self._device_call(
+            "thing.m.device.get", {"devId": device_id}, version="4.1")
+        if error is not None:
+            return None, error
+        points = result.get("dataPointInfo") if isinstance(result, dict) else None
+        dps = points.get("dps") if isinstance(points, dict) else None
+        if not isinstance(dps, dict):
+            return None, "BAD_RESPONSE"
+        return dict(dps), None
+
+    def publish_dps(self, device_id, dps):
+        """Publish dp values exactly like the app. (True, None) or code."""
+        result, error = self._device_call(
+            "thing.m.device.dp.publish",
+            {"devId": device_id,
+             "dps": json.dumps(dps, separators=(",", ":"))},
+        )
+        if error is not None:
+            return None, error
+        if result is False:
+            return None, "DP_PUBLISH_FAILED"
+        return True, None
+
+    def device_online(self):
+        """{device id: online} for the whole account from ONE list call."""
+        devices, error = self._session_retry(self._raw_devices)
+        if error is not None:
+            return None, error
+        mapping = {}
+        for device in devices:
+            device_id = device.get("devId")
+            modules = device.get("moduleMap")
+            if not device_id or not isinstance(modules, dict):
+                continue
+            states = [
+                module.get("isOnline")
+                for module in modules.values()
+                if isinstance(module, dict) and "isOnline" in module
+            ]
+            if states:
+                mapping[device_id] = any(state is True for state in states)
+        return mapping, None
+
+    def room_map(self):
+        """{device id: room name} from home/room list calls. (map, code)."""
+        locations, error = self._session_retry(
+            lambda: self._api("tuya.m.location.list"))
+        if error is not None:
+            return None, error
+        if not isinstance(locations, list):
+            return None, "BAD_RESPONSE"
+        mapping = {}
+        for location in locations:
+            group_id = location.get("groupId") if isinstance(location, dict) else None
+            if not group_id:
+                continue
+            rooms, error = self._device_call(
+                "thing.m.room.list", {"gid": group_id}, version="3.0")
+            if error is not None or not isinstance(rooms, list):
+                continue
+            for room in rooms:
+                room_id = room.get("id") if isinstance(room, dict) else None
+                room_name = room.get("name") if isinstance(room, dict) else None
+                if room_id is None or not room_name:
+                    continue
+                data, error = self._device_call(
+                    "m.life.app.room.data.list",
+                    {"roomId": room_id, "gid": group_id}, version="2.1")
+                if error is not None or not isinstance(data, dict):
+                    continue
+                for member in data.get("deviceSortList") or []:
+                    if not isinstance(member, dict) or member.get("bizType") != 6:
+                        continue
+                    device_id = member.get("bizId")
+                    if device_id:
+                        mapping[device_id] = room_name
+        return mapping, None
+
+    def product_specs(self, product_ids):
+        """Capability specs for product ids in one call. (map, code).
+
+        Returns {product id: (spec, codes)} shaped exactly like the IoT Core
+        specifications payload: spec is keyed by dp id and codes maps each
+        declared code to its dp id string.
+        """
+        unique = []
+        for product_id in product_ids:
+            if (isinstance(product_id, str) and product_id
+                    and product_id not in unique):
+                unique.append(product_id)
+        if not unique:
+            return {}, None
+        payload = {
+            "productIds": json.dumps(
+                [{"pid": product_id, "ver": "1.0.0"}
+                 for product_id in unique],
+                separators=(",", ":")),
+            "zigbeeGroup": True,
+        }
+        result, error = self._device_call(
+            "thing.m.device.ref.info.list", payload, version="6.1")
+        if error is not None:
+            return None, error
+        specs = {}
+        if not isinstance(result, list):
+            return specs, None
+        for product in result:
+            if not isinstance(product, dict):
+                continue
+            info = product.get("schemaInfo")
+            raw = info.get("schema") if isinstance(info, dict) else None
+            if isinstance(raw, str):
+                try:
+                    raw = json.loads(raw)
+                except ValueError:
+                    continue
+            if not isinstance(raw, list):
+                continue
+            specs[product.get("id")] = _normalise_schema(raw)
+        return specs, None
 
     # MARK: - Timer API (mirrors the IoT Core timer REST semantics)
 
@@ -473,21 +685,8 @@ class TuyaAppAPI(object):
         Returns (result, None) or (None, code). A code-login session cannot be
         refreshed here; its server code is surfaced unchanged.
         """
-        try:
-            return self._api(action, payload, version=version), None
-        except AppApiSessionError as exc:
-            if not self._password:
-                return None, str(exc.code)
-            self._sid = None
-            error = self.login()
-            if error is not None:
-                return None, str(error.get("Payload") or error.get("Err"))
-            try:
-                return self._api(action, payload, version=version), None
-            except AppApiError as retry_exc:
-                return None, str(retry_exc.code)
-        except AppApiError as exc:
-            return None, str(exc.code)
+        return self._session_retry(
+            lambda: self._api(action, payload, version=version))
 
     # MARK: - Transport and signing
 
