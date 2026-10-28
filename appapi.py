@@ -78,9 +78,54 @@ class TuyaAppAPI(object):
         self._password = password
         self._session = requests.session()
         self._sid = None
+        self._at = None
         self._sid_time = 0
 
     # MARK: - Public API
+
+    def send_email_code(self):
+        """Request a passwordless email login code. None, or an error dict.
+
+        The code itself is generated server-side; this reply never contains
+        it, and nothing here logs request or response material.
+        """
+        try:
+            self._send_email_code()
+        except AppApiError as exc:
+            return _error_dict(exc)
+        return None
+
+    def login_with_code(self, code):
+        """Exchange an emailed code for a session. None, or an error dict.
+
+        Shares the session cache and expiry handling with password login:
+        the resulting sid/at are stored exactly the same way.
+        """
+        try:
+            self._login_with_code(code)
+        except AppApiError as exc:
+            self._sid = None
+            return _error_dict(exc)
+        return None
+
+    def session_state(self):
+        """Session material for owner-only persistence; None when absent."""
+        if not self._sid:
+            return None
+        return {"sid": self._sid, "at": self._at,
+                "savedAt": int(self._sid_time)}
+
+    def restore_session(self, sid, at=None, saved_at=None):
+        """Adopt a persisted session so a restart does not re-login."""
+        if not isinstance(sid, str) or not sid:
+            return False
+        self._sid = sid
+        self._at = at if isinstance(at, str) and at else None
+        try:
+            self._sid_time = float(saved_at)
+        except (TypeError, ValueError):
+            self._sid_time = time.time()
+        return True
 
     def login(self):
         """Fetch and cache a session id. Returns None, or an error dict."""
@@ -97,13 +142,21 @@ class TuyaAppAPI(object):
         The roster is the app's device list mapped exactly like uncover's
         map_tt_compat output: name/id/key/mac/uuid/category/product_id/icon.
         """
-        if self._sid is None or (time.time() - self._sid_time) > SESSION_TTL:
+        if self._sid is None or (
+                self._password
+                and (time.time() - self._sid_time) > SESSION_TTL):
             error = self.login()
             if error is not None:
                 return error
         try:
             return self._list_devices()
-        except AppApiSessionError:
+        except AppApiSessionError as exc:
+            # A passwordless (code-login) session cannot be refreshed without
+            # a fresh emailed code; report the expiry instead of attempting a
+            # password flow that the account does not have.
+            if not self._password:
+                self._sid = None
+                return _error_dict(exc)
             # Exactly one retry: a fresh session usually fixes an expired sid.
             self._sid = None
             error = self.login()
@@ -147,10 +200,42 @@ class TuyaAppAPI(object):
             requires_sid=False,
             number=ERR_CLOUDTOKEN,
         )
-        sid = login_info.get("sid") if isinstance(login_info, dict) else None
+        self._store_session(login_info)
+
+    def _send_email_code(self):
+        # Same call shape as token.create: identity comes from the payload,
+        # no session is required to request a code.
+        self._api(
+            "tuya.m.user.email.code.send",
+            {"countryCode": self._country_code, "email": self._email},
+            requires_sid=False,
+            number=ERR_CLOUDTOKEN,
+        )
+
+    def _login_with_code(self, code):
+        payload = {
+            "countryCode": self._country_code,
+            "email": self._email,
+            "code": code,
+        }
+        login_info = self._api(
+            "thing.m.user.email.code.login",
+            payload,
+            requires_sid=False,
+            number=ERR_CLOUDTOKEN,
+        )
+        self._store_session(login_info)
+
+    def _store_session(self, info):
+        """Adopt sid/at from a login reply; both are opaque server tokens."""
+        if not isinstance(info, dict):
+            raise AppApiError("BAD_RESPONSE", ERR_CLOUDRESP)
+        sid = info.get("sid")
         if not isinstance(sid, str) or not sid:
             raise AppApiError("NO_SESSION", ERR_CLOUDTOKEN)
+        access = info.get("at")
         self._sid = sid
+        self._at = access if isinstance(access, str) and access else None
         self._sid_time = time.time()
 
     def _list_devices(self):

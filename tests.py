@@ -1378,5 +1378,185 @@ class TestBridgeAppApiFallback(unittest.TestCase):
         self.assertIn('lan1', roster)
 
 
+class TestAppApiEmailCode(unittest.TestCase):
+    """Passwordless email-code send/login shares the signed transport."""
+
+    PASSWORD = ''
+    EMAIL = 'user@example.com'
+    CODE_LOGIN = {'success': True,
+                  'result': {'sid': 'sid-code', 'at': 'at-code'}}
+    SEND_OK = {'success': True, 'result': True}
+
+    def setUp(self):
+        import appapi
+        self.appapi = appapi
+        self.api = appapi.TuyaAppAPI(
+            'cid', 'csecret', 'eu', '49', self.EMAIL, self.PASSWORD)
+        self.session = MagicMock()
+        self.api._session = self.session
+
+    @staticmethod
+    def reply(body):
+        response = MagicMock()
+        response.json = MagicMock(return_value=body)
+        return response
+
+    def test_send_email_code_uses_signed_request_without_sid(self):
+        self.session.post = MagicMock(return_value=self.reply(self.SEND_OK))
+
+        self.assertIsNone(self.api.send_email_code())
+
+        params = self.session.post.call_args[1]['params']
+        data = json.loads(self.session.post.call_args[1]['data']['postData'])
+        self.assertEqual(params['a'], 'tuya.m.user.email.code.send')
+        self.assertNotIn('sid', params)
+        self.assertIn('sign', params)
+        self.assertEqual(data, {'countryCode': '49', 'email': self.EMAIL})
+
+    def test_send_email_code_failure_is_code_only(self):
+        self.session.post = MagicMock(return_value=self.reply({
+            'success': False, 'errorCode': 'SEND_TOO_FREQUENT',
+            'errorMsg': 'resend after 60s for ' + self.EMAIL}))
+
+        error = self.api.send_email_code()
+
+        text = json.dumps(error)
+        self.assertEqual(error['Err'], str(self.appapi.ERR_CLOUDTOKEN))
+        self.assertIn('SEND_TOO_FREQUENT', text)
+        self.assertNotIn(self.EMAIL, text)
+        self.assertNotIn('resend after', text)
+
+    def test_login_with_code_stores_sid_and_at(self):
+        self.session.post = MagicMock(return_value=self.reply(self.CODE_LOGIN))
+
+        self.assertIsNone(self.api.login_with_code('123456'))
+
+        params = self.session.post.call_args[1]['params']
+        data = json.loads(self.session.post.call_args[1]['data']['postData'])
+        self.assertEqual(params['a'], 'thing.m.user.email.code.login')
+        self.assertNotIn('sid', params)
+        self.assertEqual(data, {'countryCode': '49', 'email': self.EMAIL,
+                                'code': '123456'})
+        self.assertEqual(self.api.session_state()['sid'], 'sid-code')
+        self.assertEqual(self.api.session_state()['at'], 'at-code')
+
+    def test_bad_code_returns_code_only_without_input_code(self):
+        self.session.post = MagicMock(return_value=self.reply({
+            'success': False, 'errorCode': 'USER_CODE_INVALID',
+            'errorMsg': 'code 123456 expired'}))
+
+        error = self.api.login_with_code('123456')
+
+        text = json.dumps(error)
+        self.assertIn('USER_CODE_INVALID', text)
+        self.assertNotIn('123456', text)
+        self.assertIsNone(self.api.session_state())
+
+    def test_restored_passwordless_session_skips_login(self):
+        self.api.restore_session('sid-restored', 'at-restored', 1)
+        self.session.post = MagicMock(side_effect=[
+            self.reply({'success': True, 'result': [{'groupId': 'g1'}]}),
+            self.reply({'success': True, 'result': [{'devId': 'dev1'}]})])
+
+        devices = self.api.getdevices()
+
+        self.assertEqual(devices[0]['id'], 'dev1')
+        self.assertEqual(self.session.post.call_count, 2)
+        self.check_action = self.session.post.call_args_list[0][1]['params']['a']
+        self.assertEqual(self.check_action, 'tuya.m.location.list')
+
+
+class TestBridgeAppApiSignin(unittest.TestCase):
+    """appapi_signin persists only the opaque session, never the code."""
+
+    def setUp(self):
+        import bridge
+        self.bridge = bridge
+        self.directory = tempfile.mkdtemp()
+        self.old_path = bridge.APAPI_SESSION_PATH
+        bridge.APAPI_SESSION_PATH = os.path.join(self.directory,
+                                                 'appapi-session.json')
+        self.old_make_appapi = bridge.make_appapi
+        self.client = MagicMock()
+        self.client.send_email_code = MagicMock(return_value=None)
+        self.client.login_with_code = MagicMock(return_value=None)
+        self.client.getdevices = MagicMock(return_value=[{'id': 'dev1'},
+                                                         {'id': 'dev2'}])
+        self.client.session_state = MagicMock(return_value={
+            'sid': 'sid-1', 'at': 'at-1', 'savedAt': 1700000000})
+        bridge.make_appapi = MagicMock(return_value=self.client)
+
+    def tearDown(self):
+        self.bridge.APAPI_SESSION_PATH = self.old_path
+        self.bridge.make_appapi = self.old_make_appapi
+        shutil.rmtree(self.directory)
+
+    def session_file(self):
+        with open(self.bridge.APAPI_SESSION_PATH, 'r',
+                  encoding='utf-8') as handle:
+            return json.load(handle)
+
+    def test_send_step_masks_email_and_saves_identity(self):
+        result = self.bridge.handle_appapi_signin({
+            'step': 'send', 'email': 'wiserly@gmail.com',
+            'countryCode': '49'})
+
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(result['step'], 'sent')
+        self.assertNotIn('wiserly@gmail.com', json.dumps(result))
+        self.assertEqual(result['email'], 'w…@gmail.com')
+        saved = self.session_file()
+        self.assertEqual(saved['email'], 'wiserly@gmail.com')
+        self.assertEqual(saved['countryCode'], '49')
+        self.assertNotIn('sid', saved)
+        mode = os.stat(self.bridge.APAPI_SESSION_PATH).st_mode & 0o777
+        self.assertEqual(mode, 0o600)
+
+    def test_verify_step_logs_in_and_persists_session(self):
+        with open(self.bridge.APAPI_SESSION_PATH, 'w',
+                  encoding='utf-8') as handle:
+            json.dump({'email': 'wiserly@gmail.com', 'countryCode': '49'},
+                      handle)
+
+        result = self.bridge.handle_appapi_signin({
+            'step': 'verify', 'code': '987654'})
+
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(result['step'], 'verified')
+        self.assertEqual(result['devices'], 2)
+        self.assertNotIn('987654', json.dumps(result))
+        self.client.login_with_code.assert_called_once_with('987654')
+        saved = self.session_file()
+        self.assertEqual(saved['sid'], 'sid-1')
+        self.assertEqual(saved['email'], 'wiserly@gmail.com')
+        mode = os.stat(self.bridge.APAPI_SESSION_PATH).st_mode & 0o777
+        self.assertEqual(mode, 0o600)
+
+    def test_bad_code_keeps_session_unauthenticated(self):
+        self.client.login_with_code = MagicMock(return_value={
+            'Error': 'Unable to Get Cloud Token', 'Err': str(
+                self.bridge.appapi.ERR_CLOUDTOKEN),
+            'Payload': 'USER_CODE_INVALID'})
+
+        result = self.bridge.handle_appapi_signin({
+            'step': 'verify', 'code': '000000'})
+
+        self.assertFalse(result['ok'], result)
+        self.assertIn('USER_CODE_INVALID', result['error'])
+        self.assertNotIn('000000', json.dumps(result))
+        self.assertFalse(os.path.exists(self.bridge.APAPI_SESSION_PATH))
+
+    def test_verify_requires_code(self):
+        result = self.bridge.handle_appapi_signin({'step': 'verify'})
+
+        self.assertFalse(result['ok'], result)
+        self.client.login_with_code.assert_not_called()
+
+    def test_unknown_step_is_rejected(self):
+        result = self.bridge.handle_appapi_signin({'step': 'other'})
+
+        self.assertFalse(result['ok'], result)
+
+
 if __name__ == '__main__':
     unittest.main()

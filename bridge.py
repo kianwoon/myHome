@@ -34,6 +34,8 @@ Requests:
     {"cmd":"specs","id":"<device-id>"}
     {"cmd":"config"}
     {"cmd":"setconfig","apiKey":"...","apiSecret":"...","apiRegion":"..."}
+    {"cmd":"appapi_signin","step":"send","email":"...","countryCode":"49"}
+    {"cmd":"appapi_signin","step":"verify","code":"..."}
     {"cmd":"gh_list"}
     {"cmd":"gh_states","id"?:"<google-home-device-id>"}
     {"cmd":"gh_action","id":"<google-home-device-id>","action":"<action-name>"}
@@ -78,6 +80,7 @@ except Exception:  # pragma: no cover - import must never break the bridge
 BASE_DIR = os.environ.get("MYHOME_DATA_DIR") or os.path.dirname(os.path.abspath(__file__))
 DEVICES_PATH = os.path.join(BASE_DIR, "devices.json")
 CREDENTIALS_PATH = os.path.join(BASE_DIR, "tinytuya.json")
+APAPI_SESSION_PATH = os.path.join(BASE_DIR, "appapi-session.json")
 
 SOCKET_TIMEOUT = 5
 
@@ -1653,32 +1656,147 @@ def load_credentials():
     return credentials if isinstance(credentials, dict) else {}
 
 
-def make_appapi():
-    """Build the App API fallback from tinytuya.json; None when unconfigured.
+def load_appapi_session():
+    """Read the persisted App API identity/session; empty dict when absent."""
+    try:
+        with open(APAPI_SESSION_PATH, "r", encoding="utf-8") as handle:
+            state = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    return state if isinstance(state, dict) else {}
 
-    General rule: the fallback is opt-in via appApiEmail/appApiPassword (with
-    optional appApiCountryCode/appApiClientId/appApiSecret). Absent keys mean
-    "feature off" — never a prompt. Credentials stay in this path and are not
-    logged anywhere.
+
+def write_appapi_session(state):
+    """Atomically persist the App API session, owner-only (0o600).
+
+    General rule: session material is a credential. It lives in its own file
+    beside tinytuya.json, never in tinytuya.json itself, and is never logged
+    or echoed back to the UI.
+    """
+    directory = os.path.dirname(APAPI_SESSION_PATH)
+    descriptor, temp_path = tempfile.mkstemp(prefix=".appapi-session-",
+                                             dir=directory)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(state, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, APAPI_SESSION_PATH)
+        os.chmod(APAPI_SESSION_PATH, 0o600)
+    except Exception:
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _appapi_identity(request=None):
+    """Email/country for sign-in: request > tinytuya.json > saved session."""
+    credentials = load_credentials()
+    saved = load_appapi_session()
+    email = (request or {}).get("email")
+    if not isinstance(email, str) or not email:
+        email = credentials.get("appApiEmail") or saved.get("email")
+    country = (request or {}).get("countryCode")
+    if country in (None, ""):
+        country = credentials.get("appApiCountryCode")
+    if country in (None, ""):
+        country = saved.get("countryCode")
+    country = str(country) if country not in (None, "") else ""
+    if not isinstance(email, str) or not email:
+        return None, country
+    return email, country
+
+
+def make_appapi(email=None, country_code=None, request=None):
+    """Build the App API client; None when no email is configured.
+
+    General rule: the fallback is opt-in via appApiEmail (appApiPassword is
+    optional — passwordless accounts sign in by emailed code) with optional
+    appApiCountryCode/appApiClientId/appApiSecret. Absent keys mean "feature
+    off" — never a prompt. Credentials stay in this path and are not logged.
     """
     if appapi is None:
         return None
     credentials = load_credentials()
-    email = credentials.get("appApiEmail")
-    password = credentials.get("appApiPassword")
+    saved = load_appapi_session()
+    if not email:
+        email, country_code = _appapi_identity(request)
     if not isinstance(email, str) or not email:
         return None
-    if not isinstance(password, str) or not password:
-        return None
+    password = credentials.get("appApiPassword")
+    if not isinstance(password, str):
+        password = ""
     region = credentials.get("apiRegion")
     if not isinstance(region, str) or not region:
         region = "eu"
-    country = credentials.get("appApiCountryCode")
-    country = str(country) if country not in (None, "") else ""
+    if country_code in (None, ""):
+        country_code = credentials.get("appApiCountryCode")
+    if country_code in (None, ""):
+        country_code = saved.get("countryCode")
+    country = str(country_code) if country_code not in (None, "") else ""
     client_id = credentials.get("appApiClientId") or appapi.DEFAULT_CLIENT_ID
     secret = credentials.get("appApiSecret") or appapi.DEFAULT_SECRET
-    return appapi.TuyaAppAPI(
+    client = appapi.TuyaAppAPI(
         client_id, secret, region, country, email, password)
+    if saved.get("email") == email and isinstance(saved.get("sid"), str):
+        client.restore_session(saved.get("sid"), saved.get("at"),
+                               saved.get("savedAt"))
+    return client
+
+
+def handle_appapi_signin(request):
+    """Passwordless email-code sign-in in two steps.
+
+    General rule: the emailed code is a one-time credential — it is never
+    logged, echoed back, or persisted. Only the resulting opaque sid/at are
+    saved (owner-only) so a restart does not re-login. A send/verify failure
+    surfaces the server's code, never request material.
+    """
+    step = (request or {}).get("step")
+    if step == "send":
+        email, country = _appapi_identity(request)
+        client = make_appapi(email=email, country_code=country)
+        if client is None:
+            return {"ok": False, "error": "appApiEmail not configured"}
+        error = client.send_email_code()
+        if error is not None:
+            return {"ok": False, "error": _cloud_error_detail(error)}
+        saved = load_appapi_session()
+        saved.update({"email": email, "countryCode": country})
+        try:
+            write_appapi_session(saved)
+        except Exception as exc:
+            return {"ok": False,
+                    "error": "session write failed: " + type(exc).__name__}
+        return {"ok": True, "step": "sent", "email": mask_email(email)}
+
+    if step != "verify":
+        return {"ok": False, "error": "step must be send or verify"}
+
+    code = request.get("code")
+    if not isinstance(code, str) or not code.strip():
+        return {"ok": False, "error": "code required"}
+    client = make_appapi()
+    if client is None:
+        return {"ok": False, "error": "appApiEmail not configured"}
+    error = client.login_with_code(code.strip())
+    if error is not None:
+        return {"ok": False, "error": _cloud_error_detail(error)}
+    devices = client.getdevices()
+    if isinstance(devices, dict):
+        return {"ok": False, "error": _cloud_error_detail(devices)}
+    email, country = _appapi_identity()
+    state = client.session_state() or {}
+    state.update({"email": email, "countryCode": country})
+    try:
+        write_appapi_session(state)
+    except Exception as exc:
+        return {"ok": False,
+                "error": "session write failed: " + type(exc).__name__}
+    return {"ok": True, "step": "verified", "devices": len(devices)}
 
 
 def _appapi_allowed(failure):
@@ -1724,6 +1842,16 @@ def mask_secret(secret):
     if len(secret) <= 8:
         return "…"
     return secret[:4] + "…" + secret[-3:]
+
+
+def mask_email(email):
+    """Show the destination mailbox without echoing the full address."""
+    if not isinstance(email, str) or "@" not in email:
+        return ""
+    local, _, domain = email.partition("@")
+    if not local:
+        return "…@" + domain
+    return local[:1] + "…@" + domain
 
 
 def handle_config():
@@ -2783,6 +2911,8 @@ def dispatch(request):
         return handle_config()
     if cmd == "setconfig":
         return handle_setconfig(request)
+    if cmd == "appapi_signin":
+        return handle_appapi_signin(request)
     if cmd == "gh_list":
         return handle_gh_list()
     if cmd == "gh_states":
