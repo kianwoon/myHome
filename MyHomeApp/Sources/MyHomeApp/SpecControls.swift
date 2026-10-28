@@ -99,8 +99,12 @@ private struct CapabilityRow: View {
                 // slider: seconds are written directly, so no tick marks exist.
                 CountdownPicker(device: device, state: state, capability: capability)
             } else if let lower = capability.minValue, let upper = capability.maxValue {
+                // Invariant: a stepped SwiftUI Slider renders (max-min)/step
+                // AppKit TICK MARKS, rebuilt on every layout pass — so only
+                // SMALL ranges may be stepped; large ranges render
+                // continuous (zero tick marks).
                 let ticks = (upper - lower) / (capability.step ?? 1)
-                if ticks > 100 {
+                if ticks <= 100 {
                 HStack(spacing: 8) {
                     Text(capability.displayName)
                         .font(.caption)
