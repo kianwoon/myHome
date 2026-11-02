@@ -40,14 +40,26 @@ public final class BLEManager: NSObject, ObservableObject {
     /// write-char lookup misses and commands silently never send.
     private var bleIDByPeripheralUUID: [UUID: String] = [:]
     private var rawStates: [String: DeviceStore.BriturnState] = [:]
-    private var connectRequests: [String: [(Result<Void, NSError>) -> Void]] = [:]
-    private var writeChars: [String: CBCharacteristic] = [:]
-    private var notifyReady: [String: Bool] = [:]
+    // Connection state is keyed by the PERIPHERAL UUID, not the advert id:
+    // one bulb can advertise as both "ble-<mac>" and "ble-<uuid>" (adverts
+    // with/without the Zengge mfr block), and bleIDByPeripheralUUID flips
+    // between them on every duplicate advert. Keying by advert id let a
+    // command queue under one id while discovery completed under the other,
+    // so the queued write was never issued.
+    /// Pending post-connect actions; the argument is nil on success or the
+    /// failure reason (logged by the caller).
+    private var connectRequests: [UUID: [(String?) -> Void]] = [:]
+    private var writeChars: [UUID: CBCharacteristic] = [:]
+    private var notifyReady: [UUID: Bool] = [:]
     private var seq: UInt8 = 0
     /// Devices commanded recently keep their connection briefly so a slider
     /// burst doesn't reconnect per step.
-    private var disconnectTasks: [String: Task<Void, Never>] = [:]
+    private var disconnectTasks: [UUID: Task<Void, Never>] = [:]
+    private var connectTimeouts: [UUID: Task<Void, Never>] = [:]
     private static let disconnectDelay: UInt64 = 2_500_000_000
+    /// A connect that has not reached notify-ready by then is abandoned and
+    /// logged (e.g. the bulb's single link is held by the phone app).
+    private static let connectTimeoutNanos: UInt64 = 10_000_000_000
 
     override private init() {
         super.init()
@@ -94,7 +106,7 @@ public final class BLEManager: NSObject, ObservableObject {
         let p: UInt8 = on ? 0x23 : 0x24
         var payload: [UInt8] = [0x3B, p, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x32, 0x00, 0x00]
         payload.append(payload.reduce(0, +) & 0xFF)
-        send(id: id, command: payload)
+        send(id: id, op: "power", command: payload)
     }
 
     /// Pure colour over BLE — the SAME 0x3B 0xA1 HSV packet as the WiFi path
@@ -119,7 +131,7 @@ public final class BLEManager: NSObject, ObservableObject {
             if hue < 0 { hue += 360 }
         }
         let hueByte = UInt8(min(max(Int((hue / 2).rounded()), 0), 180))
-        send(id: id, command: checksummed(
+        send(id: id, op: "color", command: checksummed(
             [0x3B, 0xA1, hueByte, UInt8(sat.rounded()), UInt8(bri.rounded()),
              0x00, 0x00, 0x00, 0x00, 0x1E, 0x00, 0x00]))
     }
@@ -132,7 +144,7 @@ public final class BLEManager: NSObject, ObservableObject {
     /// VERIFIED live over BLE (IOTWFE6D, fw 10): cct 0/b100 -> LAN warm ff
     /// cool 00; cct 100/b100 -> warm 00 cool ff.
     public func setCCT(id: String, cct: Int, brightness: Int) {
-        send(id: id, command: checksummed(
+        send(id: id, op: "cct", command: checksummed(
             [0x3B, 0xB1, 0x00, 0x00, 0x00, percent(cct), percent(brightness),
              0x00, 0x00, 0x1E, 0x00, 0x00]))
     }
@@ -141,7 +153,7 @@ public final class BLEManager: NSObject, ObservableObject {
     /// works (level 128 -> warm 7f) but cannot drive the cool channel; the
     /// store uses setCCT instead. Kept for API compatibility.
     public func setWhite(id: String, level: Int) {
-        send(id: id, command: checksummed(
+        send(id: id, op: "white", command: checksummed(
             [0x31, 0, 0, 0, clamped(level), 0, 0x0F, 0x0F]))
     }
 
@@ -151,7 +163,7 @@ public final class BLEManager: NSObject, ObservableObject {
     /// 0x47 frame was dropped: verified live it has no effect on fw 10.
     public func setBrightness(id: String, percent value: Int) {
         let p = percent(value)
-        send(id: id, command: checksummed(
+        send(id: id, op: "brightness", command: checksummed(
             [0x3B, 0x01, 0x00, 0x00, p, 0x00, p, 0x00, 0x00, 0x00, 0x00, 0x00]))
     }
 
@@ -166,41 +178,116 @@ public final class BLEManager: NSObject, ObservableObject {
     /// True when this run has discovered a peripheral for `id` (stale persisted entries are not live).
     func hasPeripheral(id: String) -> Bool { peripherals[id] != nil }
 
-    private func send(id: String, command: [UInt8]) {
+    private func label(_ peripheral: CBPeripheral) -> String {
+        bleIDByPeripheralUUID[peripheral.identifier] ?? "ble-" + peripheral.identifier.uuidString.lowercased()
+    }
+
+    private func send(id: String, op: String, command: [UInt8]) {
         let wrapped = transport(command)
-        guard let peripheral = peripherals[id] else { return }
-        scheduleDisconnect(id: id)
-        if notifyReady[id] == true, let writeChar = writeChars[id] {
-            peripheral.writeValue(Data(wrapped), for: writeChar, type: .withResponse)
-        } else {
-            connectAndThen(id: id) { [weak self] in
-                guard let self, let writeChar = self.writeChars[id] else { return }
-                peripheral.writeValue(Data(wrapped), for: writeChar, type: .withResponse)
+        AppLog.ble.notice("MyHome: BLE cmd id=\(id, privacy: .public) op=\(op, privacy: .public) bytes=\(wrapped.count, privacy: .public) head=\(BLEWire.hexPrefix(command), privacy: .public)")
+        guard let peripheral = peripherals[id] else {
+            AppLog.ble.error("MyHome: BLE drop id=\(id, privacy: .public) op=\(op, privacy: .public) reason=no-live-peripheral")
+            return
+        }
+        let key = peripheral.identifier
+        if peripheral.state == .connected, notifyReady[key] == true, let writeChar = writeChars[key] {
+            write(wrapped, op: op, to: peripheral, characteristic: writeChar)
+            scheduleDisconnect(peripheral)
+            return
+        }
+        connectAndThen(peripheral) { [weak self] failure in
+            guard let self else { return }
+            if let failure {
+                AppLog.ble.error("MyHome: BLE drop id=\(id, privacy: .public) op=\(op, privacy: .public) reason=\(failure, privacy: .public)")
+                return
             }
+            guard peripheral.state == .connected, let writeChar = self.writeChars[key] else {
+                AppLog.ble.error("MyHome: BLE drop id=\(id, privacy: .public) op=\(op, privacy: .public) reason=no-write-char-after-connect state=\(peripheral.state.rawValue, privacy: .public)")
+                return
+            }
+            self.write(wrapped, op: op, to: peripheral, characteristic: writeChar)
         }
     }
 
-    private func scheduleDisconnect(id: String) {
-        disconnectTasks[id]?.cancel()
-        disconnectTasks[id] = Task { [weak self] in
+    private func write(_ bytes: [UInt8], op: String, to peripheral: CBPeripheral, characteristic: CBCharacteristic) {
+        let props = BLEWire.describe(characteristic.properties)
+        guard let type = BLEWire.writeType(for: characteristic.properties) else {
+            AppLog.ble.error("MyHome: BLE drop id=\(self.label(peripheral), privacy: .public) op=\(op, privacy: .public) reason=char-not-writable char=\(characteristic.uuid.uuidString, privacy: .public) props=\(props, privacy: .public)")
+            return
+        }
+        let typeName = type == .withResponse ? "withResponse" : "withoutResponse"
+        AppLog.ble.notice("MyHome: BLE write id=\(self.label(peripheral), privacy: .public) op=\(op, privacy: .public) char=\(characteristic.uuid.uuidString, privacy: .public) type=\(typeName, privacy: .public) len=\(bytes.count, privacy: .public) props=\(props, privacy: .public)")
+        peripheral.writeValue(Data(bytes), for: characteristic, type: type)
+    }
+
+    private func scheduleDisconnect(_ peripheral: CBPeripheral) {
+        let key = peripheral.identifier
+        disconnectTasks[key]?.cancel()
+        disconnectTasks[key] = Task { [weak self] in
             try? await Task.sleep(nanoseconds: Self.disconnectDelay)
-            guard let self, let p = self.peripherals[id], self.connectRequests[id] == nil || self.connectRequests[id]?.isEmpty == true else { return }
-            self.central.cancelPeripheralConnection(p)
-            self.notifyReady[id] = false
+            guard !Task.isCancelled, let self, self.connectRequests[key]?.isEmpty ?? true else { return }
+            AppLog.ble.notice("MyHome: BLE idle disconnect id=\(self.label(peripheral), privacy: .public)")
+            self.notifyReady[key] = false
+            self.central.cancelPeripheralConnection(peripheral)
         }
     }
 
-    private func connectAndThen(id: String, _ after: @escaping () -> Void) {
-        disconnectTasks[id]?.cancel()
-        connectRequests[id, default: []].append { _ in after() }
-        if let p = peripherals[id], p.state == .connected, notifyReady[id] == true {
-            // Already up: drain immediately.
-            let callbacks = connectRequests[id] ?? []
-            connectRequests[id] = []
-            callbacks.forEach { $0(.success(())) }
-        } else if let p = peripherals[id] {
-            central.connect(p)
+    private func connectAndThen(_ peripheral: CBPeripheral, _ after: @escaping (String?) -> Void) {
+        let key = peripheral.identifier
+        disconnectTasks[key]?.cancel()
+        connectRequests[key, default: []].append(after)
+        let pending = connectRequests[key]?.count ?? 0
+        let id = label(peripheral)
+        switch peripheral.state {
+        case .connected where notifyReady[key] == true:
+            finishConnect(peripheral, failure: nil)
+        case .connected:
+            // Connected but discovery never finished (or failed): redo it
+            // rather than waiting for a notify-ready that will never come.
+            AppLog.ble.notice("MyHome: BLE connected-not-ready id=\(id, privacy: .public) pending=\(pending, privacy: .public) -> rediscover")
+            peripheral.delegate = self
+            peripheral.discoverServices([BLEWire.service])
+            armConnectTimeout(peripheral)
+        case .connecting:
+            AppLog.ble.notice("MyHome: BLE connect in progress id=\(id, privacy: .public) pending=\(pending, privacy: .public)")
+        default:
+            AppLog.ble.notice("MyHome: BLE connect requested id=\(id, privacy: .public) state=\(peripheral.state.rawValue, privacy: .public) pending=\(pending, privacy: .public)")
+            central.connect(peripheral)
+            armConnectTimeout(peripheral)
         }
+    }
+
+    private func armConnectTimeout(_ peripheral: CBPeripheral) {
+        let key = peripheral.identifier
+        connectTimeouts[key]?.cancel()
+        connectTimeouts[key] = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: Self.connectTimeoutNanos)
+            guard !Task.isCancelled, let self, self.notifyReady[key] != true else { return }
+            AppLog.ble.error("MyHome: BLE connect timeout id=\(self.label(peripheral), privacy: .public) state=\(peripheral.state.rawValue, privacy: .public) (link held by another central, e.g. the phone app?)")
+            self.central.cancelPeripheralConnection(peripheral)
+            self.finishConnect(peripheral, failure: "connect-timeout")
+        }
+    }
+
+    /// Drain every queued action for this peripheral exactly once.
+    private func finishConnect(_ peripheral: CBPeripheral, failure: String?) {
+        let key = peripheral.identifier
+        connectTimeouts[key]?.cancel()
+        connectTimeouts[key] = nil
+        let callbacks = connectRequests[key] ?? []
+        connectRequests[key] = nil
+        callbacks.forEach { $0(failure) }
+        // Re-arm the idle disconnect: the connect path cancelled it, and
+        // without this the link stayed up forever (blocking the phone app).
+        if failure == nil { scheduleDisconnect(peripheral) }
+    }
+
+    private func resetLink(_ peripheral: CBPeripheral) {
+        let key = peripheral.identifier
+        notifyReady[key] = false
+        writeChars[key] = nil
+        disconnectTasks[key]?.cancel()
+        disconnectTasks[key] = nil
     }
 
     /// Decode the ZengGe v7 manufacturer block. Verified live: with company
@@ -305,39 +392,101 @@ extension BLEManager: CBCentralManagerDelegate {
             decodeState(id, mfr: mfr, hasServiceData: hasServiceData, name: name)
         }
     }
+
+    public func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
+        AppLog.ble.error("MyHome: BLE didFailToConnect id=\(self.label(peripheral), privacy: .public) error=\(error?.localizedDescription ?? "none", privacy: .public)")
+        resetLink(peripheral)
+        finishConnect(peripheral, failure: "connect-failed")
+    }
+
+    public func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+        let pending = connectRequests[peripheral.identifier]?.count ?? 0
+        AppLog.ble.notice("MyHome: BLE didDisconnect id=\(self.label(peripheral), privacy: .public) pending=\(pending, privacy: .public) error=\(error?.localizedDescription ?? "none", privacy: .public)")
+        resetLink(peripheral)
+        if pending > 0 { finishConnect(peripheral, failure: "disconnected-before-ready") }
+    }
 }
 
 extension BLEManager: CBPeripheralDelegate {
     public func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        AppLog.ble.notice("MyHome: BLE didConnect id=\(self.label(peripheral), privacy: .public)")
         peripheral.delegate = self
-        peripheral.discoverServices([CBUUID(string: "FFFF")])
+        peripheral.discoverServices([BLEWire.service])
+    }
+
+    private func failDiscovery(_ peripheral: CBPeripheral, reason: String) {
+        AppLog.ble.error("MyHome: BLE discovery failed id=\(self.label(peripheral), privacy: .public) reason=\(reason, privacy: .public)")
+        central.cancelPeripheralConnection(peripheral)
+        resetLink(peripheral)
+        finishConnect(peripheral, failure: reason)
     }
 
     public func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
-        for service in peripheral.services ?? [] {
-            peripheral.discoverCharacteristics([CBUUID(string: "FF01"), CBUUID(string: "FF02")], for: service)
+        let services = peripheral.services ?? []
+        let uuids = services.map { $0.uuid.uuidString }.joined(separator: ",")
+        AppLog.ble.notice("MyHome: BLE services id=\(self.label(peripheral), privacy: .public) uuids=[\(uuids, privacy: .public)] error=\(error?.localizedDescription ?? "none", privacy: .public)")
+        if let error {
+            failDiscovery(peripheral, reason: "services-error " + error.localizedDescription)
+            return
+        }
+        guard !services.isEmpty else {
+            failDiscovery(peripheral, reason: "no-FFFF-service")
+            return
+        }
+        for service in services {
+            peripheral.discoverCharacteristics([BLEWire.writeChar, BLEWire.notifyChar], for: service)
         }
     }
 
     public func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
-        let bleID = bleIDByPeripheralUUID[peripheral.identifier] ?? peripheral.identifier.uuidString
-        for characteristic in service.characteristics ?? [] {
-            switch characteristic.uuid.uuidString.suffix(4).uppercased() {
-            case "FF01": writeChars[bleID] = characteristic
-            case "FF02":
-                peripheral.setNotifyValue(true, for: characteristic)
-            default: break
-            }
+        let key = peripheral.identifier
+        let chars = service.characteristics ?? []
+        let summary = chars.map { "\($0.uuid.uuidString)(\(BLEWire.describe($0.properties)))" }.joined(separator: ",")
+        AppLog.ble.notice("MyHome: BLE characteristics id=\(self.label(peripheral), privacy: .public) service=\(service.uuid.uuidString, privacy: .public) chars=[\(summary, privacy: .public)] error=\(error?.localizedDescription ?? "none", privacy: .public)")
+        if let error {
+            failDiscovery(peripheral, reason: "characteristics-error " + error.localizedDescription)
+            return
+        }
+        var notifyChar: CBCharacteristic?
+        for characteristic in chars {
+            if characteristic.uuid == BLEWire.writeChar { writeChars[key] = characteristic }
+            if characteristic.uuid == BLEWire.notifyChar { notifyChar = characteristic }
+        }
+        guard writeChars[key] != nil else {
+            failDiscovery(peripheral, reason: "no-FF01-write-char")
+            return
+        }
+        if let notifyChar {
+            peripheral.setNotifyValue(true, for: notifyChar)
+        } else {
+            // No FF02: nothing would ever report notify-ready, so the queue
+            // used to strand. Writes do not need notifications.
+            AppLog.ble.notice("MyHome: BLE no FF02 notify char id=\(self.label(peripheral), privacy: .public) -> ready without notify")
+            notifyReady[key] = true
+            finishConnect(peripheral, failure: nil)
         }
     }
 
     public func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
-        guard characteristic.uuid.uuidString.suffix(4).uppercased() == "FF02", error == nil else { return }
-let ownerID = bleIDByPeripheralUUID[peripheral.identifier] ?? peripheral.identifier.uuidString
-        notifyReady[ownerID] = true
-        let callbacks = connectRequests[ownerID] ?? []
-        connectRequests[ownerID] = []
-        callbacks.forEach { $0(.success(())) }
+        guard characteristic.uuid == BLEWire.notifyChar else { return }
+        let key = peripheral.identifier
+        AppLog.ble.notice("MyHome: BLE notify id=\(self.label(peripheral), privacy: .public) enabled=\(characteristic.isNotifying ? 1 : 0, privacy: .public) error=\(error?.localizedDescription ?? "none", privacy: .public)")
+        // A notify failure used to strand every queued command; the write
+        // characteristic is usable regardless, so proceed when we have it.
+        guard writeChars[key] != nil else {
+            failDiscovery(peripheral, reason: "notify-without-write-char")
+            return
+        }
+        notifyReady[key] = true
+        finishConnect(peripheral, failure: nil)
+    }
+
+    public func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
+        if let error {
+            AppLog.ble.error("MyHome: BLE didWrite id=\(self.label(peripheral), privacy: .public) char=\(characteristic.uuid.uuidString, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+        } else {
+            AppLog.ble.notice("MyHome: BLE didWrite id=\(self.label(peripheral), privacy: .public) char=\(characteristic.uuid.uuidString, privacy: .public) ok")
+        }
     }
 
     public func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
@@ -358,5 +507,35 @@ let ownerID = bleIDByPeripheralUUID[peripheral.identifier] ?? peripheral.identif
             b: Int(payload[8]),
             w: Int(payload[5])
         )
+    }
+}
+
+/// Pure GATT helpers for the LEDnetWF profile (unit-tested).
+enum BLEWire {
+    static let service = CBUUID(string: "FFFF")
+    static let writeChar = CBUUID(string: "FF01")
+    static let notifyChar = CBUUID(string: "FF02")
+    /// Bytes shown in logs; never the full payload.
+    static let logPrefixBytes = 4
+
+    /// Prefer acknowledged writes (so didWriteValueFor reports errors); fall
+    /// back to write-without-response; nil when the char is not writable.
+    static func writeType(for properties: CBCharacteristicProperties) -> CBCharacteristicWriteType? {
+        if properties.contains(.write) { return .withResponse }
+        if properties.contains(.writeWithoutResponse) { return .withoutResponse }
+        return nil
+    }
+
+    static func describe(_ properties: CBCharacteristicProperties) -> String {
+        let names: [(CBCharacteristicProperties, String)] = [
+            (.read, "read"), (.write, "write"), (.writeWithoutResponse, "writeNoResp"),
+            (.notify, "notify"), (.indicate, "indicate")
+        ]
+        let found = names.filter { properties.contains($0.0) }.map { $0.1 }
+        return found.isEmpty ? "none" : found.joined(separator: "|")
+    }
+
+    static func hexPrefix(_ bytes: [UInt8]) -> String {
+        bytes.prefix(logPrefixBytes).map { String(format: "%02x", $0) }.joined(separator: " ")
     }
 }
