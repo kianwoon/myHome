@@ -307,9 +307,9 @@ struct DashboardView: View {
         // A switch renders the cached state at once (cards read the store
         // synchronously, nothing is cleared); the store then re-reads only the
         // visible devices whose last read is stale, in the background.
-        .onChange(of: group) { _ in noteSwitch() }
-        .onChange(of: selectedRoom) { _ in noteSwitch() }
-        .onChange(of: briturnGroupFilter) { _ in noteSwitch() }
+        // One key for the whole lens: a sidebar click that changes both the
+        // category and the room fires a single switch, not two.
+        .onChange(of: "\(group.title)|\(selectedRoom ?? "")|\(briturnGroupFilter ?? "")") { _ in noteSwitch() }
         .onAppear {
             store.startPolling()
             // Same resilience on re-appear: if the ROSTER is empty because an

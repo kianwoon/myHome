@@ -214,22 +214,26 @@ extension DeviceStore {
         }
         var lanTargets: [Device] = []
         var cloudDirect: [Device] = []
-        var skipped = 0
+        var skippedIDs: [String] = []
         for device in candidates {
             let cloudBacked = briturnCloudDevices[device.id] != nil
             if cloudBacked && cloudOnline[device.id] == false && isBLELive(for: device) {
                 // Cloud says offline AND a live Bluetooth peripheral exists:
                 // the LAN address is stale (same rule as reachability) and the
                 // cloud has no state — BLE adverts are the source.
-                skipped += 1
+                skippedIDs.append(device.id)
             } else if device.hasAddress && !(cloudBacked && lanBackedOff(device.id, now: now)) {
                 lanTargets.append(device)
             } else if cloudBacked {
                 cloudDirect.append(device)
             } else {
-                skipped += 1
+                skippedIDs.append(device.id)
             }
         }
+        // No read path to try: count them as just-read so a dashboard switch
+        // does not keep reporting (and re-scheduling) them as stale.
+        for id in skippedIDs { lastStatusAt[id] = now }
+        let skipped = skippedIDs.count
         guard !lanTargets.isEmpty || !cloudDirect.isEmpty else { return }
         let ids = lanTargets.map(\.id) + cloudDirect.map(\.id)
         let started = Date()
