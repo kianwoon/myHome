@@ -54,11 +54,11 @@ public final class DeviceStore: ObservableObject {
     private var isMirroringGroups = false
     private var warnedBridgeOnlyBriturn: Set<String> = []
     @Published public private(set) var briturnCloudSyncing = false
-    @Published public private(set) var briturnCloudError: String?
+    @Published public internal(set) var briturnCloudError: String?
     @Published public private(set) var briturnCloudDeviceCount = 0
     private var lastBriturnCloudSync: Date?
     private var briturnProbeDone = false
-    private let briturnCloud: BriturnCloudClient
+    let briturnCloud: BriturnCloudClient
 
     /// Raw BLE discoveries currently being heard (from BLEManager).
     @Published public private(set) var bleLights: [BLELight] = [] {
@@ -132,20 +132,20 @@ public final class DeviceStore: ObservableObject {
     var derivedCaches = DerivedCaches()
     private var loggedReachability: [String: Reachability] = [:]
 
-    @Published public private(set) var isOn: [String: Bool] = [:]
-    @Published public private(set) var dpsById: [String: [String: DPSValue]] = [:]
-    @Published public private(set) var cloudOnline: [String: Bool] = [:]
+    @Published public internal(set) var isOn: [String: Bool] = [:]
+    @Published public internal(set) var dpsById: [String: [String: DPSValue]] = [:]
+    @Published public internal(set) var cloudOnline: [String: Bool] = [:]
     /// True when the bridge itself cannot reach the Tuya cloud (e.g. it was
     /// launched with a python env missing `requests`). Distinct from per-device
     /// cloud offline: nothing cloud-backed (schedules, sync) can work until the
     /// app is relaunched so the bridge picks up the venv interpreter.
     @Published public private(set) var cloudEnvBroken = false
-    @Published public private(set) var statusLoading: Set<String> = []
-    @Published public private(set) var statusErrors: [String: String] = [:]
+    @Published public internal(set) var statusLoading: Set<String> = []
+    @Published public internal(set) var statusErrors: [String: String] = [:]
     /// True when that device's latest status reply came over the cloud fallback
     /// (`"via":"cloud"`) rather than the local LAN path. Cleared by the next
     /// successful local status, so it always describes the current reading.
-    @Published public private(set) var statusViaCloud: [String: Bool] = [:]
+    @Published public internal(set) var statusViaCloud: [String: Bool] = [:]
     @Published public private(set) var schedules: [DeviceSchedule] = []
     @Published public private(set) var schedulesLoading = false
     @Published public private(set) var schedulesError: String?
@@ -163,12 +163,23 @@ public final class DeviceStore: ObservableObject {
         }
     }
 
-    private let bridge: any BridgeSending
+    let bridge: any BridgeSending
     /// Snapshot of the Control-tab defaults, read once on start so a poll cycle
     /// never changes cadence mid-flight.
     private let pollInterval: TimeInterval
     private let scanWindow: Int
-    private var loadedStatus: Set<String> = []
+    var loadedStatus: Set<String> = []
+    /// Sweep bookkeeping (never published; see DeviceStore+StatusSweep).
+    /// Ids with a status read in flight from ANY path: single-session bulbs
+    /// wedge when two sweeps connect at once, so every sweep consults this.
+    var statusInFlight: Set<String> = []
+    /// Completion time of the last status read attempt per id.
+    var lastStatusAt: [String: Date] = [:]
+    /// Consecutive failed Briturn LAN probes, and the back-off deadline.
+    var lanFailStreak: [String: Int] = [:]
+    var lanBackoffUntil: [String: Date] = [:]
+    /// objectWillChange counters (see DeviceStore+PublishMeter).
+    let publishMeter = PublishMeter()
     private var pollTask: Task<Void, Never>?
     var isAutoScanning = false
     var noticeTask: Task<Void, Never>?
@@ -211,6 +222,7 @@ public final class DeviceStore: ObservableObject {
             for light in Self.migrateBLESeen(stored) { bleSeen[light.id] = light }
         }
         bindBLE()
+        startPublishMeter()
     }
 
     /// Pre-UUID entries ("ble-<12 hex>", derived from advert bytes that
@@ -424,32 +436,6 @@ public final class DeviceStore: ObservableObject {
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         } catch {
             AppLog.store.error("Briturn groups probe failed: \(String(describing: error), privacy: .private)")
-        }
-    }
-
-    private func refreshBriturnCloudStates(for devices: [Device]) async {
-        let mapped = devices.compactMap { briturnCloudDevices[$0.id] }
-        guard !mapped.isEmpty else {
-            for device in devices { statusErrors[device.id] = "No local address or connected Briturn Cloud device." }
-            return
-        }
-        do {
-            let states = try await briturnCloud.queryStates(devices: mapped)
-            for device in mapped {
-                if let state = states[device.canonicalID] {
-                    applyBriturnWireState(device.canonicalID, state)
-                    statusViaCloud[device.canonicalID] = true
-                    statusErrors[device.canonicalID] = nil
-                    cloudOnline[device.canonicalID] = true
-                } else {
-                    cloudOnline[device.canonicalID] = false
-                    statusErrors[device.canonicalID] = device.supportsLighting ? "Light is offline in Briturn Cloud." : "Cloud controls for this model are not supported yet."
-                }
-            }
-        } catch {
-            let message = (error as? BriturnCloudError)?.localizedDescription ?? "Could not read Briturn Cloud status."
-            for device in mapped { statusErrors[device.canonicalID] = message }
-            briturnCloudError = message
         }
     }
 
@@ -1070,17 +1056,35 @@ public final class DeviceStore: ObservableObject {
 
     /// Paints a wire-read state unless it fights a fresh user intent, judged
     /// channel by channel: on/colour exactly, brightness within tolerance.
-    private func applyBriturnWireState(_ id: String, _ state: BriturnState, authoritative: Bool = false) {
+    func applyBriturnWireState(_ id: String, _ state: BriturnState, authoritative: Bool = false) {
+        if let paint = resolveBriturnWireState(id, state, authoritative: authoritative) {
+            setBriturnStatus(id, paint)
+        }
+    }
+
+    /// Batch form of applyBriturnWireState for sweeps: same per-light intent
+    /// rule, but `briturnStatus` is assigned at most ONCE (and not at all
+    /// when nothing changed), so a sweep is one invalidation, not one per light.
+    func applyBriturnWireStates(_ states: [String: BriturnState]) {
+        guard !states.isEmpty else { return }
+        var next = briturnStatus
+        for (id, state) in states {
+            if let paint = resolveBriturnWireState(id, state, authoritative: false) { next[id] = paint }
+        }
+        if next != briturnStatus { briturnStatus = next }
+    }
+
+    /// The intent rule itself: returns the state to paint, or nil when the
+    /// read contradicts a fresh user intent and must be dropped.
+    private func resolveBriturnWireState(_ id: String, _ state: BriturnState, authoritative: Bool) -> BriturnState? {
         bleDerivedStatus[id] = nil
         guard var intent = briturnIntent[id] else {
-            setBriturnStatus(id, state)
-            return
+            return state
         }
         guard Date().timeIntervalSince(intent.at) < Self.briturnIntentGrace else {
             // Grace expired: the wire wins for every channel.
             briturnIntent.removeValue(forKey: id)
-            setBriturnStatus(id, state)
-            return
+            return state
         }
         var contradicts = false
         if let want = intent.on {
@@ -1108,12 +1112,12 @@ public final class DeviceStore: ObservableObject {
             // Mid-transition poll: keep showing what the user painted, but
             // retain the channels the device already confirmed.
             briturnIntent[id] = intent
-            return
+            return nil
         }
         // Confirmed on every touched channel, or the authoritative readback
         // says the command never took: the wire is the truth.
         briturnIntent.removeValue(forKey: id)
-        setBriturnStatus(id, state)
+        return state
     }
 
     /// The intent snapshot for what a setter just painted: only the channels
@@ -1143,7 +1147,7 @@ public final class DeviceStore: ObservableObject {
         )
     }
 
-    private func isBriturn(_ device: Device) -> Bool {
+    func isBriturn(_ device: Device) -> Bool {
         device.category.lowercased() == "briturn"
     }
 
@@ -1155,8 +1159,15 @@ public final class DeviceStore: ObservableObject {
             await refreshBriturnCloudStates(for: [device])
             return
         }
+        // A sweep already has this bulb's single session: its result lands
+        // in briturnStatus shortly, so a second connect would only wedge it.
+        guard !statusInFlight.contains(device.id) else { return }
+        statusInFlight.insert(device.id)
         // NATIVE TRANSPORT: query the light directly.
-        guard let state = await FluxClient.query(ip: device.ip) else {
+        let queried = await FluxClient.query(ip: device.ip)
+        statusInFlight.remove(device.id)
+        lastStatusAt[device.id] = Date()
+        guard let state = queried else {
             if briturnCloudDevices[device.id] != nil {
                 await refreshBriturnCloudStates(for: [device])
                 return
@@ -1168,9 +1179,10 @@ public final class DeviceStore: ObservableObject {
             }
             return
         }
+        noteLANResult(device.id, ok: true)
         applyBriturnWireState(device.id, state)
-        statusViaCloud[device.id] = false
-        statusErrors[device.id] = nil
+        if statusViaCloud[device.id] != false { statusViaCloud[device.id] = false }
+        if statusErrors[device.id] != nil { statusErrors[device.id] = nil }
     }
 
     /// Sends power and/or colour and/or brightness, adopting the bridge's
@@ -1647,230 +1659,6 @@ public final class DeviceStore: ObservableObject {
         }
     }
 
-    /// Refreshes every briturn device's wire state once per poll cycle.
-    /// Coalesced into one published write per cycle, mirroring the DPS batch.
-    private func refreshBriturnStatuses(limitingTo devices: [Device]? = nil) async {
-        let targets = (devices ?? self.devices)
-            .filter { $0.hasAddress && !statusLoading.contains($0.id) }
-            .filter { $0.category.lowercased() == "briturn" && !$0.isBLE }
-        var batch: [String: BriturnState] = [:]
-        var errors: [String: String] = [:]
-        // Sliding window of 8: bounded in-flight queries protect the bulbs'
-        // tiny TCP stacks, but there is no barrier between batches — a new
-        // query starts the moment any slot frees, so one wedged bulb idles
-        // only its own slot and total time approaches the slowest single
-        // query instead of the sum of chunk maxima.
-        let knownStates = briturnStatus
-        let MAX_IN_FLIGHT = 8
-        let results = await withTaskGroup(
-            of: (String, BriturnState?, String?).self,
-            returning: [(String, BriturnState?, String?)].self
-        ) { group in
-            var next = 0
-            while next < targets.count && next < MAX_IN_FLIGHT && !Task.isCancelled {
-                let device = targets[next]
-                next += 1
-                let hadState = knownStates[device.id] != nil
-                group.addTask {
-                    let state = await FluxClient.query(ip: device.ip)
-                    let error = state == nil && !hadState ? "Light unreachable." : nil
-                    return (device.id, state, error)
-                }
-            }
-            var collected: [(String, BriturnState?, String?)] = []
-            while let result = await group.next() {
-                collected.append(result)
-                guard !Task.isCancelled, next < targets.count else { continue }
-                let device = targets[next]
-                next += 1
-                let hadState = knownStates[device.id] != nil
-                group.addTask {
-                    let state = await FluxClient.query(ip: device.ip)
-                    let error = state == nil && !hadState ? "Light unreachable." : nil
-                    return (device.id, state, error)
-                }
-            }
-            return collected
-        }
-        let failedLocal = Set(results.filter { $0.1 == nil }.map { $0.0 })
-        let cloudTargets = (devices ?? self.devices).filter {
-            briturnCloudDevices[$0.id] != nil && !statusLoading.contains($0.id)
-                && (!$0.hasAddress || failedLocal.contains($0.id))
-        }
-        if !cloudTargets.isEmpty { await refreshBriturnCloudStates(for: cloudTargets) }
-        for (id, state, error) in results {
-            if let state = state {
-                batch[id] = state
-                statusViaCloud[id] = false
-            } else if let error = error {
-                errors[id] = error
-            }
-        }
-        if !batch.isEmpty {
-            for (id, state) in batch {
-                applyBriturnWireState(id, state)
-            }
-            var merged = statusErrors
-            for id in batch.keys { merged[id] = nil }
-            statusErrors = merged
-        }
-        if !errors.isEmpty {
-            // Poll timeouts on lights with a known state stay quiet (serial
-            // bridge congestion, not a real fault); only unknown lights alarm.
-            var merged = statusErrors
-            for (id, message) in errors where briturnStatus[id] == nil && briturnCloudDevices[id] == nil {
-                merged[id] = message
-            }
-            statusErrors = merged
-        }
-    }
-
-    /// Round-robin over online devices only; skip anything already in flight.
-    ///
-    /// General rule: a view must NEVER mutate observable state while it is
-    /// being laid out. Polling therefore coalesces its results and writes each
-    /// @Published collection ONCE per cycle instead of per device — per-device
-    /// writes invalidate layout repeatedly and can feed a layout loop.
-    private func pollCycle() async {
-        // Briturn devices have no DPS surface; they are polled through their
-        // own wire status so card toggles stay live.
-        await refreshBriturnStatuses()
-        let targets = devices
-            .filter { $0.hasAddress && !statusLoading.contains($0.id) }
-            .filter { $0.category.lowercased() != "briturn" }
-            .map(\.id)
-        guard !targets.isEmpty else { return }
-
-        var dpsBatch: [String: [String: DPSValue]] = [:]
-        var viaBatch: [String: Bool] = [:]
-        var errorBatch: [String: String] = [:]
-
-        // Sliding window of 6: devices overlap instead of walking one at a
-        // time (the old 0.15s pacing made fans/curtains sweep serially). The
-        // window is bounded to protect the bridge's device sockets, and the
-        // coalesced batch write above is unchanged.
-        let MAX_IN_FLIGHT = 6
-        await withTaskGroup(of: (String, StatusFetch).self, returning: Void.self) { group in
-            var next = 0
-            while next < targets.count && next < MAX_IN_FLIGHT && !Task.isCancelled {
-                let id = targets[next]
-                next += 1
-                group.addTask { (id, await self.fetchStatus(for: id)) }
-            }
-            while let pair = await group.next() {
-                switch pair.1 {
-                case .success(let decoded, let viaCloud):
-                    dpsBatch[pair.0] = decoded
-                    viaBatch[pair.0] = viaCloud
-                case .failure(let message):
-                    errorBatch[pair.0] = message
-                }
-                guard !Task.isCancelled, next < targets.count else { continue }
-                let id = targets[next]
-                next += 1
-                group.addTask { (id, await self.fetchStatus(for: id)) }
-            }
-        }
-
-        applyPollBatch(dps: dpsBatch, viaCloud: viaBatch, errors: errorBatch)
-    }
-
-    /// Single coalesced write for one poll cycle: each published collection is
-    /// assigned once, so SwiftUI sees one invalidation rather than dozens.
-    private func applyPollBatch(
-        dps: [String: [String: DPSValue]],
-        viaCloud: [String: Bool],
-        errors: [String: String]
-    ) {
-        guard !dps.isEmpty || !errors.isEmpty else { return }
-        if !dps.isEmpty {
-            // Reconcile BEFORE merging: the poll is a wire read like any other
-            // and must not paint over a fresh user intent. The power bit is
-            // derived from the reconciled map, not the raw decode, so dp1
-            // follows the same rule as dp3 and every unseen dp.
-            var resolvedBatch: [String: [String: DPSValue]] = [:]
-            var resolvedOn: [String: Bool] = [:]
-            for (id, decoded) in dps {
-                let resolved = reconciled(id, decoded)
-                resolvedBatch[id] = resolved
-                if let power = resolved["1"]?.boolValue {
-                    resolvedOn[id] = power
-                }
-            }
-            dpsById.merge(resolvedBatch) { _, new in new }
-            isOn.merge(resolvedOn) { _, new in new }
-            statusViaCloud.merge(viaCloud) { _, new in new }
-            loadedStatus.formUnion(dps.keys)
-        }
-        var mergedErrors = statusErrors
-        for id in dps.keys {
-            mergedErrors[id] = nil
-        }
-        for (id, message) in errors {
-            mergedErrors[id] = message
-        }
-        statusErrors = mergedErrors
-    }
-
-    // MARK: - Status
-
-    /// Fetches DPS for one device. Non-forced calls are cached until a rescan
-    /// or poll forces a re-read; concurrent calls for the same id de-duplicate.
-    public func loadStatus(for device: Device, force: Bool = false) async {
-        // Briturn devices have no Tuya DPS surface; their status comes from
-        // loadBriturnStatus instead. Requesting Tuya status only produces
-        // error noise.
-        guard device.category.lowercased() != "briturn" else { return }
-        guard device.hasAddress else { return }
-        guard !statusLoading.contains(device.id) else { return }
-        if !force && loadedStatus.contains(device.id) { return }
-
-        statusLoading.insert(device.id)
-        defer { statusLoading.remove(device.id) }
-
-        switch await fetchStatus(for: device.id) {
-        case .success(let decoded, let viaCloud):
-            applyStatus(device.id, decoded: decoded, viaCloud: viaCloud)
-        case .failure(let message):
-            statusErrors[device.id] = message
-        }
-    }
-
-    private enum StatusFetch {
-        case success([String: DPSValue], viaCloud: Bool)
-        case failure(String)
-    }
-
-    private func fetchStatus(for id: String) async -> StatusFetch {
-        do {
-            let reply = try await bridge.request(["cmd": "status", "id": id], timeout: 15)
-            guard reply["ok"] as? Bool == true else {
-                return .failure(reply["error"] as? String ?? "Status failed.")
-            }
-            guard let raw = reply["dps"] else {
-                return .failure("Device returned no dps.")
-            }
-            return .success(
-                try Self.decodeDps(raw),
-                viaCloud: reply["via"] as? String == "cloud"
-            )
-        } catch {
-            return .failure(error.localizedDescription)
-        }
-    }
-
-    /// Loads every briturn device's wire state once — launch-time parity with
-    /// loadAllStatuses, so the on-count and chips are right immediately.
-    public func loadAllBriturnStatuses() async {
-        await refreshBriturnStatuses()
-    }
-
-    public func loadAllStatuses() async {
-        for device in devices where device.hasAddress {
-            await loadStatus(for: device)
-        }
-    }
-
     /// Fetch upstream capability metadata once; the bridge caches per device.
     /// General rule: briturn devices have NO DPS surface and their spec/codes
     /// stay nil forever — including them in this gate made the cloud-backed
@@ -2160,7 +1948,7 @@ public final class DeviceStore: ObservableObject {
     /// Mutates `dpsIntent` exactly as the pre-extraction code did: agreeing
     /// keys confirm and are dropped, contradicting keys keep their intent at
     /// the original timestamp, and an expired intent is discarded.
-    private func reconciled(_ id: String, _ decoded: [String: DPSValue]) -> [String: DPSValue] {
+    func reconciled(_ id: String, _ decoded: [String: DPSValue]) -> [String: DPSValue] {
         var resolved = decoded
         if let intent = dpsIntent[id],
            Date().timeIntervalSince(intent.at) < Self.dpsIntentGrace {
@@ -2187,7 +1975,7 @@ public final class DeviceStore: ObservableObject {
         return resolved
     }
 
-    private func applyStatus(
+    func applyStatus(
         _ id: String,
         decoded: [String: DPSValue],
         viaCloud: Bool = false

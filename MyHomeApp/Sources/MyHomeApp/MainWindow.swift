@@ -191,6 +191,10 @@ struct DashboardView: View {
         return showsOffline ? 2 : 1
     }
 
+    private func noteSwitch() {
+        store.dashboardDidSwitch(scope: selectedRoom ?? group.title, visible: filtered)
+    }
+
     private var selectedDevice: Device? {
         store.devices.first { $0.id == selectedID }
     }
@@ -293,11 +297,19 @@ struct DashboardView: View {
                 if !store.roster.isEmpty { break }
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
-            await store.loadAllStatuses()
-            // Briturn statuses otherwise wait for the first poll cycle
-            // (~10s), leaving the on-count and chips wrong at launch.
+            // Tuya and Briturn launch loads run side by side (each is itself a
+            // bounded concurrent sweep); Briturn statuses otherwise wait for
+            // the first poll cycle (~10s), leaving the on-count and chips wrong.
+            async let tuya: Void = store.loadAllStatuses()
             await store.loadAllBriturnStatuses()
+            await tuya
         }
+        // A switch renders the cached state at once (cards read the store
+        // synchronously, nothing is cleared); the store then re-reads only the
+        // visible devices whose last read is stale, in the background.
+        .onChange(of: group) { _ in noteSwitch() }
+        .onChange(of: selectedRoom) { _ in noteSwitch() }
+        .onChange(of: briturnGroupFilter) { _ in noteSwitch() }
         .onAppear {
             store.startPolling()
             // Same resilience on re-appear: if the ROSTER is empty because an

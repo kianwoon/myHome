@@ -44,13 +44,21 @@ public final class BridgeClient: @unchecked Sendable {
     private final class Pending {
         let id: Int
         let continuation: CheckedContinuation<[String: Any], Error>
+        /// Command name only (never ids/payload) for the slow-request log.
+        let cmd: String
+        let startedAt = DispatchTime.now()
         var finished = false
 
-        init(id: Int, _ continuation: CheckedContinuation<[String: Any], Error>) {
+        init(id: Int, cmd: String, _ continuation: CheckedContinuation<[String: Any], Error>) {
             self.id = id
+            self.cmd = cmd
             self.continuation = continuation
         }
     }
+
+    /// Requests at or above this wall time are logged as
+    /// `MyHome: bridge cmd=<cmd> took=<ms>` (category `store`).
+    public static let slowRequestLogThresholdMs: Double = 1500
 
     private init() {}
 
@@ -151,7 +159,7 @@ public final class BridgeClient: @unchecked Sendable {
                     stamped["reqId"] = reqId
                     var line = try JSONSerialization.data(withJSONObject: stamped)
                     line.append(0x0A)
-                    let entry = Pending(id: reqId, continuation)
+                    let entry = Pending(id: reqId, cmd: payload["cmd"] as? String ?? "?", continuation)
                     self.pending.append(entry)
                     try self.input?.write(contentsOf: line)
                     self.queue.asyncAfter(deadline: .now() + timeout) {
@@ -386,6 +394,15 @@ public final class BridgeClient: @unchecked Sendable {
         guard !entry.finished else { return }
         entry.finished = true
         pending.removeAll { $0 === entry }
+        let tookMs = Double(DispatchTime.now().uptimeNanoseconds - entry.startedAt.uptimeNanoseconds) / 1_000_000
+        if tookMs >= Self.slowRequestLogThresholdMs {
+            let outcome: String
+            switch result {
+            case .success(let reply): outcome = reply["ok"] as? Bool == true ? "ok" : "error"
+            case .failure: outcome = "failed"
+            }
+            AppLog.store.notice("MyHome: bridge cmd=\(entry.cmd, privacy: .public) took=\(Int(tookMs), privacy: .public)ms result=\(outcome, privacy: .public)")
+        }
         entry.continuation.resume(with: result)
     }
 
