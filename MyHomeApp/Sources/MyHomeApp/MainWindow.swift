@@ -521,10 +521,10 @@ struct DeviceCard: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(12)
+        // Height is the card's own content: no row-filling frame here. The
+        // grid's `.top` cell alignment keeps shorter cards flush with the
+        // tallest card in their row.
         .frame(maxWidth: .infinity, alignment: .topLeading)
-        // Fill the grid cell's height and top-align the content: every card in
-        // a row matches the row height, with any slack below the content.
-        .frame(maxHeight: .infinity, alignment: .topLeading)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(Color(nsColor: .controlBackgroundColor))
