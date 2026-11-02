@@ -45,8 +45,9 @@ public final class DeviceStore: ObservableObject {
 
     /// Bridge roster (Tuya + WiFi briturn devices).
     @Published public private(set) var roster: [Device] = []
-    private var bridgeRoster: [Device] = []
-    private var briturnCloudDevices: [String: BriturnCloudDevice] = [:]
+    var bridgeRoster: [Device] = []
+    var briturnCloudDevices: [String: BriturnCloudDevice] = [:]
+    private var isMirroringGroups = false
     private var warnedBridgeOnlyBriturn: Set<String> = []
     @Published public private(set) var briturnCloudSyncing = false
     @Published public private(set) var briturnCloudError: String?
@@ -60,7 +61,7 @@ public final class DeviceStore: ObservableObject {
     /// Every BLE light ever discovered, persisted. BLE bulbs advertise in
     /// bursts — a BLE-only light must NOT vanish from the dashboard just
     /// because its current advert window closed.
-    private var bleSeen: [String: BLELight] = [:]
+    var bleSeen: [String: BLELight] = [:]
     private static let bleSeenStorageKey = "briturn.bleSeen"
     /// Uniform view: roster + BLE-only lights. The dedupe is DERIVED here.
     /// Identity rule: a BLE light belongs to a roster entry when the
@@ -220,6 +221,65 @@ public final class DeviceStore: ObservableObject {
             return Device(id: device.id, name: device.name, ip: device.ip, version: device.version,
                           category: device.category, group: group, online: device.online, room: device.room)
         }
+        reattachBLETransports()
+    }
+
+    /// Attaches the BLE transport (key + fallback flag) to the roster entry a
+    /// BLE light belongs to. Single implementation for discovery, state
+    /// updates and roster rebuilds.
+    @discardableResult
+    private func attachBLE(_ light: BLELight) -> Bool {
+        guard let tuyaID = matchRosterID(for: light) else { return false }
+        bleFallbackIDs.insert(tuyaID)
+        bleKeysByDeviceID[tuyaID] = light.id
+        return true
+    }
+
+    /// The roster can gain entries after BLE discovery (cloud sync adds a
+    /// light with no bridge entry): re-run the match so those cards get their
+    /// BLE transport.
+    func reattachBLETransports() {
+        for light in bleSeen.values { attachBLE(light) }
+        for light in bleLights { attachBLE(light) }
+    }
+
+    /// Sends one `briturngroup` request and, on success, mirrors it into the
+    /// local bridge roster. Failures are logged; the caller retries next cycle.
+    @discardableResult
+    private func pushBridgeGroup(id: String, group: String) async -> Bool {
+        do {
+            let reply = try await bridge.request(["cmd": "briturngroup", "id": id, "group": group], timeout: 10)
+            guard reply["ok"] as? Bool == true else {
+                NSLog("MyHome: bridge refused group '%@' for %@", group, id)
+                return false
+            }
+        } catch {
+            NSLog("MyHome: bridge group push for %@ failed: %@", id, String(describing: error))
+            return false
+        }
+        guard let index = bridgeRoster.firstIndex(where: { $0.id == id }) else { return true }
+        let old = bridgeRoster[index]
+        bridgeRoster[index] = Device(id: old.id, name: old.name, ip: old.ip, version: old.version,
+                                     category: old.category, group: group, online: old.online,
+                                     spec: old.spec, codes: old.codes, room: old.room)
+        return true
+    }
+
+    /// Cloud is the base: the bridge resolves group control by NAME from its
+    /// own devices.json, so every bridge-known Briturn light is brought to its
+    /// cloud group name. Only differing lights are pushed; lights without a
+    /// cloud group are left alone.
+    func mirrorCloudGroupsToBridge() async {
+        guard !isMirroringGroups, !briturnCloudDevices.isEmpty else { return }
+        isMirroringGroups = true
+        defer { isMirroringGroups = false }
+        var changed = false
+        for device in bridgeRoster where device.category.lowercased() == "briturn" {
+            guard let cloudName = briturnCloudDevices[device.id]?.groupName, !cloudName.isEmpty,
+                  (device.group ?? "") != cloudName else { continue }
+            if await pushBridgeGroup(id: device.id, group: cloudName) { changed = true }
+        }
+        if changed { rebuildBriturnRoster() }
     }
 
     public func isBriturnCloudAvailable(for device: Device) -> Bool {
@@ -246,12 +306,19 @@ public final class DeviceStore: ObservableObject {
             rebuildBriturnRoster()
             lastBriturnCloudSync = Date()
             briturnCloudError = nil
+            await mirrorCloudGroupsToBridge()
             await writeBriturnGroupsProbe()
             await refreshBriturnCloudStates(for: roster.filter { briturnCloudDevices[$0.id] != nil })
         } catch {
             briturnCloudError = (error as? BriturnCloudError)?.localizedDescription ?? "Could not sync Briturn Cloud."
         }
         return briturnCloudDeviceCount
+    }
+
+    /// The diagnostic probe makes ~8 extra cloud calls, so it only runs when this env var is "1".
+    static let briturnProbeEnvVar = "MYHOME_BRITURN_PROBE"
+    static func briturnProbeEnabled(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+        environment[briturnProbeEnvVar] == "1"
     }
 
     static let briturnProbeFileName = "briturn-groups-probe.json"
@@ -271,7 +338,7 @@ public final class DeviceStore: ObservableObject {
     /// Read-only diagnostic: dumps the raw group/room replies once per launch so the
     /// real cloud shape can be inspected. Failures are logged and never break sync.
     private func writeBriturnGroupsProbe() async {
-        guard !briturnProbeDone else { return }
+        guard Self.briturnProbeEnabled(), !briturnProbeDone else { return }
         briturnProbeDone = true
         do {
             let raw = try await briturnCloud.probeGroups()
@@ -348,9 +415,9 @@ public final class DeviceStore: ObservableObject {
     /// Roster device ids (briturn-<mac>) that BLE has confirmed in range.
     /// These are DUAL-MODE lights: BLE enriches the WiFi entry as a fallback
     /// transport — it never creates a duplicate card.
-    private var bleFallbackIDs: Set<String> = []
+    var bleFallbackIDs: Set<String> = []
     /// bleKey ("ble-<mac>") per roster id, for addressing BLEManager.
-    private var bleKeysByDeviceID: [String: String] = [:]
+    var bleKeysByDeviceID: [String: String] = [:]
     /// Group assignment for BLE-only lights. The roster can't hold these (no
     /// bridge entry), so the app persists them locally — same feature surface,
     /// different storage.
@@ -390,12 +457,7 @@ public final class DeviceStore: ObservableObject {
                 if changed { self.persistBLESeen() }
                 // Side effects only — the dedupe itself is derived in
                 // `devices` via matchRosterID.
-                for light in lights {
-                    if let tuyaID = self.matchRosterID(for: light) {
-                        self.bleFallbackIDs.insert(tuyaID)
-                        self.bleKeysByDeviceID[tuyaID] = light.id
-                    }
-                }
+                for light in lights { self.attachBLE(light) }
             }
             .store(in: &cancellables)
         ble.$states
@@ -409,11 +471,7 @@ public final class DeviceStore: ObservableObject {
                     // dual-mode lights the WiFi poll is authoritative and the
                     // advert colour bytes decoded wrong on this firmware —
                     // painting them made launch colours go wild.
-                    if let tuyaID = self.matchRosterID(for: light) {
-                        self.bleFallbackIDs.insert(tuyaID)
-                        self.bleKeysByDeviceID[tuyaID] = bleID
-                        continue
-                    }
+                    if self.attachBLE(light) { continue }
                     applyBriturnWireState(bleID, state)
                 }
             }
@@ -614,6 +672,7 @@ public final class DeviceStore: ObservableObject {
             bridgeRoster = decoded
             rebuildBriturnRoster()
             await adoptBLEGroups()
+            await mirrorCloudGroupsToBridge()
             // Deliberately no isOn default: unknown power stays indeterminate
             // until status arrives.
             errorText = nil
@@ -635,13 +694,7 @@ public final class DeviceStore: ObservableObject {
                   let rosterID = matchRosterID(for: light),
                   let index = bridgeRoster.firstIndex(where: { $0.id == rosterID }) else { continue }
             if (bridgeRoster[index].group ?? "").isEmpty {
-                guard let reply = try? await bridge.request(
-                    ["cmd": "briturngroup", "id": rosterID, "group": group], timeout: 10),
-                      reply["ok"] as? Bool == true else { continue }
-                let old = bridgeRoster[index]
-                bridgeRoster[index] = Device(id: old.id, name: old.name, ip: old.ip, version: old.version,
-                                       category: old.category, group: group, online: old.online,
-                                       spec: old.spec, codes: old.codes, room: old.room)
+                guard await pushBridgeGroup(id: rosterID, group: group) else { continue }
             }
             groups.removeValue(forKey: light.id)
         }
