@@ -51,6 +51,7 @@ public final class DeviceStore: ObservableObject {
     @Published public private(set) var briturnCloudError: String?
     @Published public private(set) var briturnCloudDeviceCount = 0
     private var lastBriturnCloudSync: Date?
+    private var briturnProbeDone = false
     private let briturnCloud: BriturnCloudClient
 
     /// Raw BLE discoveries currently being heard (from BLEManager).
@@ -232,11 +233,44 @@ public final class DeviceStore: ObservableObject {
             rebuildBriturnRoster()
             lastBriturnCloudSync = Date()
             briturnCloudError = nil
+            await writeBriturnGroupsProbe()
             await refreshBriturnCloudStates(for: roster.filter { briturnCloudDevices[$0.id] != nil })
         } catch {
             briturnCloudError = (error as? BriturnCloudError)?.localizedDescription ?? "Could not sync Briturn Cloud."
         }
         return briturnCloudDeviceCount
+    }
+
+    static let briturnProbeFileName = "briturn-groups-probe.json"
+    nonisolated private static let briturnProbeSensitiveKey = try! NSRegularExpression(pattern: "token|password|secret|sid|session|email", options: .caseInsensitive)
+
+    /// Recursively drops dictionary keys that could carry credentials or identity.
+    nonisolated static func strippingSensitiveKeys(_ value: Any) -> Any {
+        if let dict = value as? [String: Any] {
+            return dict.filter { key, _ in
+                briturnProbeSensitiveKey.firstMatch(in: key, range: NSRange(key.startIndex..., in: key)) == nil
+            }.mapValues(strippingSensitiveKeys)
+        }
+        if let array = value as? [Any] { return array.map(strippingSensitiveKeys) }
+        return value
+    }
+
+    /// Read-only diagnostic: dumps the raw group/room replies once per launch so the
+    /// real cloud shape can be inspected. Failures are logged and never break sync.
+    private func writeBriturnGroupsProbe() async {
+        guard !briturnProbeDone else { return }
+        briturnProbeDone = true
+        do {
+            let raw = try await briturnCloud.probeGroups()
+            guard !raw.isEmpty, let directory = BridgeClient.bundledDataDirectory() else { return }
+            let data = try JSONSerialization.data(withJSONObject: Self.strippingSensitiveKeys(raw),
+                                                  options: [.prettyPrinted, .sortedKeys])
+            let url = directory.appendingPathComponent(Self.briturnProbeFileName)
+            try data.write(to: url, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        } catch {
+            NSLog("Briturn groups probe failed: %@", String(describing: error))
+        }
     }
 
     private func refreshBriturnCloudStates(for devices: [Device]) async {

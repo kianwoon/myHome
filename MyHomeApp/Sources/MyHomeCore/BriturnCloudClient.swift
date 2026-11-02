@@ -280,6 +280,26 @@ public actor BriturnCloudClient {
         return devices.values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
+    /// Read-only discovery of how Briturn models groups/rooms: raw replies of the
+    /// group and home endpoints plus one full device entry, keyed by endpoint.
+    public func probeGroups() async throws -> [String: Any] {
+        await acquireSessionOperation()
+        defer { releaseSessionOperation() }
+        guard try storage.load() != nil else { return [:] }
+        let homes = try await authenticatedPost(path: "/app/home/list", body: [:])
+        guard let list = homes["data"] as? [[String: Any]],
+              let homeID = list.lazy.compactMap({ BriturnCloudDevice.integer($0["homeId"]) }).first else {
+            throw BriturnCloudError.invalidResponse
+        }
+        var result: [String: Any] = [:]
+        for path in ["/app/device/group/list", "/app/home/get"] {
+            result[path] = try await authenticatedPost(path: path, body: ["homeId": homeID])
+        }
+        let devices = try await authenticatedPost(path: "/app/device/list", body: ["homeId": homeID])
+        if let first = (devices["data"] as? [[String: Any]])?.first { result["/app/device/list (first entry)"] = first }
+        return result
+    }
+
     public func queryStates(devices: [BriturnCloudDevice]) async throws -> [String: DeviceStore.BriturnState] {
         await acquireSessionOperation()
         defer { releaseSessionOperation() }

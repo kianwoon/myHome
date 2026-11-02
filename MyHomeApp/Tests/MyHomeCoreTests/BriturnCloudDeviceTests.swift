@@ -18,6 +18,16 @@ final class BriturnCloudDeviceTests: XCTestCase {
     private var config: (Int, [String: Any]) { (200, ["code": 0, "data": ["time": 1700000000]]) }
     private func reply(_ data: Any) -> (Int, [String: Any]) { (200, ["code": 0, "data": data]) }
 
+    func testProbeStripsSensitiveKeysRecursively() throws {
+        let raw: [String: Any] = ["data": [["groupId": 1, "userToken": "x", "nested": ["Email": "a", "roomName": "Den"]]],
+                                  "sessionId": "s", "PASSWORD": "p", "clientSecret": "c"]
+        let clean = DeviceStore.strippingSensitiveKeys(raw) as? [String: Any]
+        XCTAssertEqual(Set(clean?.keys.map { $0 } ?? []), ["data"])
+        let entry = (clean?["data"] as? [[String: Any]])?.first
+        XCTAssertEqual(Set(entry?.keys.map { $0 } ?? []), ["groupId", "nested"])
+        XCTAssertEqual((entry?["nested"] as? [String: Any])?.keys.sorted(), ["roomName"])
+    }
+
     func testMACMergeKeepsLocalTransportAndGroupsWithoutDuplicates() throws {
         let cloud = try BriturnCloudDevice(json: item(), homeID: 7)
         let local = Device(id: "briturn-aabbccddeeff", name: "Old", ip: "192.0.2.10", version: "1", category: "briturn", group: "Study", online: true)

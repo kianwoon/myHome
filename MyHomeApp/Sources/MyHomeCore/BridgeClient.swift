@@ -120,7 +120,7 @@ public final class BridgeClient: @unchecked Sendable {
     /// Writable directory the bridge keeps devices.json/tinytuya.json in when
     /// it runs from a bundle. The bundle is read-only and relocatable, so
     /// config belongs in Application Support; an explicit override wins.
-    private static func bundledDataDirectory() -> URL? {
+    static func bundledDataDirectory() -> URL? {
         let manager = FileManager.default
         if let override = ProcessInfo.processInfo.environment["MYHOME_DATA_DIR"], !override.isEmpty {
             return URL(fileURLWithPath: override, isDirectory: true)
