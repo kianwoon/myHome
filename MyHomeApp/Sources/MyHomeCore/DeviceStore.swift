@@ -44,9 +44,13 @@ public final class DeviceStore: ObservableObject {
     public static let cloudStatusPollCycles = cloudSyncInterval
 
     /// Bridge roster (Tuya + WiFi briturn devices).
-    @Published public private(set) var roster: [Device] = []
+    @Published public private(set) var roster: [Device] = [] {
+        didSet { invalidateDerivedCaches(roster: true) }
+    }
     var bridgeRoster: [Device] = []
-    var briturnCloudDevices: [String: BriturnCloudDevice] = [:]
+    var briturnCloudDevices: [String: BriturnCloudDevice] = [:] {
+        didSet { invalidateDerivedCaches() }
+    }
     private var isMirroringGroups = false
     private var warnedBridgeOnlyBriturn: Set<String> = []
     @Published public private(set) var briturnCloudSyncing = false
@@ -57,11 +61,15 @@ public final class DeviceStore: ObservableObject {
     private let briturnCloud: BriturnCloudClient
 
     /// Raw BLE discoveries currently being heard (from BLEManager).
-    @Published public private(set) var bleLights: [BLELight] = []
+    @Published public private(set) var bleLights: [BLELight] = [] {
+        didSet { invalidateDerivedCaches() }
+    }
     /// Every BLE light ever discovered, persisted. BLE bulbs advertise in
     /// bursts — a BLE-only light must NOT vanish from the dashboard just
     /// because its current advert window closed.
-    var bleSeen: [String: BLELight] = [:]
+    var bleSeen: [String: BLELight] = [:] {
+        didSet { invalidateDerivedCaches() }
+    }
     private static let bleSeenStorageKey = "briturn.bleSeen"
     /// Uniform view: roster + BLE-only lights. The dedupe is DERIVED here.
     /// Identity rule: a BLE light belongs to a roster entry when the
@@ -72,6 +80,15 @@ public final class DeviceStore: ObservableObject {
     public var devices: [Device] {
         // Cloud is the base once synced: BLE is only a transport attached to cloud lights.
         guard briturnCloudDevices.isEmpty else { return roster }
+        // Read by every dashboard body (filters, counts, header): memoized,
+        // rebuilt only when an input changes (see invalidateDerivedCaches).
+        if let cached = derivedCaches.devices { return cached }
+        let built = buildDevices()
+        derivedCaches.devices = built
+        return built
+    }
+
+    private func buildDevices() -> [Device] {
         let bleOnlyDevices = bleSeen.values.sorted { $0.name < $1.name }.compactMap { light -> Device? in
             guard matchRosterID(for: light) == nil else { return nil }
             guard light.id.hasPrefix("ble-") else { return nil }
@@ -111,6 +128,8 @@ public final class DeviceStore: ObservableObject {
     func cloudOnlineForTest(_ id: String, _ value: Bool?) { cloudOnline[id] = value }
     func setRosterForTest(_ devices: [Device]) { roster = devices }
     private var loggedAmbiguousBLE: Set<String> = []
+    /// Memoized per-body derivations (see DeviceStore+DerivedCache.swift).
+    var derivedCaches = DerivedCaches()
     private var loggedReachability: [String: Reachability] = [:]
 
     @Published public private(set) var isOn: [String: Bool] = [:]
@@ -245,12 +264,12 @@ public final class DeviceStore: ObservableObject {
     @discardableResult
     private func attachBLE(_ light: BLELight) -> Bool {
         guard let tuyaID = matchRosterID(for: light) else { return false }
-        bleFallbackIDs.insert(tuyaID)
+        if !bleFallbackIDs.contains(tuyaID) { bleFallbackIDs.insert(tuyaID) }
         // A name suffix can match several peripherals (re-pairing, duplicates):
-        // keep every UUID id, resolve the live one at send time.
-        var keys = bleKeysByDeviceID[tuyaID] ?? []
-        if !keys.contains(light.id) { keys.append(light.id) }
-        bleKeysByDeviceID[tuyaID] = keys
+        // keep every UUID id, resolve the live one at send time. Unchanged
+        // keys are not re-assigned (that would drop the derived caches).
+        let keys = bleKeysByDeviceID[tuyaID] ?? []
+        if !keys.contains(light.id) { bleKeysByDeviceID[tuyaID] = keys + [light.id] }
         return true
     }
 
@@ -354,7 +373,7 @@ public final class DeviceStore: ObservableObject {
             for id in oldIDs.subtracting(briturnCloudDevices.keys) {
                 cloudOnline[id] = nil
                 statusViaCloud[id] = nil
-                if !bridgeRoster.contains(where: { $0.id == id }) { briturnStatus[id] = nil; statusErrors[id] = nil }
+                if !bridgeRoster.contains(where: { $0.id == id }) { setBriturnStatus(id, nil); statusErrors[id] = nil }
             }
             for item in devices { cloudOnline[item.canonicalID] = item.online }
             rebuildBriturnRoster()
@@ -478,15 +497,25 @@ public final class DeviceStore: ObservableObject {
     var bleFallbackIDs: Set<String> = []
     /// Test seams (internal): replace the cloud control call / the BLE send.
     var briturnCloudControlHook: (([BriturnCloudDevice], Bool?) async throws -> [String: BriturnState])?
-    var briturnBLESendHook: ((String, Bool?) -> Void)?
+    var briturnBLESendHook: ((String, Bool?) -> Void)? {
+        didSet { invalidateDerivedCaches() }
+    }
     /// Candidate bleKeys ("ble-<peripheral uuid>") per roster id, for addressing BLEManager.
-    var bleKeysByDeviceID: [String: [String]] = [:]
+    var bleKeysByDeviceID: [String: [String]] = [:] {
+        didSet { invalidateDerivedCaches() }
+    }
     /// Test seam (internal): overrides whether a BLE key has a live peripheral.
-    var bleLiveHook: ((String) -> Bool)?
+    var bleLiveHook: ((String) -> Bool)? {
+        didSet { invalidateDerivedCaches() }
+    }
+    /// Test seam (internal): overrides when a BLE key's last advert was heard.
+    var bleLastAdvertHook: ((String) -> Date?)?
     /// Group assignment for BLE-only lights. The roster can't hold these (no
     /// bridge entry), so the app persists them locally — same feature surface,
     /// different storage.
-    @Published public private(set) var bleGroups: [String: String] = [:]
+    @Published public private(set) var bleGroups: [String: String] = [:] {
+        didSet { invalidateDerivedCaches() }
+    }
     private static let bleGroupsStorageKey = "briturn.bleGroups"
     /// Last user-chosen colour per group, persisted. The chip shows THIS at
     /// launch — bulbs get swept by polls after, and their leftover colours
@@ -524,6 +553,14 @@ public final class DeviceStore: ObservableObject {
     /// True when a candidate peripheral for this light was discovered THIS run
     /// (`isBLEAvailable` also counts persisted history).
     public func isBLELive(for device: Device) -> Bool {
+        // O(1) after the first call: cards ask this on every body evaluation.
+        if let cached = derivedCaches.bleLive[device.id] { return cached }
+        let live = computeBLELive(for: device)
+        derivedCaches.bleLive[device.id] = live
+        return live
+    }
+
+    private func computeBLELive(for device: Device) -> Bool {
         if let key = bleKey(for: device), isBLEKeyLive(key) { return true }
         // Attach timing must not matter: re-derive the match from the live adverts.
         guard !device.isBLE else { return false }
@@ -547,7 +584,7 @@ public final class DeviceStore: ObservableObject {
             .receive(on: RunLoop.main)
             .sink { [weak self] lights in
                 guard let self else { return }
-                self.bleLights = lights
+                if self.bleLights != lights { self.bleLights = lights }
                 // Cumulative memory: once seen, a BLE light stays on the
                 // dashboard (persisted across launches) even when its advert
                 // window closes.
@@ -562,28 +599,16 @@ public final class DeviceStore: ObservableObject {
                 for light in lights { self.attachBLE(light) }
             }
             .store(in: &cancellables)
+        // BLEManager publishes states only when a decoded value changed
+        // (coalesced, <= 2 Hz); the tick re-reconciles pending user intents
+        // so a lost command still self-corrects while adverts keep coming.
         ble.$states
             .receive(on: RunLoop.main)
-            .sink { [weak self] states in
-                guard let self else { return }
-                for (bleID, state) in states {
-                    guard let light = self.bleLights.first(where: { $0.id == bleID }) ?? self.bleSeen.values.first(where: { $0.id == bleID }) else { continue }
-                    // General rule: advertisement-decoded state is ONLY used
-                    // for lights whose sole transport is Bluetooth. For
-                    // dual-mode lights the WiFi poll is authoritative and the
-                    // advert colour bytes decoded wrong on this firmware —
-                    // painting them made launch colours go wild.
-                    if self.attachBLE(light) {
-                        // Dual-mode: only fills a light with NO cloud/WiFi
-                        // status yet; never overrides an authoritative read.
-                        if let rosterID = self.matchRosterID(for: light) {
-                            self.applyBLEDerivedState(rosterID, state)
-                        }
-                        continue
-                    }
-                    self.applyBLEDerivedState(bleID, state)
-                }
-            }
+            .sink { [weak self] states in self?.reconcileBLEStates(states, pendingIntentsOnly: false) }
+            .store(in: &cancellables)
+        ble.advertTick
+            .receive(on: RunLoop.main)
+            .sink { [weak self] in self?.reconcileBLEStates(ble.states, pendingIntentsOnly: true) }
             .store(in: &cancellables)
         // Adverts stop when a light leaves range, so expiry cannot rely on the
         // states sink firing: sweep on the BLE summary cadence.
@@ -749,7 +774,7 @@ public final class DeviceStore: ObservableObject {
     public func state(for device: Device) -> DeviceState {
         DeviceState(
             dps: dpsById[device.id] ?? [:],
-            capabilities: device.capabilities,
+            capabilities: capabilities(for: device),
             codes: device.codes ?? [:]
         )
     }
@@ -978,6 +1003,8 @@ public final class DeviceStore: ObservableObject {
     /// Roster ids whose `briturnStatus` came from Bluetooth advertisements
     /// (not WiFi/cloud), with the time it was last refreshed.
     private var bleDerivedStatus: [String: Date] = [:]
+    /// BLE id ("ble-<uuid>") whose advert last painted each BLE-derived id.
+    private var bleDerivedSource: [String: String] = [:]
     /// A BLE-derived reading older than this is unknown again: twice the BLE
     /// summary interval, since live adverts refresh it far more often.
     static let bleStateMaxAge: TimeInterval = 2 * BLEManager.summaryInterval
@@ -985,19 +1012,59 @@ public final class DeviceStore: ObservableObject {
     /// Paints an advertisement-decoded state, but only where no WiFi/cloud
     /// reading exists (or the current reading is itself BLE-derived), through
     /// the same intent-aware path as every other wire state.
-    func applyBLEDerivedState(_ id: String, _ state: BriturnState, now: Date = Date()) {
+    func applyBLEDerivedState(_ id: String, _ state: BriturnState, now: Date = Date(), source: String? = nil) {
         guard briturnStatus[id] == nil || bleDerivedStatus[id] != nil else { return }
         applyBriturnWireState(id, state)
         bleDerivedStatus[id] = now
+        if let source { bleDerivedSource[id] = source }
+    }
+
+    /// Paints BLE advert states. `pendingIntentsOnly` (the advert tick) only
+    /// revisits ids with an unconfirmed user intent; nothing else can change
+    /// when the decoded states themselves did not.
+    func reconcileBLEStates(_ states: [String: BriturnState], pendingIntentsOnly: Bool) {
+        if pendingIntentsOnly && briturnIntent.isEmpty { return }
+        for (bleID, state) in states {
+            guard let light = bleLights.first(where: { $0.id == bleID }) ?? bleSeen[bleID] else { continue }
+            // General rule: advertisement-decoded state is ONLY used
+            // for lights whose sole transport is Bluetooth. For
+            // dual-mode lights the WiFi poll is authoritative and the
+            // advert colour bytes decoded wrong on this firmware —
+            // painting them made launch colours go wild.
+            let target: String
+            if attachBLE(light) {
+                // Dual-mode: only fills a light with NO cloud/WiFi
+                // status yet; never overrides an authoritative read.
+                guard let rosterID = matchRosterID(for: light) else { continue }
+                target = rosterID
+            } else {
+                target = bleID
+            }
+            if pendingIntentsOnly && briturnIntent[target] == nil { continue }
+            applyBLEDerivedState(target, state, source: bleID)
+        }
     }
 
     /// Drops BLE-derived readings that have not been refreshed recently so a
     /// light that left range shows unknown, not a stale on/off or brightness.
+    /// Freshness is the later of the last paint and the last advert heard
+    /// from the feeding peripheral (unchanged adverts are not republished).
     func pruneStaleBLEState(now: Date = Date()) {
-        for (id, at) in bleDerivedStatus where now.timeIntervalSince(at) > Self.bleStateMaxAge {
+        for (id, at) in bleDerivedStatus {
+            let heard = bleDerivedSource[id].flatMap { bleLastAdvert($0) }
+            let fresh = max(at, heard ?? at)
+            guard now.timeIntervalSince(fresh) > Self.bleStateMaxAge else { continue }
             bleDerivedStatus[id] = nil
-            briturnStatus[id] = nil
+            bleDerivedSource[id] = nil
+            setBriturnStatus(id, nil)
         }
+    }
+
+    /// The single write path for `briturnStatus`: equal values (including
+    /// nil over an absent key) never fire objectWillChange.
+    func setBriturnStatus(_ id: String, _ state: BriturnState?) {
+        guard briturnStatus[id] != state else { return }
+        briturnStatus[id] = state
     }
 
     /// Paints a wire-read state unless it fights a fresh user intent, judged
@@ -1005,13 +1072,13 @@ public final class DeviceStore: ObservableObject {
     private func applyBriturnWireState(_ id: String, _ state: BriturnState, authoritative: Bool = false) {
         bleDerivedStatus[id] = nil
         guard var intent = briturnIntent[id] else {
-            briturnStatus[id] = state
+            setBriturnStatus(id, state)
             return
         }
         guard Date().timeIntervalSince(intent.at) < Self.briturnIntentGrace else {
             // Grace expired: the wire wins for every channel.
             briturnIntent.removeValue(forKey: id)
-            briturnStatus[id] = state
+            setBriturnStatus(id, state)
             return
         }
         var contradicts = false
@@ -1045,7 +1112,7 @@ public final class DeviceStore: ObservableObject {
         // Confirmed on every touched channel, or the authoritative readback
         // says the command never took: the wire is the truth.
         briturnIntent.removeValue(forKey: id)
-        briturnStatus[id] = state
+        setBriturnStatus(id, state)
     }
 
     /// The intent snapshot for what a setter just painted: only the channels
@@ -1168,7 +1235,7 @@ public final class DeviceStore: ObservableObject {
             b: paintedWhite ? 0 : (color?.blue ?? prev?.b ?? 255),
             w: paintedW ?? prev?.w ?? 0
         )
-        briturnStatus[device.id] = painted
+        setBriturnStatus(device.id, painted)
         // Defend exactly what was painted, for every channel the user touched
         // (power, brightness/white, colour) — not just power.
         // CCT readback bytes vary with the temperature, so a CCT set defends
@@ -1229,7 +1296,7 @@ public final class DeviceStore: ObservableObject {
         let message = statusErrors[device.id] ?? "Could not control the light through Briturn Cloud."
         statusErrors[device.id] = message + " (Bluetooth not in range for this light.)"
         briturnIntent.removeValue(forKey: device.id)
-        briturnStatus[device.id] = prev
+        setBriturnStatus(device.id, prev)
     }
 
     /// General rule: when the WiFi transport fails for a dual-mode light that
@@ -1252,13 +1319,13 @@ public final class DeviceStore: ObservableObject {
             } else {
                 statusErrors[device.id] = bleUnreachableReason(for: device)
                 briturnIntent.removeValue(forKey: device.id)
-                briturnStatus[device.id] = prev
+                setBriturnStatus(device.id, prev)
             }
             return
         }
         statusErrors[device.id] = message + " (Bluetooth not in range for this light.)"
         briturnIntent.removeValue(forKey: device.id)
-        briturnStatus[device.id] = prev
+        setBriturnStatus(device.id, prev)
     }
 
     /// Transport availability for a briturn device: WiFi (has a routable IP)
@@ -1295,7 +1362,7 @@ public final class DeviceStore: ObservableObject {
                              white: white, cct: cct) else {
             statusErrors[device.id] = bleUnreachableReason(for: device)
             briturnIntent.removeValue(forKey: device.id)
-            briturnStatus[device.id] = prev
+            setBriturnStatus(device.id, prev)
             return
         }
 
@@ -1313,7 +1380,7 @@ public final class DeviceStore: ObservableObject {
             b: paintedWhite ? 0 : (color?.blue ?? prev?.b ?? 255),
             w: paintedW ?? prev?.w ?? 0
         )
-        briturnStatus[device.id] = painted
+        setBriturnStatus(device.id, painted)
         // Same intent rule as the WiFi path: a CCT set defends power only.
         briturnIntent[device.id] = briturnIntentSnapshot(
             on: on, color: color, brightness: cct != nil ? nil : brightness,
@@ -1511,7 +1578,7 @@ public final class DeviceStore: ObservableObject {
                 r: r, g: g, b: b,
                 w: paintedW ?? prev?.w ?? 0
             )
-            briturnStatus[id] = painted
+            setBriturnStatus(id, painted)
             // Each member defends its OWN painted channels: colour-only sets
             // defend colour, white-mode brightness defends w, and every
             // member keeps its individual power display untouched.
