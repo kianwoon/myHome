@@ -28,7 +28,10 @@ struct EqualHeightCardGrid: Layout {
 
     private func metrics(width: CGFloat, subviews: Subviews) -> Metrics {
         let count = subviews.count
-        let columns = max(1, min(count, Int((width + spacing) / (minimumColumnWidth + spacing))))
+        // Column count follows the width only (as an adaptive grid does), so
+        // a sparse section keeps normal-width cards instead of stretching.
+        let width = width.isFinite ? width : minimumColumnWidth
+        let columns = max(1, Int((width + spacing) / (minimumColumnWidth + spacing)))
         let columnWidth = max(0, (width - spacing * CGFloat(columns - 1)) / CGFloat(columns))
         // Natural height: unspecified height proposal, so a card's
         // `maxHeight: .infinity` frame reports its content height here.
@@ -42,7 +45,8 @@ struct EqualHeightCardGrid: Layout {
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         guard !subviews.isEmpty else { return .zero }
         // No width offered (ideal-size query): lay out as a single column.
-        let width = proposal.width ?? minimumColumnWidth
+        let offered = proposal.width ?? minimumColumnWidth
+        let width = offered.isFinite ? offered : minimumColumnWidth
         let m = metrics(width: width, subviews: subviews)
         let height = CGFloat(m.rows) * m.rowHeight + spacing * CGFloat(max(0, m.rows - 1))
         return CGSize(width: width, height: height)
