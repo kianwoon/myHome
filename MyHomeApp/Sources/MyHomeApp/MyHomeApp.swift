@@ -26,6 +26,7 @@ struct MyHomeApp: App {
                 // click-free repro path; this diagnostic opens the dashboard
                 // on launch when MYHOME_AUTOOPEN=1 and is inert otherwise.
                 AutoOpenTrigger()
+                LaunchWarmup(store: store)
             }
         }
         .menuBarExtraStyle(.window)
@@ -55,6 +56,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         BridgeClient.shared.stop()
+    }
+}
+
+/// Loads the device list and statuses as soon as the app launches. The menu-bar
+/// label is built at launch, whereas the panel and dashboard contents only
+/// exist once opened, so without this the bridge and device data stay idle
+/// until the user clicks. Polling still starts and stops with the views.
+struct LaunchWarmup: View {
+    @ObservedObject var store: DeviceStore
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .task {
+                await store.refresh()
+                await store.loadAllStatuses()
+            }
     }
 }
 
