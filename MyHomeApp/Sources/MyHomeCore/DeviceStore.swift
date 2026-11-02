@@ -277,7 +277,8 @@ public final class DeviceStore: ObservableObject {
     /// light with no bridge entry): re-run the match so those cards get their
     /// BLE transport.
     func reattachBLETransports() {
-        for light in bleSeen.values { attachBLE(light) }
+        // Sorted: shared-suffix claims must not depend on dictionary order.
+        for light in bleSeen.values.sorted(by: { $0.id < $1.id }) { attachBLE(light) }
         for light in bleLights { attachBLE(light) }
     }
 
