@@ -62,14 +62,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 /// Loads the device list and statuses as soon as the app launches. The menu-bar
 /// label is built at launch, whereas the panel and dashboard contents only
 /// exist once opened, so without this the bridge and device data stay idle
-/// until the user clicks. Polling still starts and stops with the views.
+/// until the user clicks. Polling still starts and stops with the views. Also
+/// opens the dashboard so a launch from /Applications visibly starts the app.
 struct LaunchWarmup: View {
     @ObservedObject var store: DeviceStore
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         Color.clear
             .frame(width: 0, height: 0)
             .task {
+                openWindow(id: "dashboard")
+                NSApp.activate(ignoringOtherApps: true)
                 await store.refresh()
                 await store.loadAllStatuses()
             }
