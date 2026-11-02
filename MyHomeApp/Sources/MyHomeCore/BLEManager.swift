@@ -100,7 +100,7 @@ public final class BLEManager: NSObject, ObservableObject {
     }
 
     private func checksummed(_ command: [UInt8]) -> [UInt8] {
-        command + [command.reduce(0, +) & 0xFF]
+        command + [command.reduce(0, &+)]
     }
 
     private func clamped(_ v: Int) -> UInt8 { UInt8(min(max(v, 0), 255)) }
@@ -112,7 +112,7 @@ public final class BLEManager: NSObject, ObservableObject {
         // Re-verified on IOTWFE6D (fw 10): on -> LAN readback power 0x23.
         let p: UInt8 = on ? 0x23 : 0x24
         var payload: [UInt8] = [0x3B, p, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x32, 0x00, 0x00]
-        payload.append(payload.reduce(0, +) & 0xFF)
+        payload.append(payload.reduce(0, &+))
         send(id: id, op: "power", command: payload)
     }
 
