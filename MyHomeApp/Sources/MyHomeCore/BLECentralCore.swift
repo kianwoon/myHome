@@ -526,6 +526,8 @@ extension BLECentralCore: CBPeripheralDelegate {
         // Keyed by peripheral.identifier, like every other GATT callback.
         let id = label(peripheral)
         guard peripherals[id] != nil else { return }
+        let now = Date()
+        locked { sharedLastAdvert[id] = now }
         setState(id, DeviceStore.BriturnState(
             on: payload[2] == 0x23,
             rawPower: Int(payload[2]),
