@@ -92,3 +92,27 @@ final class DeviceStoreOfflineBLETests: XCTestCase {
         XCTAssertEqual(c.ble, ["ble-" + mac])
     }
 }
+
+@MainActor
+final class DeviceStoreControllableTests: XCTestCase {
+    private func light(ip: String = "") -> Device {
+        Device(id: "x", name: "Lamp", ip: ip, version: "3.3", category: "briturn", group: "G", online: false)
+    }
+    private func store() -> DeviceStore {
+        DeviceStore(bridge: NullBridge(), defaults: UserDefaults(suiteName: "Controllable-\(UUID())")!)
+    }
+
+    func testNoPathIsNotControllable() {
+        XCTAssertFalse(store().isControllable(for: light()))
+    }
+
+    func testBluetoothFallbackIsControllable() {
+        let s = store()
+        s.bleFallbackIDs = ["x"]
+        XCTAssertTrue(s.isControllable(for: light()))
+    }
+
+    func testAddressIsControllable() {
+        XCTAssertTrue(store().isControllable(for: light(ip: "192.168.1.5")))
+    }
+}

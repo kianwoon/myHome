@@ -180,7 +180,7 @@ struct BriturnGroupMenuRow: View {
 
     /// Mirrors DeviceRow: no address and no BLE sighting means unreachable.
     private var isEnabled: Bool {
-        members.contains { $0.hasAddress || $0.isBLE || store.isBriturnCloudAvailable(for: $0) }
+        members.contains { store.isControllable(for: $0) }
     }
 
     private var subtitle: String {
@@ -249,9 +249,12 @@ struct DeviceRow: View {
     @EnvironmentObject private var store: DeviceStore
     let device: Device
 
-    private var isEnabled: Bool { device.hasAddress || device.isBLE || store.isBriturnCloudAvailable(for: device) }
+    private var isEnabled: Bool { store.isControllable(for: device) }
 
     private var power: Bool? { store.power(for: device) }
+    /// Briturn lights toggle through cloud/BLE even when the cloud reports no
+    /// status (offline); nil then simply displays as off.
+    private var isBriturn: Bool { device.category.lowercased() == "briturn" }
 
     private var subtitle: String {
         let state = store.state(for: device)
@@ -262,6 +265,7 @@ struct DeviceRow: View {
             return "\(DPSValue.format(temperature)) °C"
         }
         if store.isBriturnCloudAvailable(for: device) { return "Briturn Cloud" }
+        if !device.hasAddress, store.isBLEAvailable(for: device) { return "Bluetooth" }
         return isEnabled ? device.ip : "Offline"
     }
 
@@ -297,8 +301,8 @@ struct DeviceRow: View {
                 .labelsHidden()
                 .toggleStyle(.switch)
                 .controlSize(.mini)
-                .disabled(!isEnabled || power == nil)
-                .opacity(power == nil ? 0.5 : 1)
+                .disabled(!isEnabled || (!isBriturn && power == nil))
+                .opacity(isEnabled && (isBriturn || power != nil) ? 1 : 0.5)
         }
         .padding(.vertical, 4)
         .padding(.horizontal, 4)

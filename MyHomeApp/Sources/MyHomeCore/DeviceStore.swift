@@ -286,6 +286,13 @@ public final class DeviceStore: ObservableObject {
         briturnCloudDevices[device.id]?.supportsLighting == true
     }
 
+    /// True when ANY control path exists: LAN address, Bluetooth link (seen
+    /// or fallback) or the Briturn cloud. A cloud-offline light next to the
+    /// Mac is controllable over Bluetooth, so its UI must not be disabled.
+    public func isControllable(for device: Device) -> Bool {
+        device.hasAddress || isBLEAvailable(for: device) || isBriturnCloudAvailable(for: device)
+    }
+
     @discardableResult
     public func syncBriturnCloud(force: Bool = true) async -> Int {
         guard !briturnCloudSyncing else { return briturnCloudDeviceCount }

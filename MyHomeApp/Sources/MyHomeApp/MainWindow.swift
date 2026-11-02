@@ -185,7 +185,7 @@ struct DashboardView: View {
         if store.isOn[device.id] == true || store.briturnStatus[device.id]?.on == true {
             return 0
         }
-        let showsOffline = !(device.hasAddress || device.isBLE || store.isBriturnCloudAvailable(for: device)) || store.cloudOnline[device.id] == false
+        let showsOffline = !store.isControllable(for: device) || store.cloudOnline[device.id] == false
         return showsOffline ? 2 : 1
     }
 
@@ -401,7 +401,7 @@ struct DeviceCard: View {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    private var isEnabled: Bool { device.hasAddress || device.isBLE || store.isBriturnCloudAvailable(for: device) }
+    private var isEnabled: Bool { store.isControllable(for: device) }
 
     private var power: Bool? {
         if isBriturn { return store.briturnStatus[device.id]?.on }
@@ -508,8 +508,8 @@ struct DeviceCard: View {
                         .labelsHidden()
                         .toggleStyle(.switch)
                         .controlSize(.mini)
-                        .disabled(!isEnabled || power == nil)
-                        .opacity(power == nil ? 0.5 : 1)
+                        .disabled(!isEnabled || (!isBriturn && power == nil))
+                        .opacity(isEnabled && (isBriturn || power != nil) ? 1 : 0.5)
                 }
             }
 
@@ -887,7 +887,7 @@ struct BriturnCardControls: View {
                 }
             }
             .controlSize(.mini)
-            .disabled(store.briturnStatus[device.id] == nil)
+            .disabled(store.briturnStatus[device.id] == nil && !store.isControllable(for: device))
             Text("\(Int(brightness.rounded()))")
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
@@ -1481,6 +1481,11 @@ struct BriturnGroupCard: View {
 
     private var members: [Device] { store.members(of: group) }
     private var anyOn: Bool { members.contains { store.briturnStatus[$0.id]?.on == true } }
+    /// Lights with unknown (cloud-offline) state but a control path, e.g.
+    /// Bluetooth, can still be switched on and dimmed from the group.
+    private var anyControllable: Bool {
+        members.contains { store.briturnStatus[$0.id] == nil && store.isControllable(for: $0) }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -1534,7 +1539,7 @@ struct BriturnGroupCard: View {
                 Button("Schedule") { showingSchedule = true }
                     .controlSize(.small)
             }
-            .disabled(!anyOn)
+            .disabled(!anyOn && !anyControllable)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
@@ -1987,7 +1992,7 @@ struct BriturnControlsView: View {
                         if !dragging { scheduleBrightnessApply() }
                     }
                 }
-                .disabled(store.briturnStatus[device.id] == nil)
+                .disabled(store.briturnStatus[device.id] == nil && !store.isControllable(for: device))
             } else {
                 Text("No status yet — tap Refresh.")
                     .font(.callout)
