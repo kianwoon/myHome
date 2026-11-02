@@ -13,6 +13,14 @@ struct BriturnColorWheel: View {
     @State private var hue: Double = 0
     @State private var saturation: Double = 0
 
+    /// Preset swatches shown under the wheel (the mobile app's colour dots),
+    /// full-value sRGB 0-255. Edit this list to change the row.
+    static let presets: [(r: Double, g: Double, b: Double)] = [
+        (255, 0, 0), (255, 255, 0), (0, 255, 0), (0, 255, 255),
+        (0, 0, 255), (255, 0, 255), (255, 128, 0)
+    ]
+    static let presetMatchTolerance = 0.03
+
     private static let hueStops: [Gradient.Stop] = stride(from: 0, through: 360, by: 30).map {
         Gradient.Stop(color: Color(hue: Double($0) / 360, saturation: 1, brightness: 1),
                       location: Double($0) / 360)
@@ -192,6 +200,7 @@ struct BriturnColorButton: View {
                     BriturnWhitePlate(color: plateBinding, onCCT: onCCT).frame(width: 200, height: 200)
                 } else {
                     BriturnColorWheel(color: $color).frame(width: 200, height: 200)
+                    presetRow
                 }
                 HStack(spacing: 10) {
                     tabButton(selected: !whiteTab, action: { whiteTab = false }) {
@@ -212,6 +221,40 @@ struct BriturnColorButton: View {
             .padding(14)
         }
         .onChange(of: color) { _ in plateSwatch = nil }
+    }
+
+    private static let presetSize: CGFloat = 22
+    private static let presetSpacing: CGFloat = 6
+
+    /// Row of preset colour dots; tapping one sets `color` like a wheel pick.
+    private var presetRow: some View {
+        HStack(spacing: Self.presetSpacing) {
+            ForEach(Array(BriturnColorWheel.presets.enumerated()), id: \.offset) { _, p in
+                let selected = presetMatches(p)
+                Button {
+                    color = Color(red: p.r / 255, green: p.g / 255, blue: p.b / 255)
+                } label: {
+                    Circle()
+                        .fill(Color(red: p.r / 255, green: p.g / 255, blue: p.b / 255))
+                        .frame(width: Self.presetSize, height: Self.presetSize)
+                        .overlay(Circle().stroke(selected ? Color.accentColor : Color.primary.opacity(0.25),
+                                                 lineWidth: selected ? 2 : 1).padding(-3))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private func presetMatches(_ p: (r: Double, g: Double, b: Double)) -> Bool {
+        #if canImport(AppKit)
+        guard let ns = NSColor(color).usingColorSpace(.sRGB) else { return false }
+        let dr = Double(ns.redComponent) * 255 - p.r
+        let dg = Double(ns.greenComponent) * 255 - p.g
+        let db = Double(ns.blueComponent) * 255 - p.b
+        return (dr * dr + dg * dg + db * db).squareRoot() / 441.7 <= BriturnColorWheel.presetMatchTolerance
+        #else
+        return false
+        #endif
     }
 
     private func tabButton<Content: View>(

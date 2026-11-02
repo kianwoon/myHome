@@ -722,7 +722,7 @@ public final class DeviceStore: ObservableObject {
         // WiFi (no IP), go over Bluetooth.
         if device.isBLE || (bleFallbackIDs.contains(device.id) && !device.hasAddress) {
             await setBriturnViaBLE(device, on: on, color: color, brightness: brightness,
-                                   white: white || cct != nil)
+                                   white: white || cct != nil, cct: cct)
             return
         }
         guard device.hasAddress else {
@@ -775,7 +775,7 @@ public final class DeviceStore: ObservableObject {
             let reply = try await bridge.request(payload, timeout: 30)
             guard reply["ok"] as? Bool == true else {
                 await fallbackToBLEOrFail(device, on: on, color: color, brightness: brightness,
-                                          white: white || cct != nil, prev: prev,
+                                          white: white || cct != nil, cct: cct, prev: prev,
                                           message: reply["error"] as? String ?? "Briturn set failed.")
                 return
             }
@@ -785,7 +785,7 @@ public final class DeviceStore: ObservableObject {
             }
         } catch {
             await fallbackToBLEOrFail(device, on: on, color: color, brightness: brightness,
-                                      white: white || cct != nil, prev: prev,
+                                      white: white || cct != nil, cct: cct, prev: prev,
                                       message: error.localizedDescription)
         }
     }
@@ -796,14 +796,11 @@ public final class DeviceStore: ObservableObject {
     /// Only when Bluetooth cannot address it either does the error surface.
     private func fallbackToBLEOrFail(
         _ device: Device, on: Bool?, color: (red: Int, green: Int, blue: Int)?,
-        brightness: Int?, white: Bool, prev: BriturnState?, message: String
+        brightness: Int?, white: Bool, cct: Int? = nil, prev: BriturnState?, message: String
     ) async {
         if bleFallbackIDs.contains(device.id), let key = bleKey(for: device) {
-            let ble = BLEManager.shared
-            if let on = on { ble.setPower(id: key, on: on) }
-            if let color = color { ble.setColor(id: key, red: color.red, green: color.green, blue: color.blue) }
-            if let brightness = brightness { ble.setBrightness(id: key, percent: brightness) }
-            if white { ble.setWhite(id: key, level: 128) }
+            sendBriturnBLE(key: key, on: on, color: color, brightness: brightness,
+                           white: white, cct: cct)
             statusErrors[device.id] = nil
             return
         }
@@ -833,19 +830,16 @@ public final class DeviceStore: ObservableObject {
         on: Bool?,
         color: (red: Int, green: Int, blue: Int)?,
         brightness: Int?,
-        white: Bool
+        white: Bool,
+        cct: Int? = nil
     ) async {
         guard let key = bleKey(for: device) else {
             statusErrors[device.id] = "Bluetooth not seen for this light yet — is it powered and in range?"
             return
         }
         let ble = BLEManager.shared
-        if let on = on { ble.setPower(id: key, on: on) }
-        if let color = color { ble.setColor(id: key, red: color.red, green: color.green, blue: color.blue) }
-        if let brightness = brightness { ble.setBrightness(id: key, percent: brightness) }
-        // BLE has no verified CCT frame yet: cct falls back to setWhite (the
-        // closest existing path; the BLE CCT frame is UNVERIFIED).
-        if white { ble.setWhite(id: key, level: 128) }
+        sendBriturnBLE(key: key, on: on, color: color, brightness: brightness,
+                       white: white, cct: cct)
 
         let prev = briturnStatus[device.id]
         let nextOn = on ?? (prev?.on ?? false)
@@ -863,9 +857,10 @@ public final class DeviceStore: ObservableObject {
             w: paintedW ?? prev?.w ?? 0
         )
         briturnStatus[device.id] = painted
+        // Same intent rule as the WiFi path: a CCT set defends power only.
         briturnIntent[device.id] = briturnIntentSnapshot(
-            on: on, color: color, brightness: brightness,
-            paintedWhite: paintedWhite, painted: painted
+            on: on, color: color, brightness: cct != nil ? nil : brightness,
+            paintedWhite: paintedWhite && cct == nil, painted: painted
         )
         // Advertised state reconciles; force a delayed re-read of the cache.
         Task { [weak self] in

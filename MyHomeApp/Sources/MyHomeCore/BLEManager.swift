@@ -75,14 +75,20 @@ public final class BLEManager: NSObject, ObservableObject {
         // VERIFIED packet (Codex live test on IOTWF31D, Bleak write with
         // response): payload = 3B 23|24 00*7 32 00 00 + checksum(sum).
         // Fixed field 0x32 per the integration's power builder.
+        // Re-verified on IOTWFE6D (fw 10): on -> LAN readback power 0x23.
         let p: UInt8 = on ? 0x23 : 0x24
         var payload: [UInt8] = [0x3B, p, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x32, 0x00, 0x00]
         payload.append(payload.reduce(0, +) & 0xFF)
         send(id: id, command: payload)
     }
 
-    /// Pure colour over BLE: HSB form from the LEDnetWF profile
-    /// (e0 01 00 c1 H S B 00 00 00 00 14 00 00 + checksum).
+    /// Pure colour over BLE — the SAME 0x3B 0xA1 HSV packet as the WiFi path
+    /// (bridge.py _briturn_hsv_packet), wrapped in the transport layer:
+    /// 3B A1 {hue/2 0-180} {sat 0-100} {val 0-100} 00 00 00 00 1E 00 00 + checksum.
+    /// VERIFIED live over BLE (IOTWFE6D, fw 10): red -> LAN readback rgb
+    /// ff 00 00 mode f0; hue 330/s30/v100 -> rgb ff b3 d9. The old
+    /// `E0 01 00 C1 ...` frame and the E0-prefixed `E0 01 00 3B A1 ...` form
+    /// were both acknowledged but changed nothing.
     public func setColor(id: String, red: Int, green: Int, blue: Int) {
         let r = Double(clamped(red)), g = Double(clamped(green)), b = Double(clamped(blue))
         let maxC = max(r, g, b), minC = min(r, g, b)
@@ -96,28 +102,42 @@ public final class BLEManager: NSObject, ObservableObject {
             else { hue = (r - g) / delta + 4 }
             hue *= 60
             if hue < 0 { hue += 360 }
-            hue = hue / 360.0 * 255.0
         }
-        var cmd: [UInt8] = [0xE0, 0x01, 0x00, 0xC1, UInt8(hue.rounded()), UInt8(sat.rounded()),
-                            UInt8(bri.rounded()), 0x00, 0x00, 0x00, 0x00, 0x14, 0x00, 0x00]
-        cmd.append(cmd.reduce(0, +) & 0xFF)
-        send(id: id, command: cmd)
+        let hueByte = UInt8(min(max(Int((hue / 2).rounded()), 0), 180))
+        send(id: id, command: checksummed(
+            [0x3B, 0xA1, hueByte, UInt8(sat.rounded()), UInt8(bri.rounded()),
+             0x00, 0x00, 0x00, 0x00, 0x1E, 0x00, 0x00]))
     }
 
-    /// Warm-white mode at the given level (0-255 on the white channel):
-    /// mode 0x0F selects white-only.
+    private func percent(_ v: Int) -> UInt8 { UInt8(min(max(v, 0), 100)) }
+
+    /// Real warm/cool white over BLE — the SAME 0x3B 0xB1 packet as the WiFi
+    /// path (bridge.py _briturn_cct_packet): cct 0 = warm .. 100 = cool,
+    /// brightness 0-100. 3B B1 00 00 00 {cct} {bright} 00 00 1E 00 00 + checksum.
+    /// VERIFIED live over BLE (IOTWFE6D, fw 10): cct 0/b100 -> LAN warm ff
+    /// cool 00; cct 100/b100 -> warm 00 cool ff.
+    public func setCCT(id: String, cct: Int, brightness: Int) {
+        send(id: id, command: checksummed(
+            [0x3B, 0xB1, 0x00, 0x00, 0x00, percent(cct), percent(brightness),
+             0x00, 0x00, 0x1E, 0x00, 0x00]))
+    }
+
+    /// Legacy warm-only white (0x31 ... 0x0F 0x0F). Verified live it still
+    /// works (level 128 -> warm 7f) but cannot drive the cool channel; the
+    /// store uses setCCT instead. Kept for API compatibility.
     public func setWhite(id: String, level: Int) {
         send(id: id, command: checksummed(
             [0x31, 0, 0, 0, clamped(level), 0, 0x0F, 0x0F]))
     }
 
-    public func setBrightness(id: String, percent: Int) {
-        let p = clamped(percent)
-        // Modern percent brightness (0x3B mode 0x01) + legacy 0x47 (0-255).
-        var modern: [UInt8] = [0x3B, 0x01, 0x00, 0x00, p, 0x00, p, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
-        modern.append(modern.reduce(0, +) & 0xFF)
-        send(id: id, command: modern)
-        send(id: id, command: checksummed([0x47, UInt8(max(1, Int(Double(percent) * 2.55)))]))
+    /// Brightness 0-100 — the SAME 0x3B 0x01 packet as the WiFi path:
+    /// 3B 01 00 00 {v} 00 {v} 00 00 00 00 00 + checksum. VERIFIED live over
+    /// BLE: v50 in cool white -> LAN cool 7f, white balance kept. The legacy
+    /// 0x47 frame was dropped: verified live it has no effect on fw 10.
+    public func setBrightness(id: String, percent value: Int) {
+        let p = percent(value)
+        send(id: id, command: checksummed(
+            [0x3B, 0x01, 0x00, 0x00, p, 0x00, p, 0x00, 0x00, 0x00, 0x00, 0x00]))
     }
 
     /// Local echo suppression is the STORE's job; this reports the latest
