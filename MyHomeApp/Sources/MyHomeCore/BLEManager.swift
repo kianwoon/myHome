@@ -26,7 +26,7 @@ public final class BLEManager: NSObject, ObservableObject {
     /// Under XCTest the CBCentralManager is never created: the test host has no
     /// Bluetooth usage description, so TCC aborts the process asynchronously.
     public static let shared = BLEManager(
-        startCentral: ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil)
+        startCentral: NSClassFromString("XCTestCase") == nil)
 
     @Published public private(set) var lights: [BLELight] = []
     /// Latest advertisement-decoded state per BLE light id, shared with the
