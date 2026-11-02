@@ -1611,7 +1611,8 @@ struct BriturnGroupCard: View {
         applyTask = Task {
             try? await Task.sleep(nanoseconds: 350_000_000)
             guard !Task.isCancelled else { return }
-            await store.setBriturnGroupState(group, color: rgb)
+            // Pass the slider brightness so a wheel touch keeps it (bridge folds it into HSV v).
+            await store.setBriturnGroupState(group, color: rgb, brightness: Int(brightness.rounded()))
         }
     }
 
@@ -1965,7 +1966,8 @@ struct BriturnControlsView: View {
                     // Explicit warm-white mode — rgb reads zero in this mode,
                     // so without this button the only way back is the app.
                     Button(state.isWhiteMode ? "White ✓" : "White") {
-                        Task { await store.setBriturn(device, white: true) }
+                        // Single white path: warmest white (cct 0) at the slider brightness.
+                        Task { await store.setBriturn(device, brightness: Int(brightness.rounded()), cct: 0) }
                     }
                     .controlSize(.small)
                 }
@@ -2082,7 +2084,8 @@ struct BriturnControlsView: View {
         applyTask = Task {
             try? await Task.sleep(nanoseconds: 350_000_000)
             guard !Task.isCancelled else { return }
-            await store.setBriturn(device, color: rgb)
+            // Pass the slider brightness so a wheel touch keeps it (bridge folds it into HSV v).
+            await store.setBriturn(device, color: rgb, brightness: Int(brightness.rounded()))
         }
     }
 

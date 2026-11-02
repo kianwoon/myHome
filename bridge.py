@@ -41,8 +41,19 @@ Requests:
     {"cmd":"gh_list"}
     {"cmd":"gh_states","id"?:"<google-home-device-id>"}
     {"cmd":"gh_action","id":"<google-home-device-id>","action":"<action-name>"}
+
+Briturn WiFi/LAN commands are firmware-aware. The firmware is byte 10 of the
+14-byte state frame; the bridge caches it per device id from every status read
+it performs (briturnstatus, post-set readback, brightness/state reads) and looks
+it up at send time. Firmware >= 10 follows the Briturn mobile app: power
+`3B 23|24 ..`, HSV colour `3B A1 h/2 s v ..`, brightness `3B 01 ..` (scales RGB
+and warm/cool whites alike), white `3B B1 ..`. Firmware < 10, unknown firmware
+or an unreadable bulb use the legacy 2014 commands (`71 23/24`, `31 r g b w F0
+AA`). An explicit "w" in a colour request always uses the legacy colour path.
+briturnstatus replies include "firmware". BLE paths are not affected.
 """
 
+import colorsys
 import json
 import logging
 import os
@@ -843,6 +854,22 @@ BRITURN_WARM_INDEX = 9    # state frame: warm white byte
 BRITURN_COOL_INDEX = 11   # state frame: cool white byte
 BRITURN_LEVEL_MAX = 255
 BRITURN_CCT_HEAD = [0x3B, 0xB1, 0x00, 0x00, 0x00]
+# Firmware >= this uses the mobile-app "3B" command family (live-verified).
+BRITURN_NEW_FW_MIN = 10
+BRITURN_FW_INDEX = 10     # state frame: firmware version byte
+BRITURN_NEW_POWER_ON = 0x23
+BRITURN_NEW_POWER_OFF = 0x24
+BRITURN_NEW_HEAD = 0x3B
+BRITURN_NEW_OP_HSV = 0xA1
+BRITURN_NEW_OP_BRIGHT = 0x01
+BRITURN_NEW_PAYLOAD_LEN = 12          # payload bytes before the checksum
+BRITURN_HSV_HUE_MAX = 180             # hue / 2 (0-360 degrees -> 0-180)
+BRITURN_HSV_TAIL = [0x00, 0x00, 0x00, 0x00, 0x1E, 0x00, 0x00]
+BRITURN_PCT_MAX = 100
+BRITURN_FW_READ_ATTEMPTS = 1          # cache-miss firmware read: never stall control
+BRITURN_FW_READ_TIMEOUT = 2.0
+# Per-device firmware cache {device_id: fw}, filled by every status read.
+_briturn_fw_cache = {}
 BRITURN_CCT_TAIL = [0x00, 0x00, 0x1E, 0x00, 0x00]
 
 
@@ -901,6 +928,7 @@ def handle_briturnstatus(request=None):
     if offset < 0 or len(reply) - offset < 14:
         return {"ok": False, "error": "unrecognized state frame"}
     frame = reply[offset:]
+    _briturn_note_frame(config.get("id"), frame)
     return {
         "ok": True,
         "on": frame[2] == BRITURN_POWER_ON,
@@ -908,6 +936,7 @@ def handle_briturnstatus(request=None):
         "mode": frame[3],
         "w": frame[9],
         "cool": frame[BRITURN_COOL_INDEX],
+        "firmware": frame[BRITURN_FW_INDEX],
         "r": frame[6],
         "g": frame[7],
         "b": frame[8],
@@ -920,6 +949,69 @@ def _briturn_frame(reply):
     if offset < 0 or len(reply) - offset < 14:
         return None
     return reply[offset:]
+
+
+def _briturn_note_frame(device_id, frame):
+    """Cache the firmware byte of a parsed state frame for later sends."""
+    if device_id:
+        _briturn_fw_cache[device_id] = frame[BRITURN_FW_INDEX]
+
+
+def _briturn_firmware(config):
+    """Firmware for a device: cache first, else one quick status read.
+
+    Returns 0 (legacy commands) when unknown/unreadable — control must never
+    be delayed or broken by a failed firmware read.
+    """
+    device_id = config.get("id")
+    if device_id in _briturn_fw_cache:
+        return _briturn_fw_cache[device_id]
+    reply = _briturn_exchange(
+        config["ip"], BRITURN_QUERY,
+        attempts=BRITURN_FW_READ_ATTEMPTS, timeout=BRITURN_FW_READ_TIMEOUT)
+    frame = _briturn_frame(reply) if reply else None
+    if frame is None:
+        return 0
+    _briturn_note_frame(device_id, frame)
+    return frame[BRITURN_FW_INDEX]
+
+
+def _briturn_new_proto(fw):
+    return fw >= BRITURN_NEW_FW_MIN
+
+
+def _briturn_power_packet(on, fw):
+    """Power packet: firmware >= 10 `3B 23|24 00*10 cs`, else legacy `71 23|24`."""
+    if not _briturn_new_proto(fw):
+        return BRITURN_ON if on else BRITURN_OFF
+    cmd = bytes([BRITURN_NEW_HEAD, BRITURN_NEW_POWER_ON if on else BRITURN_NEW_POWER_OFF]
+                + [0x00] * (BRITURN_NEW_PAYLOAD_LEN - 2))
+    return cmd + _briturn_checksum(cmd)
+
+
+def _briturn_hsv_packet(r, g, b, pct, fw):
+    """Colour packet. Firmware >= 10: `3B A1 hue/2 sat val ..` where val is
+    the colour's HSV value scaled by pct (None = 100). Legacy: pure-colour
+    `31 r g b 00 F0 AA` (pct ignored; legacy scaling stays at the call site)."""
+    r, g, b = (min(max(int(c), 0), 255) for c in (r, g, b))
+    if not _briturn_new_proto(fw):
+        return bytes([0x31, r, g, b, 0, 0xF0, 0xAA])
+    pct = BRITURN_PCT_MAX if pct is None else min(max(float(pct), 0), BRITURN_PCT_MAX)
+    h, sat, val = colorsys.rgb_to_hsv(r / 255.0, g / 255.0, b / 255.0)
+    hue = min(int(h * 360 / 2 + 0.5), BRITURN_HSV_HUE_MAX)
+    sat = min(int(sat * BRITURN_PCT_MAX + 0.5), BRITURN_PCT_MAX)
+    val = min(int(val * BRITURN_PCT_MAX * pct / BRITURN_PCT_MAX + 0.5), BRITURN_PCT_MAX)
+    cmd = bytes([BRITURN_NEW_HEAD, BRITURN_NEW_OP_HSV, hue, sat, val] + BRITURN_HSV_TAIL)
+    return cmd + _briturn_checksum(cmd)
+
+
+def _briturn_brightness_packet(pct):
+    """Firmware >= 10 brightness `3B 01 00 00 v 00 v ..`: scales RGB (keeps
+    hue) and, in white mode, warm+cool (keeps balance)."""
+    v = min(max(int(float(pct) + 0.5), 0), BRITURN_PCT_MAX)
+    cmd = bytes([BRITURN_NEW_HEAD, BRITURN_NEW_OP_BRIGHT, 0x00, 0x00, v, 0x00, v]
+                + [0x00] * (BRITURN_NEW_PAYLOAD_LEN - 7))
+    return cmd + _briturn_checksum(cmd)
 
 
 def _briturn_read_rgb(config):
@@ -937,6 +1029,7 @@ def _briturn_read_state(config):
     frame = _briturn_frame(reply)
     if frame is None:
         return None
+    _briturn_note_frame(config.get("id"), frame)
     warm, cool = frame[BRITURN_WARM_INDEX], frame[BRITURN_COOL_INDEX]
     total = warm + cool
     cct = int(cool * BRITURN_CCT_MAX / total + 0.5) if total else 0
@@ -981,6 +1074,13 @@ def handle_briturnset(request=None):
         except (TypeError, ValueError):
             return {"ok": False, "error": "cct and brightness must be numbers 0-100"}
 
+    # Firmware (cached from status reads; legacy 0 if unknown). Only needed
+    # when a power/colour/brightness packet is built; cct-only skips it.
+    fw = 0
+    if want_power or want_color or want_brightness and not want_cct:
+        fw = _briturn_firmware(config)
+    new_proto = _briturn_new_proto(fw)
+
     # Brightness semantics: the 2014 protocol has no brightness command —
     # Magic Home scales the peak colour channel. brightness=50 makes the
     # strongest channel 50% (127), preserving hue. Explicit r/g/b wins as the
@@ -996,7 +1096,15 @@ def handle_briturnset(request=None):
                 return {"ok": False, "error": "brightness must be 0-100"}
 
         red, green, blue = channel("r"), channel("g"), channel("b")
-        if not want_color:
+        if new_proto and not (want_color and "w" in request):
+            # Firmware >= 10: colour carries the brightness in HSV v; a
+            # brightness-only request is the native packet (no state read, no
+            # client-side scaling). An explicit "w" stays on the legacy path.
+            if want_color:
+                color_packet = _briturn_hsv_packet(red, green, blue, pct, fw)
+            else:
+                color_packet = _briturn_brightness_packet(pct)
+        elif not want_color:
             # brightness-only: base on the device's current colour
             base = _briturn_read_state(config)
             if base is None:
@@ -1028,7 +1136,7 @@ def handle_briturnset(request=None):
 
     sent = 0
     if want_power:
-        packet = BRITURN_ON if bool(request.get("on")) else BRITURN_OFF
+        packet = _briturn_power_packet(bool(request.get("on")), fw)
         if _briturn_exchange(config["ip"], packet, expect_reply=False) is None:
             return {"ok": False, "error": "power command failed"}
         sent += 1
@@ -1130,10 +1238,27 @@ def handle_briturnsetgroup(request):
     def packets_for(config):
         """Per-member packet list, or None when the member failed its read."""
         pk = []
+        # Cached firmware (concurrent read only on a cold miss; legacy 0 if
+        # unreadable). cct-only needs none.
+        fw = 0
+        if want_power or want_color or (want_brightness and cct_packet is None):
+            fw = _briturn_firmware(config)
         if want_power:
-            pk.append(BRITURN_ON if bool(request.get("on")) else BRITURN_OFF)
+            pk.append(_briturn_power_packet(bool(request.get("on")), fw))
         if cct_packet is not None:
             pk.append(cct_packet)
+        elif _briturn_new_proto(fw) and (want_color or want_brightness) \
+                and not (want_color and "w" in request):
+            # Firmware >= 10: native HSV (carries brightness) or brightness
+            # packet. Explicit "w" falls through to the legacy colour path.
+            try:
+                pct = min(max(float(request.get("brightness")), 0), 100) if want_brightness else None
+            except (TypeError, ValueError):
+                return None
+            if want_color:
+                pk.append(_briturn_hsv_packet(channel("r"), channel("g"), channel("b"), pct, fw))
+            else:
+                pk.append(_briturn_brightness_packet(pct))
         elif want_color or want_brightness:
             rgb = base_color(config)
             if rgb is None:

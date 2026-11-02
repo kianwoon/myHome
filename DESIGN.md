@@ -116,3 +116,7 @@ Recorded here so future work moves toward the target state rather than adding to
 5. **Wildcard re-exports without `__all__`** leak internals (`tinytuya.socket`, `tinytuya.json`, ...) into the public namespace, so renaming module-level names is riskier than it looks.
 6. **Monitor/`_receive()` framing duplication** — two independent implementations of prefix scanning and header parsing must be kept in sync until a shared codec exists.
 7. **Python 2 remnants** — `IS_PY2` branches and shims are dead (Monitor.py's f-strings make py2 imports fail anyway) and should be removed rather than extended.
+
+## Briturn (Zengge) WiFi commands in `bridge.py`
+
+The bridge picks the command family by bulb firmware (state frame byte 10, cached per device id from every status read). Firmware >= 10 uses the Briturn mobile-app packets over TCP 5577 (payload plus a sum-mod-256 checksum): power `3B 23|24 00*10`, HSV colour `3B A1 hue/2 sat val 00 00 00 00 1E 00 00`, brightness `3B 01 00 00 v 00 v 00*5`, white temperature `3B B1 00 00 00 cct bright 00 00 1E 00 00`. Firmware < 10, unknown firmware, or an explicit `w` in a colour request use the legacy commands (`71 23/24`, `31 r g b w F0 AA`). BLE is unchanged. See the `bridge.py` module docstring and `test_bridge.py`.

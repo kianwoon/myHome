@@ -510,11 +510,13 @@ public final class DeviceStore: ObservableObject {
         public let w: Int
         /// Cool-white channel (state frame byte 11); 0 when unknown.
         public let cool: Int
+        /// Bulb firmware (state frame byte 10); 0 when unknown.
+        public let firmware: Int
 
         /// Combined white output 0-255 (warm + cool), for brightness display.
         public var whiteLevel: Int { min(w + cool, 255) }
 
-        init(on: Bool, rawPower: Int, mode: Int, r: Int, g: Int, b: Int, w: Int, cool: Int = 0) {
+        init(on: Bool, rawPower: Int, mode: Int, r: Int, g: Int, b: Int, w: Int, cool: Int = 0, firmware: Int = 0) {
             self.on = on
             self.rawPower = rawPower
             self.mode = mode
@@ -523,6 +525,7 @@ public final class DeviceStore: ObservableObject {
             self.b = b
             self.w = w
             self.cool = cool
+            self.firmware = firmware
         }
 
         public var isWhiteMode: Bool {
@@ -549,6 +552,7 @@ public final class DeviceStore: ObservableObject {
             self.b = b
             self.w = w
             self.cool = reply["cool"] as? Int ?? 0
+            self.firmware = reply["firmware"] as? Int ?? 0
         }
     }
 
