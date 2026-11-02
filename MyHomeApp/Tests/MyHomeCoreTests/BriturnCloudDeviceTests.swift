@@ -150,3 +150,33 @@ final class BriturnCloudDeviceTests: XCTestCase {
         XCTAssertTrue(devices.isEmpty)
     }
 }
+
+final class BriturnCloudGroupTests: XCTestCase {
+    private func cloud(_ id: Int, mac: String, group: String?) throws -> BriturnCloudDevice {
+        var d = try BriturnCloudDevice(json: ["deviceId": id, "entityType": "TCP_WF", "productId": 95, "macAddress": mac,
+                                              "name": "C\(id)"], homeID: 1)
+        d.groupName = group
+        return d
+    }
+
+    func testRelationResolvesGroupNames() {
+        let groups: [String: Any] = ["data": [["groupId": 10, "name": "study room Front"], ["groupId": 11, "name": " "], ["bad": 1]]]
+        let relation: [String: Any] = ["data": ["group": [["id": 10, "children": [["id": 1], ["id": 2], ["x": 3]]],
+                                                          ["id": 11, "children": [["id": 4]]],
+                                                          ["id": 99, "children": [["id": 5]]]], "sig": []]]
+        let result = BriturnCloudClient.resolveGroupNames(groupList: groups, relation: relation)
+        XCTAssertEqual(result, [1: "study room Front", 2: "study room Front"])
+        XCTAssertTrue(BriturnCloudClient.resolveGroupNames(groupList: ["data": "odd"], relation: ["data": []]).isEmpty)
+    }
+
+    func testCloudGroupOverridesBridgeGroupAndBridgeOnlyLightStays() throws {
+        let local = [Device(id: "briturn-aabbccddeeff", name: "L", ip: "10.0.0.2", version: "3.3", category: "briturn", group: "guess 1", online: true),
+                     Device(id: "briturn-112233445566", name: "Orphan", ip: "10.0.0.3", version: "3.3", category: "briturn", group: "den", online: true)]
+        let merged = BriturnCloudDevice.merge(local: local, cloud: [try cloud(1, mac: "AABBCCDDEEFF", group: "guest room 1"),
+                                                                     try cloud(2, mac: "99AABBCCDDEE", group: "hall")])
+        XCTAssertEqual(merged.first { $0.id == "briturn-aabbccddeeff" }?.group, "guest room 1")
+        XCTAssertEqual(merged.first { $0.id == "briturn-aabbccddeeff" }?.ip, "10.0.0.2")
+        XCTAssertEqual(merged.first { $0.id == "briturn-112233445566" }?.group, "den")
+        XCTAssertEqual(merged.first { $0.id == "briturn-99aabbccddee" }?.group, "hall")
+    }
+}

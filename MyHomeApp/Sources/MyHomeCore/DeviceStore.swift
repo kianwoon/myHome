@@ -47,6 +47,7 @@ public final class DeviceStore: ObservableObject {
     @Published public private(set) var roster: [Device] = []
     private var bridgeRoster: [Device] = []
     private var briturnCloudDevices: [String: BriturnCloudDevice] = [:]
+    private var warnedBridgeOnlyBriturn: Set<String> = []
     @Published public private(set) var briturnCloudSyncing = false
     @Published public private(set) var briturnCloudError: String?
     @Published public private(set) var briturnCloudDeviceCount = 0
@@ -69,6 +70,8 @@ public final class DeviceStore: ObservableObject {
     /// BLE-only lights carry their group from app-local persistence (they
     /// have no roster entry to store it in).
     public var devices: [Device] {
+        // Cloud is the base once synced: BLE is only a transport attached to cloud lights.
+        guard briturnCloudDevices.isEmpty else { return roster }
         let bleOnlyDevices = bleSeen.values.sorted { $0.name < $1.name }.compactMap { light -> Device? in
             guard matchRosterID(for: light) == nil else { return nil }
             guard light.id.hasPrefix("ble-") else { return nil }
@@ -193,16 +196,26 @@ public final class DeviceStore: ObservableObject {
 
     private func rebuildBriturnRoster() {
         let merged = BriturnCloudDevice.merge(local: bridgeRoster, cloud: Array(briturnCloudDevices.values))
+        if !briturnCloudDevices.isEmpty {
+            let orphans = Set(bridgeRoster.filter { $0.category.lowercased() == "briturn" && briturnCloudDevices[$0.id] == nil }.map(\.id))
+            if orphans != warnedBridgeOnlyBriturn {
+                warnedBridgeOnlyBriturn = orphans
+                for id in orphans.sorted() { NSLog("MyHome: bridge Briturn light %@ has no match in the Briturn cloud; showing it from the bridge only", id) }
+            }
+        }
         // A BLE-discovered light keeps its app-local group once cloud sync
         // identifies it (matched by MAC or BLE name suffix, like `devices`).
         var matchedGroups: [String: String] = [:]
         for light in bleSeen.values {
             guard let group = bleGroups[light.id], !group.isEmpty,
-                  let rosterID = matchRosterID(for: light, in: merged) else { continue }
+                  let rosterID = matchRosterID(for: light, in: merged),
+                  briturnCloudDevices[rosterID]?.groupName == nil else { continue }
             matchedGroups[rosterID] = group
         }
         roster = merged.map { device in
             guard !bridgeRoster.contains(where: { $0.id == device.id }) else { return device }
+            // Cloud group name wins; local groups are only a fallback when the cloud gave none.
+            guard briturnCloudDevices[device.id]?.groupName == nil else { return device }
             guard let group = bleGroups[device.id] ?? matchedGroups[device.id] else { return device }
             return Device(id: device.id, name: device.name, ip: device.ip, version: device.version,
                           category: device.category, group: group, online: device.online, room: device.room)
@@ -1128,9 +1141,16 @@ public final class DeviceStore: ObservableObject {
 
     /// Assigns one device to a group (nil clears) and re-lists so the roster
     /// and every derived view update together.
+    public static let briturnCloudGroupMessage = "Groups come from the Briturn cloud — change them in the Briturn app."
+
     public func setBriturnGroup(_ device: Device, to group: String?) async {
+        // Cloud-known lights take their group from the cloud; a local write would be overwritten by the next sync.
+        if briturnCloudDevices[device.id] != nil {
+            statusErrors[device.id] = Self.briturnCloudGroupMessage
+            return
+        }
         // BLE-only lights persist their group app-side.
-        if device.isBLE || (briturnCloudDevices[device.id] != nil && !bridgeRoster.contains(where: { $0.id == device.id })) {
+        if device.isBLE {
             var groups = bleGroups
             if let group = group, !group.isEmpty { groups[device.id] = group }
             else { groups.removeValue(forKey: device.id) }

@@ -2,7 +2,7 @@
 
 Open **Settings → Cloud → Briturn Cloud**, enter the email/password used in the Briturn mobile app, choose the account's server region (United States, Europe or China), and choose **Sign In**. A successful login displays a masked email and remembers the session in macOS Keychain. **Sign Out** deletes this Mac's saved session; no server-side revocation endpoint has been verified.
 
-Cloud devices sync at launch, on the normal cloud refresh cycle, and with **Sync Devices** in Settings. They appear in the Briturn dashboard and menu, merged with local devices by exact MAC address. Cloud-only lights have no local IP. Existing local group assignments are preserved; cloud-only groups are stored locally. A remembered session may expire; sign in again if necessary. No password-based automatic re-login is performed.
+Cloud devices sync at launch, on the normal cloud refresh cycle, and with **Sync Devices** in Settings. They appear in the Briturn dashboard and menu, merged with local devices by exact MAC address. Cloud-only lights have no local IP. The cloud is the base for Briturn lights: the dashboard lists the cloud's lights, and group names/membership come from the cloud (`/app/device/group/list` + `/app/device/relation/list`) and override bridge/BLE groups. Local groups in `devices.json` and `briturn.bleGroups` are kept untouched but only used as a fallback before the first successful sync. Groups cannot be edited in MyHome; change them in the Briturn app. Bridge-only Briturn lights with no cloud match are still shown (and logged). A remembered session may expire; sign in again if necessary. No password-based automatic re-login is performed.
 
 ## Implementation
 

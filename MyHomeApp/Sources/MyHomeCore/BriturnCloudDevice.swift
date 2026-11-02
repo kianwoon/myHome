@@ -9,6 +9,8 @@ public struct BriturnCloudDevice: Codable, Equatable {
     public let productID: Int
     public let online: Bool
     public let functions: Set<String>
+    /// Cloud group name (from the group/relation endpoints); nil when ungrouped or unknown.
+    public var groupName: String?
 
     public var canonicalID: String {
         macAddress.isEmpty ? "briturn-cloud-\(entityType)-\(deviceID)" : "briturn-\(macAddress)"
@@ -42,13 +44,13 @@ public struct BriturnCloudDevice: Codable, Equatable {
         var merged = local.map { device -> Device in
             guard device.category.lowercased() == "briturn", let item = byID[device.id] else { return device }
             return Device(id: device.id, name: item.name, ip: device.ip, version: device.version,
-                          category: device.category, group: device.group, online: device.online,
+                          category: device.category, group: item.groupName ?? device.group, online: device.online,
                           spec: device.spec, codes: device.codes, room: device.room)
         }
         let localIDs = Set(local.map(\.id))
         for item in cloud where !localIDs.contains(item.canonicalID) {
             merged.append(Device(id: item.canonicalID, name: item.name, ip: "", version: "Cloud",
-                                 category: "briturn", online: item.online))
+                                 category: "briturn", group: item.groupName, online: item.online))
         }
         return merged
     }

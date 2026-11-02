@@ -276,8 +276,43 @@ public actor BriturnCloudClient {
                 let device = try BriturnCloudDevice(json: item, homeID: homeID)
                 devices[device.canonicalID] = device
             }
+            // Group names/membership are best-effort: any failure leaves lights ungrouped, never fails the sync.
+            let groups = await fetchGroupNames(homeID: homeID)
+            for (key, device) in devices where device.homeID == homeID {
+                devices[key]?.groupName = groups[device.deviceID]
+            }
         }
         return devices.values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    /// Read-only: deviceId -> cloud group name for one home, from `/app/device/group/list`
+    /// (names) and `/app/device/relation/list` (membership). Never throws; empty on any failure.
+    /// Caller must already hold the session operation.
+    func fetchGroupNames(homeID: Int) async -> [Int: String] {
+        let body: [String: Any] = ["homeId": homeID]
+        guard let groupList = try? await authenticatedPost(path: "/app/device/group/list", body: body),
+              let relation = try? await authenticatedPost(path: "/app/device/relation/list", body: body) else { return [:] }
+        return Self.resolveGroupNames(groupList: groupList, relation: relation)
+    }
+
+    /// Pure, defensive parser: odd or missing shapes yield no group for the affected entries.
+    static func resolveGroupNames(groupList: [String: Any], relation: [String: Any]) -> [Int: String] {
+        var names: [Int: String] = [:]
+        for item in groupList["data"] as? [[String: Any]] ?? [] {
+            guard let id = BriturnCloudDevice.integer(item["groupId"]),
+                  let name = (item["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !name.isEmpty else { continue }
+            names[id] = name
+        }
+        var result: [Int: String] = [:]
+        let groups = (relation["data"] as? [String: Any])?["group"] as? [[String: Any]] ?? []
+        for group in groups {
+            guard let id = BriturnCloudDevice.integer(group["id"]), let name = names[id] else { continue }
+            for child in group["children"] as? [[String: Any]] ?? [] {
+                if let deviceID = BriturnCloudDevice.integer(child["id"]), result[deviceID] == nil { result[deviceID] = name }
+            }
+        }
+        return result
     }
 
     /// Read-only discovery of where group/room membership lives. Only list/get style

@@ -8,6 +8,7 @@ are listed here so the release changelog is complete.
 
 ### Briturn Cloud account (MyHome app)
 * Settings → Cloud now includes Briturn email/password sign-in with US/Europe/China server selection, masked account status, Keychain session storage and local sign-out. Passwords are not saved. Signed-in Briturn devices now sync into the dashboard/menu by MAC identity, with cloud status and power/RGB/brightness/CCT control for the verified Wi-Fi lighting model, local transport fallback, batch group commands, and readback verification. See `docs/BriturnCloud.md` for protocol and validation details.
+* Briturn cloud is now the base for Briturn lights: the dashboard lists exactly the cloud's lights (bridge-only lights are kept and logged, BLE-only cards are dropped once synced), and group names/membership come from the cloud, overriding local groups. Group editing for cloud lights is disabled with a message; local group data is retained as an offline fallback.
 
 ### Dashboard ordering (MyHome app)
 * Every dashboard category — Fans, Curtains, Lights, Plugs, Climate, Briturn and Other, including active room/group filters — now lists ON devices first, then unknown-state devices, then OFF. Intra-class order stays name/id stable, so status polls only move a tile when its ON/OFF class changes.
