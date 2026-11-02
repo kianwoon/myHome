@@ -91,12 +91,27 @@ public final class DeviceStore: ObservableObject {
         for prefix in ["IOTWF", "LEDNETWF", "IOTBT"] where name.hasPrefix(prefix) {
             let suffix = String(name.dropFirst(prefix.count)).lowercased()
             guard !suffix.isEmpty else { continue }
-            if let hit = roster.first(where: { $0.id.lowercased().hasSuffix(suffix) }) {
-                return hit.id
+            let hits = roster.filter { $0.id.lowercased().hasSuffix(suffix) }
+            if hits.count > 1 {
+                // The advert name only carries a short tail: several roster ids can share it.
+                // Prefer one no other peripheral has claimed yet; otherwise the stable first by id.
+                let sorted = hits.sorted { $0.id < $1.id }
+                let unclaimed = sorted.first { cand in (self.bleKeysByDeviceID[cand.id] ?? []).allSatisfy { $0 == light.id } }
+                let pick = unclaimed ?? sorted[0]
+                if loggedAmbiguousBLE.insert(light.id).inserted {
+                    AppLog.store.notice("MyHome: BLE name \(light.name, privacy: .public) matches \(hits.count, privacy: .public) roster ids; attaching to \(pick.id, privacy: .public)")
+                }
+                return pick.id
             }
+            if let hit = hits.first { return hit.id }
         }
         return nil
     }
+    /// Test seams (internal): the published stores are private(set).
+    func cloudOnlineForTest(_ id: String, _ value: Bool?) { cloudOnline[id] = value }
+    func setRosterForTest(_ devices: [Device]) { roster = devices }
+    private var loggedAmbiguousBLE: Set<String> = []
+    private var loggedReachability: [String: Reachability] = [:]
 
     @Published public private(set) var isOn: [String: Bool] = [:]
     @Published public private(set) var dpsById: [String: [String: DPSValue]] = [:]
@@ -298,11 +313,24 @@ public final class DeviceStore: ObservableObject {
     /// from existing facts only. `.offline` means NO control path at the moment:
     /// no online LAN address, cloud not online, and no LIVE Bluetooth peripheral.
     public func reachability(for device: Device) -> Reachability {
-        if device.hasAddress && device.online { return .wifi }
-        if (cloudOnline[device.id] ?? briturnCloudDevices[device.id]?.online) == true,
-           isBriturnCloudAvailable(for: device) { return .cloud }
-        if isBLELive(for: device) { return .bluetooth }
-        return .offline
+        let bleLive = isBLELive(for: device)
+        let cloud = cloudOnline[device.id]
+        let lan = device.hasAddress && device.online
+        // A bridge "online" flag is only the last devices.json state: when the cloud says the
+        // light is offline and a live Bluetooth peripheral exists, the LAN address is stale.
+        let result: Reachability
+        if lan && !(cloud == false && bleLive) { result = .wifi }
+        else if (cloud ?? briturnCloudDevices[device.id]?.online) == true,
+                isBriturnCloudAvailable(for: device) { result = .cloud }
+        else if bleLive { result = .bluetooth }
+        else { result = .offline }
+        if loggedReachability[device.id] != result {
+            loggedReachability[device.id] = result
+            let keyCount = (bleKeysByDeviceID[device.id] ?? []).count
+            let cloudText = cloud.map { $0 ? "true" : "false" } ?? "nil"
+            AppLog.store.notice("MyHome: reachability id=\(device.id, privacy: .public) -> \("\(result)", privacy: .public) (lan=\(lan, privacy: .public) cloudOnline=\(cloudText, privacy: .public) bleKeys=\(keyCount, privacy: .public) bleLive=\(bleLive, privacy: .public))")
+        }
+        return result
     }
 
     /// True when ANY control path exists: LAN address, Bluetooth link (seen
@@ -496,8 +524,16 @@ public final class DeviceStore: ObservableObject {
     /// True when a candidate peripheral for this light was discovered THIS run
     /// (`isBLEAvailable` also counts persisted history).
     public func isBLELive(for device: Device) -> Bool {
-        guard let key = bleKey(for: device) else { return false }
-        return isBLEKeyLive(key)
+        if let key = bleKey(for: device), isBLEKeyLive(key) { return true }
+        // Attach timing must not matter: re-derive the match from the live adverts.
+        guard !device.isBLE else { return false }
+        var seen = Set<String>()
+        for light in bleLights + Array(bleSeen.values) where seen.insert(light.id).inserted {
+            guard isBLEKeyLive(light.id), matchRosterID(for: light) == device.id else { continue }
+            attachBLE(light)
+            return true
+        }
+        return false
     }
 
     /// The real reason Bluetooth cannot reach `device` right now.

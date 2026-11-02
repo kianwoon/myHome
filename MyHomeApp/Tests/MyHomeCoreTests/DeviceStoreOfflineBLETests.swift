@@ -159,6 +159,60 @@ final class DeviceStoreOfflineBLETests: XCTestCase {
         store.applyBLEDerivedState(device.id, DeviceStore.BriturnState(on: false, rawPower: 0x24, mode: 97, r: 0, g: 0, b: 0, w: 0))
         XCTAssertEqual(store.briturnStatus[device.id], wire)
     }
+
+    // MARK: - Live-BLE lights are never offline (regression)
+
+    private func ble(_ name: String, _ n: Int) -> BLELight {
+        BLELight(id: "ble-00000000-0000-0000-0000-\(String(format: "%012d", n))", name: name, rssi: -80)
+    }
+
+    /// Bridge-known light: stale IP, bridge flag online, cloud offline, live BLE advert.
+    func testStaleBridgeIPWithCloudOfflineAndLiveBLEIsBluetooth() throws {
+        let (store, _, _) = try make(online: false, ble: true)
+        let id = store.briturnCloudDevices.keys.first!
+        store.bleLiveHook = { $0 == self.bleKey }
+        store.cloudOnlineForTest(id, false)
+        let stale = Device(id: id, name: "Lamp", ip: "192.168.4.72", version: "3.3", category: "briturn", group: "G", online: true)
+        XCTAssertEqual(store.reachability(for: stale), .bluetooth)
+        store.bleLiveHook = { _ in false }
+        XCTAssertEqual(store.reachability(for: stale), .wifi, "no BLE evidence: bridge flag stands")
+    }
+
+    /// Cloud-only light (no bridge entry, ip "") with cloudOnline nil.
+    func testCloudOnlyLightWithNilCloudStatusAndLiveBLE() throws {
+        let (store, device, _) = try make(online: false, ble: true)
+        store.bleLiveHook = { $0 == self.bleKey }
+        XCTAssertNil(store.cloudOnline[device.id])
+        XCTAssertEqual(store.reachability(for: device), .bluetooth)
+    }
+
+    /// BLE keys were never attached (advert seen before the roster existed): live adverts still win.
+    func testLateRosterStillFindsLiveAdvert() throws {
+        let (store, device, _) = try make(online: false, ble: false)
+        let suffix = String(device.id.suffix(3)).uppercased()
+        let light = ble("IOTWF" + suffix, 1)
+        store.bleSeen[light.id] = light
+        store.rebuildBriturnRoster()
+        XCTAssertTrue(store.roster.contains { $0.id == device.id })
+        store.bleKeysByDeviceID = [:]
+        store.bleLiveHook = { $0 == light.id }
+        XCTAssertEqual(store.reachability(for: device), .bluetooth)
+        XCTAssertEqual(store.bleKeysByDeviceID[device.id], [light.id])
+    }
+
+    /// Two roster ids sharing a 3-hex tail: the advert attaches to exactly one, deterministically.
+    func testSharedSuffixAttachesToOneRosterID() throws {
+        let (store, _, _) = try make(online: false, ble: false)
+        let a = Device(id: "briturn-0865f0ef1577", name: "A", ip: "", version: "Cloud", category: "briturn", group: nil, online: false)
+        let b = Device(id: "briturn-0865f0ef8577", name: "B", ip: "", version: "Cloud", category: "briturn", group: nil, online: false)
+        store.setRosterForTest([a, b])
+        let l1 = ble("IOTWF577", 1), l2 = ble("IOTWF577", 2)
+        store.bleSeen[l1.id] = l1
+        store.bleSeen[l2.id] = l2
+        store.reattachBLETransports()
+        XCTAssertEqual(store.bleKeysByDeviceID[a.id], [l1.id])
+        XCTAssertEqual(store.bleKeysByDeviceID[b.id], [l2.id])
+    }
 }
 
 @MainActor

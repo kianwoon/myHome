@@ -185,7 +185,9 @@ struct DashboardView: View {
         if store.isOn[device.id] == true || store.briturnStatus[device.id]?.on == true {
             return 0
         }
-        let showsOffline = !store.isControllable(for: device) || store.cloudOnline[device.id] == false
+        let isBriturnLight = device.category.lowercased() == "briturn"
+        let cloudRed = store.cloudOnline[device.id] == false && !(isBriturnLight && store.reachability(for: device) == .bluetooth)
+        let showsOffline = !store.isControllable(for: device) || cloudRed
         return showsOffline ? 2 : 1
     }
 
@@ -774,7 +776,7 @@ struct CloudStatusBadge: View {
     /// that still has a live Bluetooth link must not read as dead.
     var reachability: DeviceStore.Reachability?
 
-    private var viaBluetooth: Bool { online == false && reachability == .bluetooth }
+    private var viaBluetooth: Bool { reachability == .bluetooth }
 
     private var label: String {
         if envBroken { return "☁ bridge env" }
