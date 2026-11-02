@@ -30,6 +30,8 @@ public final class BLEManager: NSObject, ObservableObject {
     /// store's briturnStatus cache so cards/pickers treat BLE and WiFi alike.
     @Published public private(set) var states: [String: DeviceStore.BriturnState] = [:]
     @Published public private(set) var isBluetoothOn = false
+    @Published public private(set) var diagnostics = BLEDiagnostics()
+    private static let summaryIntervalNanos: UInt64 = 30_000_000_000
 
     private var central: CBCentralManager!
     private var peripherals: [String: CBPeripheral] = [:]   // id -> peripheral
@@ -50,6 +52,20 @@ public final class BLEManager: NSObject, ObservableObject {
     override private init() {
         super.init()
         central = CBCentralManager(delegate: self, queue: nil)
+        diagnostics.authorization = BLEAuthorization(CBCentralManager.authorization)
+        Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: Self.summaryIntervalNanos)
+                self?.logSummary()
+            }
+        }
+    }
+
+    private func logSummary() {
+        let d = diagnostics
+        NSLog("MyHome: BLE auth=%@ state=%@ scanning=%d live=%d lastSeen=%@",
+              d.authorization.rawValue, d.state.rawValue, d.isScanning ? 1 : 0, d.liveCount,
+              d.lastDiscovery.map { ISO8601DateFormatter().string(from: $0) } ?? "never")
     }
 
     // MARK: - Public control API (called by DeviceStore)
@@ -233,10 +249,21 @@ public final class BLEManager: NSObject, ObservableObject {
 extension BLEManager: CBCentralManagerDelegate {
     public func centralManagerDidUpdateState(_ central: CBCentralManager) {
         isBluetoothOn = central.state == .poweredOn
-        guard isBluetoothOn else { return }
+        var d = diagnostics
+        d.authorization = BLEAuthorization(CBCentralManager.authorization)
+        d.state = BLEPowerState(central.state)
+        guard isBluetoothOn else {
+            d.isScanning = false
+            diagnostics = d
+            logSummary()
+            return
+        }
         // Duplicate reports ON: live state comes from repeated advertisements.
         central.scanForPeripherals(withServices: nil,
                                    options: [CBCentralManagerScanOptionAllowDuplicatesKey: true])
+        d.isScanning = central.isScanning
+        diagnostics = d
+        logSummary()
     }
 
     public func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral,
@@ -267,6 +294,9 @@ extension BLEManager: CBCentralManagerDelegate {
 
         let isNew = peripherals[id] == nil
         peripherals[id] = peripheral
+        if isNew { NSLog("MyHome: BLE live peripheral id=%@ name=%@", id, name) }
+        diagnostics.liveCount = peripherals.count
+        diagnostics.lastDiscovery = Date()
         bleIDByPeripheralUUID[peripheral.identifier] = id
         if isNew || lights.first(where: { $0.id == id }) == nil {
             lights.append(BLELight(id: id, name: name, rssi: RSSI.intValue))

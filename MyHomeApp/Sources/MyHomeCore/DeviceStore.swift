@@ -475,7 +475,24 @@ public final class DeviceStore: ObservableObject {
         return BLEManager.shared.hasPeripheral(id: key)
     }
 
-    static let bleUnreachableMessage = "Bluetooth: light not seen recently — move closer or wait a moment"
+    static let bleUnreachableMessage = BLEReason.notSeen
+
+    /// Test seam (internal): replaces the live BLEManager diagnostics.
+    var bleDiagnosticsHook: BLEDiagnostics?
+
+    private var bleDiagnostics: BLEDiagnostics { bleDiagnosticsHook ?? BLEManager.shared.diagnostics }
+
+    /// True when a candidate peripheral for this light was discovered THIS run
+    /// (`isBLEAvailable` also counts persisted history).
+    public func isBLELive(for device: Device) -> Bool {
+        guard let key = bleKey(for: device) else { return false }
+        return isBLEKeyLive(key)
+    }
+
+    /// The real reason Bluetooth cannot reach `device` right now.
+    func bleUnreachableReason(for device: Device) -> String {
+        BLEReason.message(bleDiagnostics, lightLive: isBLELive(for: device))
+    }
 
     private func bindBLE() {
         let ble = BLEManager.shared
@@ -1145,7 +1162,7 @@ public final class DeviceStore: ObservableObject {
                               white: white, cct: cct) {
                 statusErrors[device.id] = nil
             } else {
-                statusErrors[device.id] = Self.bleUnreachableMessage
+                statusErrors[device.id] = bleUnreachableReason(for: device)
                 briturnIntent.removeValue(forKey: device.id)
                 briturnStatus[device.id] = prev
             }
@@ -1188,7 +1205,7 @@ public final class DeviceStore: ObservableObject {
         let prev = briturnStatus[device.id]
         guard sendBriturnBLE(key: key, on: on, color: color, brightness: brightness,
                              white: white, cct: cct) else {
-            statusErrors[device.id] = Self.bleUnreachableMessage
+            statusErrors[device.id] = bleUnreachableReason(for: device)
             briturnIntent.removeValue(forKey: device.id)
             briturnStatus[device.id] = prev
             return

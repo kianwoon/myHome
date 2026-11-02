@@ -1216,7 +1216,11 @@ struct DeviceDetailView: View {
     private var transportLine: String {
         var lines: [String] = []
         if device.hasAddress { lines.append("WiFi: \(device.ip)") }
-        if store.isBLEAvailable(for: device) { lines.append("Bluetooth: in range") }
+        if store.isBLELive(for: device) {
+            lines.append("Bluetooth: in range")
+        } else if store.isBLEAvailable(for: device) {
+            lines.append("Bluetooth: seen before, not in range now")
+        }
         if store.isBriturnCloudAvailable(for: device) { lines.append("Briturn Cloud: connected") }
         if lines.isEmpty {
             lines.append(device.isBLE ? "Bluetooth: waiting for advertisement…" : "No transport")

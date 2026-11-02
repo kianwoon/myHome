@@ -83,9 +83,10 @@ final class DeviceStoreOfflineBLETests: XCTestCase {
         let (store, device, c) = try make(online: false, ble: true)
         store.bleKeysByDeviceID[device.id] = ["ble-641df0500161", "ble-cfbf120c-uuid"]
         store.bleLiveHook = { _ in false }
+        store.bleDiagnosticsHook = BLEDiagnostics()
         await store.setBriturn(device, on: true)
         XCTAssertTrue(c.ble.isEmpty)
-        XCTAssertEqual(store.statusErrors[device.id], DeviceStore.bleUnreachableMessage)
+        XCTAssertEqual(store.statusErrors[device.id], BLEReason.permissionPending)
         XCTAssertNil(store.briturnStatus[device.id], "optimistic state must not stick")
     }
 
