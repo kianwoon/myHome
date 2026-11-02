@@ -144,3 +144,13 @@ MyHomeApp/AppIcon.icns
 # local secrets — never commit
 client_secret_*.json
 .env.txt
+
+# Local secrets, build artifacts, SDK downloads, agent tooling state (never publish)
+appapi-session.json
+.build/
+.opencode/
+graphify-out/
+GoogleHomeSDK-1.11.0.tar.gz
+GoogleHomeSDK-1.11.0/
+MyHomeApp/MyHome-standalone.zip
+Tuya_+Smart+Life,+Smart+Living_7.12.0_APKPure.xapk
