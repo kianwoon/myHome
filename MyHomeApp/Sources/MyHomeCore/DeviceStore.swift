@@ -556,6 +556,7 @@ public final class DeviceStore: ObservableObject {
             let decoded = try JSONDecoder().decode([Device].self, from: data)
             bridgeRoster = decoded
             rebuildBriturnRoster()
+            await adoptBLEGroups()
             // Deliberately no isOn default: unknown power stays indeterminate
             // until status arrives.
             errorText = nil
@@ -563,6 +564,35 @@ public final class DeviceStore: ObservableObject {
             requestCodeMapIfNeeded()
         } catch {
             errorText = error.localizedDescription
+        }
+    }
+
+    /// A light grouped while BLE-only keeps that group once cloud sync gives
+    /// it a roster entry: push it to the bridge (unless the roster already
+    /// has one) and drop the app-local copy.
+    private func adoptBLEGroups() async {
+        guard !bleGroups.isEmpty else { return }
+        var groups = bleGroups
+        for light in bleSeen.values {
+            guard let group = groups[light.id], !group.isEmpty,
+                  let rosterID = matchRosterID(for: light),
+                  let index = bridgeRoster.firstIndex(where: { $0.id == rosterID }) else { continue }
+            if (bridgeRoster[index].group ?? "").isEmpty {
+                guard let reply = try? await bridge.request(
+                    ["cmd": "briturngroup", "id": rosterID, "group": group], timeout: 10),
+                      reply["ok"] as? Bool == true else { continue }
+                let old = bridgeRoster[index]
+                bridgeRoster[index] = Device(id: old.id, name: old.name, ip: old.ip, version: old.version,
+                                       category: old.category, group: group, online: old.online,
+                                       spec: old.spec, codes: old.codes, room: old.room)
+            }
+            groups.removeValue(forKey: light.id)
+        }
+        guard groups.count != bleGroups.count else { return }
+        bleGroups = groups
+        rebuildBriturnRoster()
+        if let data = try? JSONEncoder().encode(groups) {
+            UserDefaults.standard.set(data, forKey: Self.bleGroupsStorageKey)
         }
     }
 
