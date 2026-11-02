@@ -66,12 +66,94 @@ struct BriturnColorWheel: View {
     }
 }
 
-/// Compact swatch that opens the Briturn wheel in a popover — drop-in for the
-/// macOS ColorPicker well. `title` is shown beside the swatch when non-empty.
+/// Briturn's white plate (right-hand tab in the mobile app): a disc whose
+/// vertical axis is colour temperature — warm orange at the top, soft white in
+/// the middle, cool blue-white at the bottom. Emits the plate colour at the
+/// touched height; the bulb has no separate CCT command, so the temperature is
+/// rendered through the same RGB path as the wheel.
+struct BriturnWhitePlate: View {
+    @Binding var color: Color
+    @State private var position: Double?
+
+    /// (height 0 = top ... 1 = bottom, sRGB 0-255), sampled from the Briturn
+    /// app's plate.
+    private static let stops: [(Double, (Double, Double, Double))] = [
+        (0.0, (255, 147, 41)), (0.5, (253, 236, 226)), (1.0, (210, 224, 255))
+    ]
+    private static let matchTolerance = 0.04
+
+    static func rgb(at t: Double) -> (Double, Double, Double) {
+        let t = min(1, max(0, t))
+        let hi = stops.firstIndex { $0.0 >= t } ?? stops.count - 1
+        let lo = max(0, hi - 1)
+        let span = stops[hi].0 - stops[lo].0
+        let f = span > 0 ? (t - stops[lo].0) / span : 0
+        let a = stops[lo].1, b = stops[hi].1
+        return (a.0 + (b.0 - a.0) * f, a.1 + (b.1 - a.1) * f, a.2 + (b.2 - a.2) * f)
+    }
+
+    static func color(at t: Double) -> Color {
+        let c = rgb(at: t)
+        return Color(red: c.0 / 255, green: c.1 / 255, blue: c.2 / 255)
+    }
+
+    var body: some View {
+        GeometryReader { geo in
+            let side = min(geo.size.width, geo.size.height)
+            ZStack {
+                Circle().fill(LinearGradient(
+                    stops: Self.stops.map { Gradient.Stop(color: Self.color(at: $0.0), location: $0.0) },
+                    startPoint: .top, endPoint: .bottom))
+                Circle().stroke(Color.primary.opacity(0.15), lineWidth: 1)
+                if let t = position {
+                    Circle()
+                        .fill(Self.color(at: t))
+                        .frame(width: 18, height: 18)
+                        .overlay(Circle().stroke(Color.white, lineWidth: 2))
+                        .shadow(radius: 1.5)
+                        .offset(y: CGFloat(t - 0.5) * side)
+                }
+            }
+            .frame(width: side, height: side)
+            .position(x: geo.size.width / 2, y: geo.size.height / 2)
+            .contentShape(Circle())
+            .gesture(DragGesture(minimumDistance: 0).onChanged { value in
+                let t = min(1, max(0, Double((value.location.y - (geo.size.height - side) / 2) / side)))
+                position = t
+                color = Self.color(at: t)
+            })
+        }
+        .aspectRatio(1, contentMode: .fit)
+        .onAppear(perform: syncFromColor)
+        .onChange(of: color) { _ in syncFromColor() }
+    }
+
+    /// Show the knob only when the current colour sits on the plate.
+    private func syncFromColor() {
+        #if canImport(AppKit)
+        guard let ns = NSColor(color).usingColorSpace(.sRGB) else { return }
+        let cur = (Double(ns.redComponent) * 255, Double(ns.greenComponent) * 255, Double(ns.blueComponent) * 255)
+        var best: (t: Double, d: Double) = (0, .infinity)
+        for step in 0...100 {
+            let t = Double(step) / 100
+            let c = Self.rgb(at: t)
+            let d = ((c.0 - cur.0) * (c.0 - cur.0) + (c.1 - cur.1) * (c.1 - cur.1)
+                     + (c.2 - cur.2) * (c.2 - cur.2)).squareRoot() / 441.7
+            if d < best.d { best = (t, d) }
+        }
+        position = best.d <= Self.matchTolerance ? best.t : nil
+        #endif
+    }
+}
+
+/// Compact swatch that opens the Briturn plates in a popover — drop-in for the
+/// macOS ColorPicker well. Two tabs as in the mobile app: colour wheel and
+/// white plate. `title` is shown beside the swatch when non-empty.
 struct BriturnColorButton: View {
     let title: String
     @Binding var color: Color
     @State private var showing = false
+    @State private var whiteTab = false
 
     var body: some View {
         Button { showing.toggle() } label: {
@@ -85,9 +167,39 @@ struct BriturnColorButton: View {
         }
         .buttonStyle(.plain)
         .popover(isPresented: $showing, arrowEdge: .bottom) {
-            BriturnColorWheel(color: $color)
-                .frame(width: 200, height: 200)
-                .padding(14)
+            VStack(spacing: 12) {
+                if whiteTab {
+                    BriturnWhitePlate(color: $color).frame(width: 200, height: 200)
+                } else {
+                    BriturnColorWheel(color: $color).frame(width: 200, height: 200)
+                }
+                HStack(spacing: 10) {
+                    tabButton(selected: !whiteTab, action: { whiteTab = false }) {
+                        Circle().fill(AngularGradient(colors: (0...6).map {
+                            Color(hue: Double($0) / 6, saturation: 1, brightness: 1)
+                        }, center: .center))
+                    }
+                    tabButton(selected: whiteTab, action: { whiteTab = true }) {
+                        Circle().fill(LinearGradient(
+                            colors: [BriturnWhitePlate.color(at: 0), BriturnWhitePlate.color(at: 0.5),
+                                     BriturnWhitePlate.color(at: 1)],
+                            startPoint: .top, endPoint: .bottom))
+                    }
+                }
+            }
+            .padding(14)
         }
+    }
+
+    private func tabButton<Content: View>(
+        selected: Bool, action: @escaping () -> Void, @ViewBuilder content: () -> Content
+    ) -> some View {
+        Button(action: action) {
+            content()
+                .frame(width: 24, height: 24)
+                .overlay(Circle().stroke(selected ? Color.accentColor : Color.primary.opacity(0.25),
+                                         lineWidth: selected ? 2 : 1).padding(-3))
+        }
+        .buttonStyle(.plain)
     }
 }
