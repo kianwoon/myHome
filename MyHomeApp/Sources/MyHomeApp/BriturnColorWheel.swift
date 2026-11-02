@@ -17,7 +17,7 @@ struct BriturnColorWheel: View {
     /// full-value sRGB 0-255. Edit this list to change the row.
     static let presets: [(r: Double, g: Double, b: Double)] = [
         (255, 0, 0), (255, 255, 0), (0, 255, 0), (0, 255, 255),
-        (0, 0, 255), (255, 0, 255), (255, 128, 0)
+        (0, 0, 255), (255, 0, 255), (153, 255, 0), (144, 255, 0)
     ]
     static let presetMatchTolerance = 0.03
 
