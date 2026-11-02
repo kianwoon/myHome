@@ -1,4 +1,5 @@
 import Foundation
+import CoreBluetooth
 import XCTest
 @testable import MyHomeCore
 
@@ -47,5 +48,14 @@ final class BLEIdentityTests: XCTestCase {
         store.bleSeen[light.id] = light
         store.reattachBLETransports()
         XCTAssertEqual(store.bleKeysByDeviceID["briturn-0865f0ef89e3"], [light.id])
+    }
+
+    func testIsTuyaAdvert() {
+        XCTAssertTrue(BLEManager.isTuyaAdvert(name: "TY", mfrCompanyID: nil, serviceUUIDs: []))
+        XCTAssertTrue(BLEManager.isTuyaAdvert(name: "TUYA_ab", mfrCompanyID: nil, serviceUUIDs: []))
+        XCTAssertTrue(BLEManager.isTuyaAdvert(name: "", mfrCompanyID: 0x07D0, serviceUUIDs: []))
+        XCTAssertTrue(BLEManager.isTuyaAdvert(name: "", mfrCompanyID: nil, serviceUUIDs: [CBUUID(string: "A201")]))
+        XCTAssertTrue(BLEManager.isTuyaAdvert(name: "", mfrCompanyID: nil, serviceUUIDs: [CBUUID(string: "FD50")]))
+        XCTAssertFalse(BLEManager.isTuyaAdvert(name: "IOTWF4F1", mfrCompanyID: 0x5A00, serviceUUIDs: [CBUUID(string: "180F")]))
     }
 }

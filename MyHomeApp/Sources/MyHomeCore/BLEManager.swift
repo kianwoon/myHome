@@ -43,6 +43,8 @@ public final class BLEManager: NSObject, ObservableObject {
     /// Pre-filter advert accounting (every peripheral heard, accepted or not).
     private var advertUUIDsSeen: Set<UUID> = []
     private var advertUUIDsAccepted: Set<UUID> = []
+    /// Last logged Tuya-style payload signature per peripheral (log again only on change).
+    private var tuyaPayloadSeen: [UUID: String] = [:]
     private var rawStates: [String: DeviceStore.BriturnState] = [:]
     // Identity is the PERIPHERAL UUID everywhere (ids, link state). Manufacturer
     // data is only ever used to decode state: the bytes once used as a "MAC"
@@ -324,6 +326,20 @@ public final class BLEManager: NSObject, ObservableObject {
         rawStates[id] = state
     }
 
+    /// Tuya BLE identifiers (feasibility logging only; no behaviour depends on them).
+    static let tuyaNamePrefixes = ["TY", "TUYA_"]
+    static let tuyaMfrCompanyID = 0x07D0
+    static let tuyaServiceUUIDs: Set<CBUUID> = [CBUUID(string: "1910"), CBUUID(string: "A201"), CBUUID(string: "FD50")]
+
+    /// True when an advert looks like a Tuya BLE device (name, company id or service UUID).
+    static func isTuyaAdvert(name: String, mfrCompanyID: Int?, serviceUUIDs: [CBUUID]) -> Bool {
+        if tuyaNamePrefixes.contains(where: { name.hasPrefix($0) }) { return true }
+        if let id = mfrCompanyID, id == tuyaMfrCompanyID { return true }
+        return serviceUUIDs.contains { tuyaServiceUUIDs.contains($0) }
+    }
+
+    static func hexString(_ data: Data) -> String { data.map { String(format: "%02x", $0) }.joined() }
+
     /// "<companyId hex>/<payload length>" of the advertised manufacturer data, or "none".
     static func mfrSummary(_ adv: [String: Any]) -> String {
         let raw = adv[CBAdvertisementDataManufacturerDataKey]
@@ -358,6 +374,28 @@ public final class BLEManager: NSObject, ObservableObject {
     }
 }
 
+extension BLEManager {
+    /// Feasibility log for Tuya-style adverts (public broadcast data): once per
+    /// peripheral per run, again if the service/manufacturer bytes change.
+    func logTuyaAdvert(peripheral: CBPeripheral, name: String, advertisementData: [String: Any], rssi: Int) {
+        let svcs = (advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID]) ?? []
+        let mfrData = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data
+        var company: Int?
+        if let d = mfrData, d.count >= 2 { company = Int(d[d.startIndex]) | (Int(d[d.startIndex + 1]) << 8) }
+        guard Self.isTuyaAdvert(name: name, mfrCompanyID: company, serviceUUIDs: svcs) else { return }
+        let sd = (advertisementData[CBAdvertisementDataServiceDataKey] as? [CBUUID: Data]) ?? [:]
+        let svcList = svcs.map(\.uuidString).joined(separator: ",")
+        let sdList = sd.sorted { $0.key.uuidString < $1.key.uuidString }
+            .map { "\($0.key.uuidString):\(Self.hexString($0.value))" }.joined(separator: ",")
+        let mfrHex = mfrData.map(Self.hexString) ?? ""
+        let signature = "\(svcList)|\(sdList)|\(mfrHex)"
+        guard tuyaPayloadSeen[peripheral.identifier] != signature else { return }
+        tuyaPayloadSeen[peripheral.identifier] = signature
+        let connectable = (advertisementData[CBAdvertisementDataIsConnectable] as? NSNumber)?.boolValue ?? false
+        AppLog.ble.notice("MyHome: BLE tuya uuid=\(peripheral.identifier.uuidString.lowercased(), privacy: .public) name=\(name, privacy: .public) rssi=\(rssi, privacy: .public) svc=[\(svcList, privacy: .public)] svcdata=[\(sdList, privacy: .public)] mfr=\(mfrHex, privacy: .public) connectable=\(connectable, privacy: .public)")
+    }
+}
+
 extension BLEManager: CBCentralManagerDelegate {
     public func centralManagerDidUpdateState(_ central: CBCentralManager) {
         isBluetoothOn = central.state == .poweredOn
@@ -387,6 +425,7 @@ extension BLEManager: CBCentralManagerDelegate {
         if advertUUIDsSeen.insert(peripheral.identifier).inserted {
             AppLog.ble.notice("MyHome: BLE adv uuid=\(peripheral.identifier.uuidString.lowercased(), privacy: .public) name=\(localName ?? "", privacy: .public) periphName=\(peripheral.name ?? "", privacy: .public) rssi=\(RSSI.intValue, privacy: .public) mfr=\(Self.mfrSummary(advertisementData), privacy: .public) accepted=\(accepted, privacy: .public)")
         }
+        logTuyaAdvert(peripheral: peripheral, name: name, advertisementData: advertisementData, rssi: RSSI.intValue)
         guard accepted else { return }
         advertUUIDsAccepted.insert(peripheral.identifier)
 
