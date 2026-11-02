@@ -70,7 +70,8 @@ public enum FluxClient {
             r: rgbZero ? 0 : Int(f[6]),
             g: rgbZero ? 0 : Int(f[7]),
             b: rgbZero ? 0 : Int(f[8]),
-            w: Int(f[9])
+            w: Int(f[9]),
+            cool: Int(f[11])
         )
     }
 

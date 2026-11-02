@@ -896,7 +896,7 @@ struct BriturnCardControls: View {
         .onChange(of: store.briturnStatus[device.id]) { newState in
             guard !isDragging else { return }
             if let s = newState {
-                brightness = s.isWhiteMode ? Double(s.w) * 100.0 / 255.0
+                brightness = s.isWhiteMode ? Double(s.whiteLevel) * 100.0 / 255.0
                     : Double(max(s.r, s.g, s.b)) * 100.0 / 255.0
             }
         }
@@ -904,7 +904,7 @@ struct BriturnCardControls: View {
 
     private func syncFromStatus() {
         if let s = store.briturnStatus[device.id] {
-            brightness = s.isWhiteMode ? Double(s.w) * 100.0 / 255.0
+            brightness = s.isWhiteMode ? Double(s.whiteLevel) * 100.0 / 255.0
                 : Double(max(s.r, s.g, s.b)) * 100.0 / 255.0
         }
     }
@@ -1590,7 +1590,7 @@ struct BriturnGroupCard: View {
             brightness = Double(max(colored.r, colored.g, colored.b)) * 100.0 / 255.0
         } else if let white = white {
             color = .white
-            brightness = Double(white.w) * 100.0 / 255.0
+            brightness = Double(white.whiteLevel) * 100.0 / 255.0
         } else {
             // No colour set on any reachable member: leave the picker alone
             // rather than paint black.
@@ -1623,7 +1623,7 @@ struct BriturnGroupCard: View {
         applyTask = Task {
             try? await Task.sleep(nanoseconds: 350_000_000)
             guard !Task.isCancelled else { return }
-            await store.setBriturnGroupState(group, cct: cct)
+            await store.setBriturnGroupState(group, brightness: Int(brightness.rounded()), cct: cct)
         }
     }
 
@@ -2057,7 +2057,7 @@ struct BriturnControlsView: View {
                 blue: Double(state.b) / 255
             )
         }
-        brightness = state.isWhiteMode ? Double(state.w) * 100.0 / 255.0
+        brightness = state.isWhiteMode ? Double(state.whiteLevel) * 100.0 / 255.0
             : Double(max(state.r, state.g, state.b)) * 100.0 / 255.0
         clearSyncFlagSoon()
     }
@@ -2094,7 +2094,7 @@ struct BriturnControlsView: View {
         applyTask = Task {
             try? await Task.sleep(nanoseconds: 350_000_000)
             guard !Task.isCancelled else { return }
-            await store.setBriturn(device, cct: cct)
+            await store.setBriturn(device, brightness: Int(brightness.rounded()), cct: cct)
         }
     }
 

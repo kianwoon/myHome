@@ -839,6 +839,9 @@ BRITURN_OFF = bytes([0x71, 0x24])
 BRITURN_POWER_ON = 0x23
 # CCT packet (firmware 10, productId 0x5F): head + cct + bright + tail + checksum
 BRITURN_CCT_MAX = 100
+BRITURN_WARM_INDEX = 9    # state frame: warm white byte
+BRITURN_COOL_INDEX = 11   # state frame: cool white byte
+BRITURN_LEVEL_MAX = 255
 BRITURN_CCT_HEAD = [0x3B, 0xB1, 0x00, 0x00, 0x00]
 BRITURN_CCT_TAIL = [0x00, 0x00, 0x1E, 0x00, 0x00]
 
@@ -904,6 +907,7 @@ def handle_briturnstatus(request=None):
         "raw_power": frame[2],
         "mode": frame[3],
         "w": frame[9],
+        "cool": frame[BRITURN_COOL_INDEX],
         "r": frame[6],
         "g": frame[7],
         "b": frame[8],
@@ -920,13 +924,23 @@ def _briturn_frame(reply):
 
 def _briturn_read_rgb(config):
     """Read one device's current r/g/b, or None if unreachable/unparsable."""
+    state = _briturn_read_state(config)
+    return None if state is None else state[:3]
+
+
+def _briturn_read_state(config):
+    """Read (r, g, b, cct) — cct 0-100 derived from the warm/cool white
+    bytes (0 when both are zero) — or None if unreachable/unparsable."""
     reply = _briturn_exchange(config["ip"], BRITURN_QUERY)
     if not reply:
         return None
     frame = _briturn_frame(reply)
     if frame is None:
         return None
-    return frame[6], frame[7], frame[8]
+    warm, cool = frame[BRITURN_WARM_INDEX], frame[BRITURN_COOL_INDEX]
+    total = warm + cool
+    cct = int(cool * BRITURN_CCT_MAX / total + 0.5) if total else 0
+    return frame[6], frame[7], frame[8], cct
 
 
 def handle_briturnset(request=None):
@@ -984,16 +998,16 @@ def handle_briturnset(request=None):
         red, green, blue = channel("r"), channel("g"), channel("b")
         if not want_color:
             # brightness-only: base on the device's current colour
-            base = _briturn_read_rgb(config)
+            base = _briturn_read_state(config)
             if base is None:
                 return {"ok": False, "error": "device unreachable for brightness read"}
-            red, green, blue = base
+            red, green, blue, base_cct = base
             if red == green == blue == 0 and pct is not None:
-                # White mode: rgb channels read zero — brightness IS the warm
-                # white level, so scale the warm byte (scaling zeros would be
-                # a no-op and a stuck slider).
-                warm_level = int(pct * 255.0 / 100.0 + 0.5)
-                color_packet = bytes([0x31, 0, 0, 0, warm_level, 0xF0, 0xAA])
+                # White mode: rgb channels read zero — brightness scales the
+                # white output while PRESERVING the warm/cool balance, so
+                # resend the CCT packet with the current cct (a warm-only
+                # colour packet would snap a cool pick back to warm).
+                color_packet = _briturn_cct_packet(base_cct or 0, int(pct + 0.5))
             elif pct is not None:
                 peak = max(red, green, blue, 1)
                 factor = (pct * 255.0 / 100.0) / peak
@@ -1110,8 +1124,8 @@ def handle_briturnsetgroup(request):
         base — members may legitimately sit on different colours). None when
         the member is unreachable for the read."""
         if want_color:
-            return channel("r"), channel("g"), channel("b")
-        return _briturn_read_rgb(config)
+            return channel("r"), channel("g"), channel("b"), None
+        return _briturn_read_state(config)
 
     def packets_for(config):
         """Per-member packet list, or None when the member failed its read."""
@@ -1124,7 +1138,7 @@ def handle_briturnsetgroup(request):
             rgb = base_color(config)
             if rgb is None:
                 return None
-            red, green, blue = rgb
+            red, green, blue, base_cct = rgb
             warm = channel("w")
             if want_brightness:
                 raw_pct = request.get("brightness")
@@ -1136,8 +1150,7 @@ def handle_briturnsetgroup(request):
                     # White mode: rgb channels read zero — brightness IS the
                     # warm white level, so scale the warm byte. Scaling zeros
                     # would send level 0 and drive a lit white member dark.
-                    warm_level = int(pct * 255.0 / 100.0 + 0.5)
-                    pk.append(bytes([0x31, 0, 0, 0, warm_level, 0xF0, 0xAA]))
+                    pk.append(_briturn_cct_packet(base_cct or 0, int(pct + 0.5)))
                     return pk
                 peak = max(red, green, blue, 1)
                 factor = (pct * 255.0 / 100.0) / peak

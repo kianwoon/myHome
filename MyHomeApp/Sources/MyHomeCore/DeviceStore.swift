@@ -508,8 +508,13 @@ public final class DeviceStore: ObservableObject {
         public let g: Int
         public let b: Int
         public let w: Int
+        /// Cool-white channel (state frame byte 11); 0 when unknown.
+        public let cool: Int
 
-        init(on: Bool, rawPower: Int, mode: Int, r: Int, g: Int, b: Int, w: Int) {
+        /// Combined white output 0-255 (warm + cool), for brightness display.
+        public var whiteLevel: Int { min(w + cool, 255) }
+
+        init(on: Bool, rawPower: Int, mode: Int, r: Int, g: Int, b: Int, w: Int, cool: Int = 0) {
             self.on = on
             self.rawPower = rawPower
             self.mode = mode
@@ -517,6 +522,7 @@ public final class DeviceStore: ObservableObject {
             self.g = g
             self.b = b
             self.w = w
+            self.cool = cool
         }
 
         public var isWhiteMode: Bool {
@@ -542,6 +548,7 @@ public final class DeviceStore: ObservableObject {
             self.g = g
             self.b = b
             self.w = w
+            self.cool = reply["cool"] as? Int ?? 0
         }
     }
 
@@ -616,7 +623,7 @@ public final class DeviceStore: ObservableObject {
             }
         }
         if let want = intent.w {
-            if abs(state.w - want) <= Self.briturnBrightnessTolerance || authoritative {
+            if abs(state.whiteLevel - want) <= Self.briturnBrightnessTolerance || authoritative {
                 intent.w = nil
             } else {
                 contradicts = true
