@@ -255,10 +255,10 @@ struct DashboardView: View {
                     .frame(maxWidth: .infinity)
                     .padding(.top, 60)
                 } else {
-                    LazyVGrid(
-                        columns: [GridItem(.adaptive(minimum: 250), spacing: 14, alignment: .top)],
-                        spacing: 14
-                    ) {
+                    // Every card in this dashboard shares the tallest card's
+                    // height, recomputed each layout pass (late-loading
+                    // controls included) - see EqualHeightCardGrid.
+                    EqualHeightCardGrid(minimumColumnWidth: 250, spacing: 14) {
                         ForEach(filtered) { device in
                             DeviceCard(
                                 device: device,
@@ -521,10 +521,10 @@ struct DeviceCard: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(12)
-        // Height is the card's own content: no row-filling frame here. The
-        // grid's `.top` cell alignment keeps shorter cards flush with the
-        // tallest card in their row.
         .frame(maxWidth: .infinity, alignment: .topLeading)
+        // Fill the shared card height set by EqualHeightCardGrid (the
+        // dashboard's tallest card), content top-aligned, slack below.
+        .frame(maxHeight: .infinity, alignment: .topLeading)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(Color(nsColor: .controlBackgroundColor))
