@@ -1514,7 +1514,7 @@ struct BriturnGroupCard: View {
                 .labelsHidden()
                 .toggleStyle(.switch)
                 .controlSize(.mini)
-                ColorPicker("", selection: $color, supportsOpacity: false)
+                BriturnColorButton(title: "", color: $color)
                     .labelsHidden()
                     .onChange(of: color) { newValue in
                         scheduleColorApply(newValue)
@@ -1793,7 +1793,7 @@ struct BriturnTimerEditor: View {
             if turnsOn {
                 Toggle("Use colour", isOn: $useColour)
                 if useColour {
-                    ColorPicker("Colour", selection: $colour, supportsOpacity: false)
+                    BriturnColorButton(title: "Colour", color: $colour)
                 }
             }
 
@@ -1946,7 +1946,7 @@ struct BriturnControlsView: View {
                 )
 
                 HStack {
-                    ColorPicker("Color", selection: $color, supportsOpacity: false)
+                    BriturnColorButton(title: "Color", color: $color)
                         .onChange(of: color) { newValue in
                             scheduleColorApply(newValue)
                         }
