@@ -702,14 +702,16 @@ public final class DeviceStore: ObservableObject {
         on: Bool? = nil,
         color: (red: Int, green: Int, blue: Int)? = nil,
         brightness: Int? = nil,
-        white: Bool = false
+        white: Bool = false,
+        cct: Int? = nil
     ) async {
         guard isBriturn(device) else { return }
-        guard on != nil || color != nil || brightness != nil || white else { return }
+        guard on != nil || color != nil || brightness != nil || white || cct != nil else { return }
         // Transport routing: BLE-only lights, and dual-mode lights that lost
         // WiFi (no IP), go over Bluetooth.
         if device.isBLE || (bleFallbackIDs.contains(device.id) && !device.hasAddress) {
-            await setBriturnViaBLE(device, on: on, color: color, brightness: brightness, white: white)
+            await setBriturnViaBLE(device, on: on, color: color, brightness: brightness,
+                                   white: white || cct != nil)
             return
         }
         guard device.hasAddress else {
@@ -730,10 +732,13 @@ public final class DeviceStore: ObservableObject {
         }
         if let brightness = brightness { payload["brightness"] = brightness }
         if white { payload["w"] = 128 }
+        // CCT drives the bulb's real warm/cool white channels (bridge sends
+        // the 0x3B 0xB1 packet instead of a colour packet).
+        if let cct = cct { payload["cct"] = cct }
         // Optimistic paint from the request.
         let prev = briturnStatus[device.id]
         let nextOn = on ?? (prev?.on ?? false)
-        let paintedWhite = white || (color == nil && (prev?.isWhiteMode ?? false) && brightness != nil)
+        let paintedWhite = white || cct != nil || (color == nil && (prev?.isWhiteMode ?? false) && brightness != nil)
         let paintedW = paintedWhite
             ? brightness.map { min(Int((Double($0) * 2.55).rounded()), 255) }
             : nil
@@ -749,15 +754,17 @@ public final class DeviceStore: ObservableObject {
         briturnStatus[device.id] = painted
         // Defend exactly what was painted, for every channel the user touched
         // (power, brightness/white, colour) — not just power.
+        // CCT readback bytes vary with the temperature, so a CCT set defends
+        // power only (no w/colour intent).
         briturnIntent[device.id] = briturnIntentSnapshot(
-            on: on, color: color, brightness: brightness,
-            paintedWhite: paintedWhite, painted: painted
+            on: on, color: color, brightness: cct != nil ? nil : brightness,
+            paintedWhite: paintedWhite && cct == nil, painted: painted
         )
         do {
             let reply = try await bridge.request(payload, timeout: 30)
             guard reply["ok"] as? Bool == true else {
                 await fallbackToBLEOrFail(device, on: on, color: color, brightness: brightness,
-                                          white: white, prev: prev,
+                                          white: white || cct != nil, prev: prev,
                                           message: reply["error"] as? String ?? "Briturn set failed.")
                 return
             }
@@ -767,7 +774,7 @@ public final class DeviceStore: ObservableObject {
             }
         } catch {
             await fallbackToBLEOrFail(device, on: on, color: color, brightness: brightness,
-                                      white: white, prev: prev,
+                                      white: white || cct != nil, prev: prev,
                                       message: error.localizedDescription)
         }
     }
@@ -825,6 +832,8 @@ public final class DeviceStore: ObservableObject {
         if let on = on { ble.setPower(id: key, on: on) }
         if let color = color { ble.setColor(id: key, red: color.red, green: color.green, blue: color.blue) }
         if let brightness = brightness { ble.setBrightness(id: key, percent: brightness) }
+        // BLE has no verified CCT frame yet: cct falls back to setWhite (the
+        // closest existing path; the BLE CCT frame is UNVERIFIED).
         if white { ble.setWhite(id: key, level: 128) }
 
         let prev = briturnStatus[device.id]
@@ -949,9 +958,10 @@ public final class DeviceStore: ObservableObject {
         _ group: String,
         on: Bool? = nil,
         color: (red: Int, green: Int, blue: Int)? = nil,
-        brightness: Int? = nil
+        brightness: Int? = nil,
+        cct: Int? = nil
     ) async {
-        guard on != nil || color != nil || brightness != nil else { return }
+        guard on != nil || color != nil || brightness != nil || cct != nil else { return }
         let memberDevices = members(of: group)
         let memberIDs = memberDevices.filter(\.hasAddress).map(\.id)
         var payload: [String: Any] = ["cmd": "briturnsetgroup", "group": group]
@@ -962,12 +972,13 @@ public final class DeviceStore: ObservableObject {
             payload["b"] = color.blue
         }
         if let brightness = brightness { payload["brightness"] = brightness }
+        if let cct = cct { payload["cct"] = cct }
         // Optimistic: paint EVERY member from the request plus its OWN prior
         // state — a member with no status yet must still show the group's new
         // state immediately, and a colour-only set must not clobber members'
         // individual power states. Brightness scales each member's own colour.
         var scale: Double = 1
-        if let brightness = brightness, color == nil {
+        if let brightness = brightness, color == nil, cct == nil {
             scale = Double(brightness) * 2.55 / Double(
                 max(briturnStatus[memberIDs.first ?? ""]?.r ?? 255,
                     briturnStatus[memberIDs.first ?? ""]?.g ?? 0,
@@ -977,14 +988,15 @@ public final class DeviceStore: ObservableObject {
         for id in memberIDs {
             let prev = briturnStatus[id]
             let nextOn = on ?? (prev?.on ?? false)
-            let paintedWhite = color == nil && (prev?.isWhiteMode ?? false) && brightness != nil
+            let paintedWhite = cct != nil
+                || (color == nil && (prev?.isWhiteMode ?? false) && brightness != nil)
             let paintedW = paintedWhite
                 ? brightness.map { min(Int((Double($0) * 2.55).rounded()), 255) }
                 : nil
-            var r = color?.red ?? prev?.r ?? 255
-            var g = color?.green ?? prev?.g ?? 255
-            var b = color?.blue ?? prev?.b ?? 255
-            if color == nil, brightness != nil {
+            var r = paintedWhite && cct != nil ? 0 : (color?.red ?? prev?.r ?? 255)
+            var g = paintedWhite && cct != nil ? 0 : (color?.green ?? prev?.g ?? 255)
+            var b = paintedWhite && cct != nil ? 0 : (color?.blue ?? prev?.b ?? 255)
+            if color == nil, brightness != nil, cct == nil {
                 r = min(Int(Double(r) * scale), 255)
                 g = min(Int(Double(g) * scale), 255)
                 b = min(Int(Double(b) * scale), 255)
@@ -1001,8 +1013,8 @@ public final class DeviceStore: ObservableObject {
             // defend colour, white-mode brightness defends w, and every
             // member keeps its individual power display untouched.
             briturnIntent[id] = briturnIntentSnapshot(
-                on: on, color: color, brightness: brightness,
-                paintedWhite: paintedWhite, painted: painted
+                on: on, color: color, brightness: cct != nil ? nil : brightness,
+                paintedWhite: paintedWhite && cct == nil, painted: painted
             )
         }
         do {

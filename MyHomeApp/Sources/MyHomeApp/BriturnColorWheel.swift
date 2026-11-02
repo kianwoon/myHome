@@ -69,10 +69,14 @@ struct BriturnColorWheel: View {
 /// Briturn's white plate (right-hand tab in the mobile app): a disc whose
 /// vertical axis is colour temperature — warm orange at the top, soft white in
 /// the middle, cool blue-white at the bottom. Emits the plate colour at the
-/// touched height; the bulb has no separate CCT command, so the temperature is
-/// rendered through the same RGB path as the wheel.
+/// touched height. With `onCCT` set it also reports the plate position as a
+/// 0-100 colour temperature (0 = warm, 100 = cool) so the caller can drive the
+/// bulb's real warm/cool white channels; without it, the colour binding is the
+/// only output (RGB approximation).
 struct BriturnWhitePlate: View {
     @Binding var color: Color
+    var onCCT: ((Int) -> Void)? = nil
+    private static let cctMax = 100.0
     @State private var position: Double?
 
     /// (height 0 = top ... 1 = bottom, sRGB 0-255), sampled from the Briturn
@@ -121,6 +125,7 @@ struct BriturnWhitePlate: View {
                 let t = min(1, max(0, Double((value.location.y - (geo.size.height - side) / 2) / side)))
                 position = t
                 color = Self.color(at: t)
+                onCCT?(Int((t * Self.cctMax).rounded()))
             })
         }
         .aspectRatio(1, contentMode: .fit)
@@ -152,15 +157,30 @@ struct BriturnWhitePlate: View {
 struct BriturnColorButton: View {
     let title: String
     @Binding var color: Color
+    /// Fires with 0-100 (0 warm, 100 cool) from the white tab INSTEAD of
+    /// writing `color`, so callers that send RGB on colour change don't also
+    /// send an RGB approximation. nil = white tab writes `color` (RGB path).
+    var onCCT: ((Int) -> Void)? = nil
+    var showsWhiteTab: Bool = true
     @State private var showing = false
     @State private var whiteTab = false
+    /// Swatch colour for the white-plate position when onCCT is in use; kept
+    /// local so the parent's `color` (and its RGB send) is untouched.
+    @State private var plateSwatch: Color?
+
+    private var swatchColor: Color { plateSwatch ?? color }
+
+    private var plateBinding: Binding<Color> {
+        guard onCCT != nil else { return $color }
+        return Binding(get: { plateSwatch ?? color }, set: { plateSwatch = $0 })
+    }
 
     var body: some View {
         Button { showing.toggle() } label: {
             HStack(spacing: 6) {
                 if !title.isEmpty { Text(title) }
                 Circle()
-                    .fill(color)
+                    .fill(swatchColor)
                     .frame(width: 20, height: 20)
                     .overlay(Circle().stroke(Color.primary.opacity(0.3), lineWidth: 1))
             }
@@ -168,8 +188,8 @@ struct BriturnColorButton: View {
         .buttonStyle(.plain)
         .popover(isPresented: $showing, arrowEdge: .bottom) {
             VStack(spacing: 12) {
-                if whiteTab {
-                    BriturnWhitePlate(color: $color).frame(width: 200, height: 200)
+                if whiteTab && showsWhiteTab {
+                    BriturnWhitePlate(color: plateBinding, onCCT: onCCT).frame(width: 200, height: 200)
                 } else {
                     BriturnColorWheel(color: $color).frame(width: 200, height: 200)
                 }
@@ -179,16 +199,19 @@ struct BriturnColorButton: View {
                             Color(hue: Double($0) / 6, saturation: 1, brightness: 1)
                         }, center: .center))
                     }
-                    tabButton(selected: whiteTab, action: { whiteTab = true }) {
-                        Circle().fill(LinearGradient(
-                            colors: [BriturnWhitePlate.color(at: 0), BriturnWhitePlate.color(at: 0.5),
-                                     BriturnWhitePlate.color(at: 1)],
-                            startPoint: .top, endPoint: .bottom))
+                    if showsWhiteTab {
+                        tabButton(selected: whiteTab, action: { whiteTab = true }) {
+                            Circle().fill(LinearGradient(
+                                colors: [BriturnWhitePlate.color(at: 0), BriturnWhitePlate.color(at: 0.5),
+                                         BriturnWhitePlate.color(at: 1)],
+                                startPoint: .top, endPoint: .bottom))
+                        }
                     }
                 }
             }
             .padding(14)
         }
+        .onChange(of: color) { _ in plateSwatch = nil }
     }
 
     private func tabButton<Content: View>(

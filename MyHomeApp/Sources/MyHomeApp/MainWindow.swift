@@ -1514,7 +1514,7 @@ struct BriturnGroupCard: View {
                 .labelsHidden()
                 .toggleStyle(.switch)
                 .controlSize(.mini)
-                BriturnColorButton(title: "", color: $color)
+                BriturnColorButton(title: "", color: $color, onCCT: { scheduleCCTApply($0) })
                     .labelsHidden()
                     .onChange(of: color) { newValue in
                         scheduleColorApply(newValue)
@@ -1612,6 +1612,18 @@ struct BriturnGroupCard: View {
             try? await Task.sleep(nanoseconds: 350_000_000)
             guard !Task.isCancelled else { return }
             await store.setBriturnGroupState(group, color: rgb)
+        }
+    }
+
+    /// Debounced white-plate apply: drives the real warm/cool white channels.
+    private func scheduleCCTApply(_ cct: Int) {
+        guard !isSyncingPicker else { return }
+        lastColorEdit = Date()
+        applyTask?.cancel()
+        applyTask = Task {
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard !Task.isCancelled else { return }
+            await store.setBriturnGroupState(group, cct: cct)
         }
     }
 
@@ -1793,7 +1805,7 @@ struct BriturnTimerEditor: View {
             if turnsOn {
                 Toggle("Use colour", isOn: $useColour)
                 if useColour {
-                    BriturnColorButton(title: "Colour", color: $colour)
+                    BriturnColorButton(title: "Colour", color: $colour, showsWhiteTab: false)
                 }
             }
 
@@ -1946,7 +1958,7 @@ struct BriturnControlsView: View {
                 )
 
                 HStack {
-                    BriturnColorButton(title: "Color", color: $color)
+                    BriturnColorButton(title: "Color", color: $color, onCCT: { scheduleCCTApply($0) })
                         .onChange(of: color) { newValue in
                             scheduleColorApply(newValue)
                         }
@@ -2071,6 +2083,18 @@ struct BriturnControlsView: View {
             try? await Task.sleep(nanoseconds: 350_000_000)
             guard !Task.isCancelled else { return }
             await store.setBriturn(device, color: rgb)
+        }
+    }
+
+    /// Debounced white-plate apply: drives the real warm/cool white channels.
+    private func scheduleCCTApply(_ cct: Int) {
+        guard !isSyncingPicker else { return }
+        lastColorEdit = Date()
+        applyTask?.cancel()
+        applyTask = Task {
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard !Task.isCancelled else { return }
+            await store.setBriturn(device, cct: cct)
         }
     }
 

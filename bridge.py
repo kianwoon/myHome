@@ -14,8 +14,10 @@ Requests:
     {"cmd":"setroom","id":"<device-id>","room":"<room or empty to clear>"}
     {"cmd":"briturnstatus","id":"<briturn-device-id>"}
     {"cmd":"briturnset","id":"<briturn-device-id>","on":true,"r":255,"g":0,"b":0}
+    {"cmd":"briturnset","id":"<briturn-device-id>","cct":50,"brightness":100}   (cct 0=warm .. 100=cool)
     {"cmd":"briturngroup","id":"<briturn-device-id>","group":"Living Room"}
     {"cmd":"briturnsetgroup","group":"Living Room","on":true,"r":255,"g":0,"b":0}
+    {"cmd":"briturnsetgroup","group":"Living Room","cct":0,"brightness":80}
     {"cmd":"briturntimers","id":"<briturn-device-id>"}
     {"cmd":"briturntimerset","id":"<briturn-device-id>","timers":[{"time":"08:00","days":["mon","tue"],"action":"on"},{"time":"22:00","days":["mon","tue","wed"],"action":"off"}]}
     {"cmd":"briturntimersetgroup","group":"Living Room","timers":[...same entries...]}
@@ -835,6 +837,10 @@ BRITURN_QUERY = bytes([0x81, 0x8A, 0x8B])
 BRITURN_ON = bytes([0x71, 0x23])
 BRITURN_OFF = bytes([0x71, 0x24])
 BRITURN_POWER_ON = 0x23
+# CCT packet (firmware 10, productId 0x5F): head + cct + bright + tail + checksum
+BRITURN_CCT_MAX = 100
+BRITURN_CCT_HEAD = [0x3B, 0xB1, 0x00, 0x00, 0x00]
+BRITURN_CCT_TAIL = [0x00, 0x00, 0x1E, 0x00, 0x00]
 
 
 def _briturn_exchange(ip, send, expect_reply=True, attempts=2, timeout=3.0):
@@ -940,10 +946,11 @@ def handle_briturnset(request=None):
     request = request or {}
 
     want_power = "on" in request
-    want_color = any(key in request for key in ("r", "g", "b"))
+    want_cct = "cct" in request
+    want_color = any(key in request for key in ("r", "g", "b")) and not want_cct
     want_brightness = "brightness" in request
-    if not want_power and not want_color and not want_brightness:
-        return {"ok": False, "error": "nothing to set: pass 'on', r/g/b and/or brightness"}
+    if not want_power and not want_color and not want_brightness and not want_cct:
+        return {"ok": False, "error": "nothing to set: pass 'on', r/g/b, cct and/or brightness"}
 
     def channel(key, default=0):
         try:
@@ -951,14 +958,23 @@ def handle_briturnset(request=None):
         except (TypeError, ValueError):
             return default
 
+    cct_packet = None
+    if want_cct:
+        # Real warm/cool white channels; replaces any colour packet.
+        try:
+            cct_bright = int(float(request.get("brightness"))) if want_brightness else BRITURN_CCT_MAX
+            cct_packet = _briturn_cct_packet(request.get("cct"), cct_bright)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "cct and brightness must be numbers 0-100"}
+
     # Brightness semantics: the 2014 protocol has no brightness command —
     # Magic Home scales the peak colour channel. brightness=50 makes the
     # strongest channel 50% (127), preserving hue. Explicit r/g/b wins as the
     # base; otherwise the device's current colour is the base.
     brightness = request.get("brightness")
     pct = None
-    color_packet = None
-    if want_color or brightness is not None:
+    color_packet = cct_packet
+    if cct_packet is None and (want_color or brightness is not None):
         if brightness is not None:
             try:
                 pct = min(max(float(brightness), 0), 100)
@@ -1068,16 +1084,26 @@ def handle_briturnsetgroup(request):
     group = group.strip()
 
     want_power = "on" in request
-    want_color = any(key in request for key in ("r", "g", "b"))
+    want_cct = "cct" in request
+    want_color = any(key in request for key in ("r", "g", "b")) and not want_cct
     want_brightness = "brightness" in request
-    if not want_power and not want_color and not want_brightness:
-        return {"ok": False, "error": "nothing to set: pass 'on', r/g/b and/or brightness"}
+    if not want_power and not want_color and not want_brightness and not want_cct:
+        return {"ok": False, "error": "nothing to set: pass 'on', r/g/b, cct and/or brightness"}
 
     def channel(key, default=0):
         try:
             return min(max(int(request.get(key, default)), 0), 255)
         except (TypeError, ValueError):
             return default
+
+    cct_packet = None
+    if want_cct:
+        # Real warm/cool white channels; replaces any colour packet.
+        try:
+            cct_bright = int(float(request.get("brightness"))) if want_brightness else BRITURN_CCT_MAX
+            cct_packet = _briturn_cct_packet(request.get("cct"), cct_bright)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "cct and brightness must be numbers 0-100"}
 
     def base_color(config):
         """Explicit r/g/b wins; else the member's current colour (its own
@@ -1092,7 +1118,9 @@ def handle_briturnsetgroup(request):
         pk = []
         if want_power:
             pk.append(BRITURN_ON if bool(request.get("on")) else BRITURN_OFF)
-        if want_color or want_brightness:
+        if cct_packet is not None:
+            pk.append(cct_packet)
+        elif want_color or want_brightness:
             rgb = base_color(config)
             if rgb is None:
                 return None
@@ -1192,6 +1220,14 @@ BRITURN_DAY_MASKS = {"mon": 0x02, "tue": 0x04, "wed": 0x08, "thu": 0x10,
 
 def _briturn_checksum(cmd):
     return bytes([sum(cmd) & 0xFF])
+
+
+def _briturn_cct_packet(cct, bright):
+    """Raw white/colour-temperature packet: warm<->cool blend, both 0-100."""
+    cct = min(max(int(cct), 0), BRITURN_CCT_MAX)
+    bright = min(max(int(bright), 0), BRITURN_CCT_MAX)
+    cmd = bytes(BRITURN_CCT_HEAD + [cct, bright] + BRITURN_CCT_TAIL)
+    return cmd + _briturn_checksum(cmd)
 
 
 def _briturn_set_time_packet():
