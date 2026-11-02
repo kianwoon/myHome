@@ -28,6 +28,22 @@ final class BriturnCloudDeviceTests: XCTestCase {
         XCTAssertEqual((entry?["nested"] as? [String: Any])?.keys.sorted(), ["roomName"])
     }
 
+    func testMembershipSummaryUnionsKeysAndMasksIdentity() {
+        let items: [[String: Any]] = [
+            ["deviceId": 123456789, "macAddress": "AABBCCDDEEFF", "name": "A", "entityData": ["online": true]],
+            ["deviceId": 987654321, "groupId": 42, "roomId": 7, "entityData": ["meshId": 5, "bright": 1]]]
+        let summary = BriturnCloudClient.membershipSummary(items)
+        XCTAssertEqual(summary["count"] as? Int, 2)
+        XCTAssertEqual(summary["topLevelKeys"] as? [String], ["deviceId", "entityData", "groupId", "macAddress", "name", "roomId"])
+        XCTAssertEqual(summary["entityDataKeys"] as? [String], ["bright", "meshId", "online"])
+        let rows = summary["membershipValues"] as? [[String: Any]]
+        XCTAssertEqual(rows?.count, 1)
+        XCTAssertEqual(rows?[0]["device"] as? String, "…4321")
+        XCTAssertEqual(rows?[0]["groupId"] as? Int, 42)
+        XCTAssertEqual(rows?[0]["entityData.meshId"] as? Int, 5)
+        XCTAssertNil(rows?[0]["deviceId"])
+    }
+
     func testMACMergeKeepsLocalTransportAndGroupsWithoutDuplicates() throws {
         let cloud = try BriturnCloudDevice(json: item(), homeID: 7)
         let local = Device(id: "briturn-aabbccddeeff", name: "Old", ip: "192.0.2.10", version: "1", category: "briturn", group: "Study", online: true)

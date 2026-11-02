@@ -280,8 +280,8 @@ public actor BriturnCloudClient {
         return devices.values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
-    /// Read-only discovery of how Briturn models groups/rooms: raw replies of the
-    /// group and home endpoints plus one full device entry, keyed by endpoint.
+    /// Read-only discovery of where group/room membership lives. Only list/get style
+    /// endpoints are called; each is independent and a failure is recorded, never thrown.
     public func probeGroups() async throws -> [String: Any] {
         await acquireSessionOperation()
         defer { releaseSessionOperation() }
@@ -292,12 +292,64 @@ public actor BriturnCloudClient {
             throw BriturnCloudError.invalidResponse
         }
         var result: [String: Any] = [:]
-        for path in ["/app/device/group/list", "/app/home/get"] {
-            result[path] = try await authenticatedPost(path: path, body: ["homeId": homeID])
+        func record(_ path: String, _ body: [String: Any]) async -> [String: Any]? {
+            do {
+                let response = try await authenticatedPost(path: path, body: body)
+                result[path] = response
+                return response
+            } catch is CancellationError {
+                return nil
+            } catch {
+                var failure: [String: Any] = ["error": (error as? BriturnCloudError)?.errorDescription ?? "request failed"]
+                if case BriturnCloudError.server(let code)? = error as? BriturnCloudError { failure["code"] = code }
+                result[path] = failure
+                return nil
+            }
         }
-        let devices = try await authenticatedPost(path: "/app/device/list", body: ["homeId": homeID])
-        if let first = (devices["data"] as? [[String: Any]])?.first { result["/app/device/list (first entry)"] = first }
+        let homeBody: [String: Any] = ["homeId": homeID]
+        let groups = await record("/app/device/group/list", homeBody)
+        _ = await record("/app/home/get", homeBody)
+        if let device = await record("/app/device/list", homeBody) {
+            result["/app/device/list (membership)"] = Self.membershipSummary(device["data"] as? [[String: Any]] ?? [])
+        }
+        if let all = await record("/app/device/list/all", homeBody) {
+            result["/app/device/list/all (membership)"] = Self.membershipSummary(all["data"] as? [[String: Any]] ?? [])
+        }
+        if let groupID = (groups?["data"] as? [[String: Any]])?.lazy.compactMap({ $0["groupId"] }).first {
+            _ = await record("/app/device/group/list (with groupId)", ["homeId": homeID, "groupId": groupID])
+        }
+        for path in Self.probeExtraPaths { _ = await record(path, homeBody) }
         return result
+    }
+
+    /// Other list/get endpoints seen in the Android app that could carry membership.
+    static let probeExtraPaths = ["/app/device/relation/list", "/app/device/friendGroup/list", "/app/location/list"]
+
+    /// Key names worth keeping per device when hunting for group/room membership.
+    nonisolated(unsafe) private static let membershipKey = try! NSRegularExpression(
+        pattern: "group|room|mesh|place|home|relation", options: .caseInsensitive)
+    private static let probeIdentityKeys = ["deviceId", "macAddress", "mac"]
+
+    /// Union of top-level and entityData keys over every entry, plus per-device values of
+    /// membership-looking keys. Device id/mac are reduced to their last 4 characters.
+    static func membershipSummary(_ items: [[String: Any]]) -> [String: Any] {
+        func relevant(_ key: String) -> Bool {
+            membershipKey.firstMatch(in: key, range: NSRange(key.startIndex..., in: key)) != nil
+        }
+        func tail(_ value: Any?) -> String { "…" + String(describing: value ?? "").suffix(4) }
+        var topKeys = Set<String>(), dataKeys = Set<String>()
+        var perDevice: [[String: Any]] = []
+        for item in items {
+            topKeys.formUnion(item.keys)
+            let data = item["entityData"] as? [String: Any] ?? [:]
+            dataKeys.formUnion(data.keys)
+            var row: [String: Any] = ["device": tail(item["deviceId"] ?? item["macAddress"])]
+            for (key, value) in item where relevant(key) && !probeIdentityKeys.contains(key) { row[key] = value }
+            for (key, value) in data where relevant(key) { row["entityData." + key] = value }
+            if row.count > 1 { perDevice.append(row) }
+        }
+        return ["count": items.count, "topLevelKeys": topKeys.sorted(), "entityDataKeys": dataKeys.sorted(),
+                "membershipValues": perDevice]
     }
 
     public func queryStates(devices: [BriturnCloudDevice]) async throws -> [String: DeviceStore.BriturnState] {
