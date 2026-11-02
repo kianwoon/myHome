@@ -148,6 +148,9 @@ public final class BLEManager: NSObject, ObservableObject {
 
     // MARK: - Internals
 
+    /// True when this run has discovered a peripheral for `id` (stale persisted entries are not live).
+    func hasPeripheral(id: String) -> Bool { peripherals[id] != nil }
+
     private func send(id: String, command: [UInt8]) {
         let wrapped = transport(command)
         guard let peripheral = peripherals[id] else { return }

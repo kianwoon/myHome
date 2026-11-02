@@ -231,7 +231,11 @@ public final class DeviceStore: ObservableObject {
     private func attachBLE(_ light: BLELight) -> Bool {
         guard let tuyaID = matchRosterID(for: light) else { return false }
         bleFallbackIDs.insert(tuyaID)
-        bleKeysByDeviceID[tuyaID] = light.id
+        // The same physical light can advertise under several ids (mfr-derived
+        // MAC, CoreBluetooth UUID): keep them all, resolve the live one at send time.
+        var keys = bleKeysByDeviceID[tuyaID] ?? []
+        if !keys.contains(light.id) { keys.append(light.id) }
+        bleKeysByDeviceID[tuyaID] = keys
         return true
     }
 
@@ -392,6 +396,7 @@ public final class DeviceStore: ObservableObject {
                                     white: Bool = false, cct: Int?) async -> Bool {
         let mapped = devices.compactMap { briturnCloudDevices[$0.id] }
         guard mapped.count == devices.count, !mapped.isEmpty else { return false }
+        NSLog("MyHome: Briturn route=cloud devices=%d", mapped.count)
         let ids = Set(devices.map(\.id))
         statusLoading.formUnion(ids)
         defer { statusLoading.subtract(ids) }
@@ -431,8 +436,10 @@ public final class DeviceStore: ObservableObject {
     /// Test seams (internal): replace the cloud control call / the BLE send.
     var briturnCloudControlHook: (([BriturnCloudDevice], Bool?) async throws -> [String: BriturnState])?
     var briturnBLESendHook: ((String, Bool?) -> Void)?
-    /// bleKey ("ble-<mac>") per roster id, for addressing BLEManager.
-    var bleKeysByDeviceID: [String: String] = [:]
+    /// Candidate bleKeys ("ble-<mac>" / "ble-<uuid>") per roster id, for addressing BLEManager.
+    var bleKeysByDeviceID: [String: [String]] = [:]
+    /// Test seam (internal): overrides whether a BLE key has a live peripheral.
+    var bleLiveHook: ((String) -> Bool)?
     /// Group assignment for BLE-only lights. The roster can't hold these (no
     /// bridge entry), so the app persists them locally — same feature surface,
     /// different storage.
@@ -448,11 +455,27 @@ public final class DeviceStore: ObservableObject {
     /// WiFi roster id's MAC-derived key.
     private func bleKey(for device: Device) -> String? {
         if device.isBLE { return device.id }
-        if let key = bleKeysByDeviceID[device.id] { return key }
-        guard device.id.hasPrefix("briturn-") else { return nil }
-        let mac = String(device.id.dropFirst("briturn-".count))
-        return mac.count == 12 ? "ble-" + mac : nil
+        var candidates = bleKeysByDeviceID[device.id] ?? []
+        if device.id.hasPrefix("briturn-") {
+            let mac = String(device.id.dropFirst("briturn-".count))
+            if mac.count == 12, !candidates.contains("ble-" + mac) { candidates.append("ble-" + mac) }
+        }
+        guard !candidates.isEmpty else { return nil }
+        // Prefer a candidate BLEManager currently holds a peripheral for
+        // (strongest signal first); otherwise the first candidate.
+        let rssi = Dictionary(BLEManager.shared.lights.map { ($0.id, $0.rssi) }, uniquingKeysWith: { a, _ in a })
+        let live = candidates.filter { isBLEKeyLive($0) }
+            .max { (rssi[$0] ?? Int.min) < (rssi[$1] ?? Int.min) }
+        return live ?? candidates[0]
     }
+
+    func isBLEKeyLive(_ key: String) -> Bool {
+        if let hook = bleLiveHook { return hook(key) }
+        if briturnBLESendHook != nil { return true }
+        return BLEManager.shared.hasPeripheral(id: key)
+    }
+
+    static let bleUnreachableMessage = "Bluetooth: light not seen recently — move closer or wait a moment"
 
     private func bindBLE() {
         let ble = BLEManager.shared
@@ -1006,6 +1029,7 @@ public final class DeviceStore: ObservableObject {
             statusErrors[device.id] = "Briturn device has no IP yet — run a Briturn scan."
             return
         }
+        NSLog("MyHome: Briturn route=bridge device=%@", device.id)
         // CONTROL PATH: the bridge. Group control (briturnsetgroup) is
         // proven working on every light through this exact transport, so
         // individual control uses the same path — no transport doubt. The
@@ -1117,9 +1141,14 @@ public final class DeviceStore: ObservableObject {
         }
 
         if bleFallbackIDs.contains(device.id), let key = bleKey(for: device) {
-            sendBriturnBLE(key: key, on: on, color: color, brightness: brightness,
-                           white: white, cct: cct)
-            statusErrors[device.id] = nil
+            if sendBriturnBLE(key: key, on: on, color: color, brightness: brightness,
+                              white: white, cct: cct) {
+                statusErrors[device.id] = nil
+            } else {
+                statusErrors[device.id] = Self.bleUnreachableMessage
+                briturnIntent.removeValue(forKey: device.id)
+                briturnStatus[device.id] = prev
+            }
             return
         }
         statusErrors[device.id] = message + " (Bluetooth not in range for this light.)"
@@ -1156,10 +1185,15 @@ public final class DeviceStore: ObservableObject {
             return
         }
         let ble = BLEManager.shared
-        sendBriturnBLE(key: key, on: on, color: color, brightness: brightness,
-                       white: white, cct: cct)
-
         let prev = briturnStatus[device.id]
+        guard sendBriturnBLE(key: key, on: on, color: color, brightness: brightness,
+                             white: white, cct: cct) else {
+            statusErrors[device.id] = Self.bleUnreachableMessage
+            briturnIntent.removeValue(forKey: device.id)
+            briturnStatus[device.id] = prev
+            return
+        }
+
         let nextOn = on ?? (prev?.on ?? false)
         let paintedWhite = white || (color == nil && (prev?.isWhiteMode ?? false) && brightness != nil)
         let paintedW = paintedWhite

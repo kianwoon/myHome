@@ -70,6 +70,25 @@ final class DeviceStoreOfflineBLETests: XCTestCase {
         XCTAssertTrue(store.statusErrors[device.id]?.hasSuffix("(Bluetooth not in range for this light.)") == true)
     }
 
+    func testLiveCandidateKeyIsUsed() async throws {
+        let (store, device, c) = try make(online: false, ble: true)
+        store.bleKeysByDeviceID[device.id] = ["ble-641df0500161", "ble-cfbf120c-uuid"]
+        store.bleLiveHook = { $0 == "ble-cfbf120c-uuid" }
+        await store.setBriturn(device, on: true)
+        XCTAssertEqual(c.ble, ["ble-cfbf120c-uuid"])
+        XCTAssertNil(store.statusErrors[device.id])
+    }
+
+    func testNoLiveCandidateSurfacesErrorAndRollsBack() async throws {
+        let (store, device, c) = try make(online: false, ble: true)
+        store.bleKeysByDeviceID[device.id] = ["ble-641df0500161", "ble-cfbf120c-uuid"]
+        store.bleLiveHook = { _ in false }
+        await store.setBriturn(device, on: true)
+        XCTAssertTrue(c.ble.isEmpty)
+        XCTAssertEqual(store.statusErrors[device.id], DeviceStore.bleUnreachableMessage)
+        XCTAssertNil(store.briturnStatus[device.id], "optimistic state must not stick")
+    }
+
     func testGroupOfflineMemberGoesOverBLEOnlineStaysOnCloud() async throws {
         let (store, offline, c) = try make(online: false, ble: true)
         var onlineItem = try BriturnCloudDevice(json: ["deviceId": 8, "entityType": "TCP_WF", "productId": 95,

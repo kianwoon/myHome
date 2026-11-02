@@ -90,7 +90,7 @@ final class DeviceStoreGroupMirrorTests: XCTestCase {
         store.briturnCloudDevices[other.canonicalID] = other
         store.bridgeRoster = [local(other.canonicalID, group: nil)]
         await store.mirrorCloudGroupsToBridge()
-        XCTAssertEqual(store.bleKeysByDeviceID["briturn-0865f0ef87bf"], "ble-0865f0ef87bf")
+        XCTAssertEqual(store.bleKeysByDeviceID["briturn-0865f0ef87bf"], ["ble-0865f0ef87bf"])
         XCTAssertTrue(store.bleFallbackIDs.contains("briturn-0865f0ef87bf"))
     }
 
