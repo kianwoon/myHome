@@ -13,6 +13,7 @@ extension DeviceStore {
         key: String, on: Bool?, color: (red: Int, green: Int, blue: Int)?,
         brightness: Int?, white: Bool, cct: Int?
     ) {
+        if let hook = briturnBLESendHook { hook(key, on); return }
         let ble = BLEManager.shared
         if let on = on { ble.setPower(id: key, on: on) }
         if let color = color { ble.setColor(id: key, red: color.red, green: color.green, blue: color.blue) }

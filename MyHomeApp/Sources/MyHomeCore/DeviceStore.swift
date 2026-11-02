@@ -195,7 +195,7 @@ public final class DeviceStore: ObservableObject {
         }
     }
 
-    private func rebuildBriturnRoster() {
+    func rebuildBriturnRoster() {
         let merged = BriturnCloudDevice.merge(local: bridgeRoster, cloud: Array(briturnCloudDevices.values))
         if !briturnCloudDevices.isEmpty {
             let orphans = Set(bridgeRoster.filter { $0.category.lowercased() == "briturn" && briturnCloudDevices[$0.id] == nil }.map(\.id))
@@ -389,8 +389,13 @@ public final class DeviceStore: ObservableObject {
         statusLoading.formUnion(ids)
         defer { statusLoading.subtract(ids) }
         do {
-            let states = try await briturnCloud.control(devices: mapped, on: on, color: color,
+            let states: [String: BriturnState]
+            if let hook = briturnCloudControlHook {
+                states = try await hook(mapped, on)
+            } else {
+                states = try await briturnCloud.control(devices: mapped, on: on, color: color,
                                                        brightness: brightness, white: white, cct: cct)
+            }
             for (id, state) in states {
                 applyBriturnWireState(id, state, authoritative: true)
                 statusViaCloud[id] = true
@@ -416,6 +421,9 @@ public final class DeviceStore: ObservableObject {
     /// These are DUAL-MODE lights: BLE enriches the WiFi entry as a fallback
     /// transport — it never creates a duplicate card.
     var bleFallbackIDs: Set<String> = []
+    /// Test seams (internal): replace the cloud control call / the BLE send.
+    var briturnCloudControlHook: (([BriturnCloudDevice], Bool?) async throws -> [String: BriturnState])?
+    var briturnBLESendHook: ((String, Bool?) -> Void)?
     /// bleKey ("ble-<mac>") per roster id, for addressing BLEManager.
     var bleKeysByDeviceID: [String: String] = [:]
     /// Group assignment for BLE-only lights. The roster can't hold these (no
@@ -977,7 +985,7 @@ public final class DeviceStore: ObservableObject {
         guard isBriturn(device) else { return }
         guard on != nil || color != nil || brightness != nil || white || cct != nil else { return }
         if !device.hasAddress, briturnCloudDevices[device.id] != nil {
-            _ = await controlBriturnCloud([device], on: on, color: color, brightness: brightness, white: white, cct: cct)
+            await setBriturnCloudOrBLE(device, on: on, color: color, brightness: brightness, white: white, cct: cct)
             return
         }
         // Transport routing: BLE-only lights, and dual-mode lights that lost
@@ -1050,6 +1058,42 @@ public final class DeviceStore: ObservableObject {
                                       white: white || cct != nil, cct: cct, prev: prev,
                                       message: error.localizedDescription)
         }
+    }
+
+    /// True when the cloud reports the light offline (live status first, then
+    /// the last sync). Offline in the cloud does not mean out of Bluetooth range.
+    func isCloudOffline(_ device: Device) -> Bool {
+        if let live = cloudOnline[device.id] { return !live }
+        return briturnCloudDevices[device.id]?.online == false
+    }
+
+    /// Cloud-known light with no IP. Cloud-offline + Bluetooth in range goes
+    /// straight over BLE; otherwise the cloud is tried first and a failure
+    /// retries over BLE. Only when neither works does the cloud error surface.
+    private func setBriturnCloudOrBLE(
+        _ device: Device, on: Bool?, color: (red: Int, green: Int, blue: Int)?,
+        brightness: Int?, white: Bool, cct: Int?
+    ) async {
+        let viaBLEWhite = white || cct != nil
+        let bleOK = isBLEAvailable(for: device) && bleKey(for: device) != nil
+        if isCloudOffline(device), bleOK {
+            statusErrors[device.id] = nil
+            await setBriturnViaBLE(device, on: on, color: color, brightness: brightness, white: viaBLEWhite, cct: cct)
+            return
+        }
+        let prev = briturnStatus[device.id]
+        if await controlBriturnCloud([device], on: on, color: color, brightness: brightness, white: white, cct: cct) {
+            return
+        }
+        if bleOK {
+            statusErrors[device.id] = nil
+            await setBriturnViaBLE(device, on: on, color: color, brightness: brightness, white: viaBLEWhite, cct: cct)
+            return
+        }
+        let message = statusErrors[device.id] ?? "Could not control the light through Briturn Cloud."
+        statusErrors[device.id] = message + " (Bluetooth not in range for this light.)"
+        briturnIntent.removeValue(forKey: device.id)
+        briturnStatus[device.id] = prev
     }
 
     /// General rule: when the WiFi transport fails for a dual-mode light that
@@ -1246,11 +1290,34 @@ public final class DeviceStore: ObservableObject {
         let memberDevices = members(of: group)
         let cloudMembers = memberDevices.filter { briturnCloudDevices[$0.id] != nil }
         if !cloudMembers.isEmpty {
-            let success = await controlBriturnCloud(cloudMembers, on: on, color: color, brightness: brightness, cct: cct)
+            // Cloud-offline members that Bluetooth can reach never go to the
+            // cloud (it omits them); they get the same command over BLE.
+            let bleOnly = cloudMembers.filter { isCloudOffline($0) && isBLEAvailable(for: $0) && bleKey(for: $0) != nil }
+            let bleOnlyIDs = Set(bleOnly.map(\.id))
+            let viaCloud = cloudMembers.filter { !bleOnlyIDs.contains($0.id) }
+            var success = true
+            var recovered = Set<String>()
+            if !viaCloud.isEmpty {
+                success = await controlBriturnCloud(viaCloud, on: on, color: color, brightness: brightness, cct: cct)
+                if !success {
+                    // Members the cloud did not confirm: retry over BLE where possible.
+                    for device in viaCloud where statusErrors[device.id] != nil
+                        && isBLEAvailable(for: device) && bleKey(for: device) != nil {
+                        recovered.insert(device.id)
+                    }
+                }
+            }
+            for device in bleOnly + viaCloud.filter({ recovered.contains($0.id) }) {
+                statusErrors[device.id] = nil
+                await setBriturnViaBLE(device, on: on, color: color, brightness: brightness,
+                                       white: cct != nil, cct: cct)
+            }
             for device in memberDevices where briturnCloudDevices[device.id] == nil {
                 await setBriturn(device, on: on, color: color, brightness: brightness, cct: cct)
             }
-            errorText = success ? nil : briturnCloudError
+            let unrecovered = viaCloud.contains { statusErrors[$0.id] != nil && !recovered.contains($0.id) }
+            if !success && !unrecovered { briturnCloudError = nil }
+            errorText = (success || !unrecovered) ? nil : briturnCloudError
             return
         }
         let memberIDs = memberDevices.filter(\.hasAddress).map(\.id)
