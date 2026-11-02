@@ -34,7 +34,9 @@ public final class BLEManager: NSObject, ObservableObject {
     @Published public private(set) var states: [String: DeviceStore.BriturnState] = [:]
     @Published public private(set) var isBluetoothOn = false
     @Published public private(set) var diagnostics = BLEDiagnostics()
-    private static let summaryIntervalNanos: UInt64 = 30_000_000_000
+    /// Seconds between BLE summary logs; also the unit for BLE state staleness.
+    nonisolated public static let summaryInterval: TimeInterval = 30
+    private static let summaryIntervalNanos: UInt64 = UInt64(summaryInterval * 1_000_000_000)
 
     private var central: CBCentralManager!
     private var peripherals: [String: CBPeripheral] = [:]   // id -> peripheral

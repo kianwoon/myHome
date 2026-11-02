@@ -290,6 +290,21 @@ public final class DeviceStore: ObservableObject {
         briturnCloudDevices[device.id]?.supportsLighting == true
     }
 
+    public enum Reachability: Equatable {
+        case wifi, cloud, bluetooth, offline
+    }
+
+    /// Single answer to "how can the Mac reach this light right now?", built
+    /// from existing facts only. `.offline` means NO control path at the moment:
+    /// no online LAN address, cloud not online, and no LIVE Bluetooth peripheral.
+    public func reachability(for device: Device) -> Reachability {
+        if device.hasAddress && device.online { return .wifi }
+        if (cloudOnline[device.id] ?? briturnCloudDevices[device.id]?.online) == true,
+           isBriturnCloudAvailable(for: device) { return .cloud }
+        if isBLELive(for: device) { return .bluetooth }
+        return .offline
+    }
+
     /// True when ANY control path exists: LAN address, Bluetooth link (seen
     /// or fallback) or the Briturn cloud. A cloud-offline light next to the
     /// Mac is controllable over Bluetooth, so its UI must not be disabled.
@@ -522,11 +537,26 @@ public final class DeviceStore: ObservableObject {
                     // dual-mode lights the WiFi poll is authoritative and the
                     // advert colour bytes decoded wrong on this firmware —
                     // painting them made launch colours go wild.
-                    if self.attachBLE(light) { continue }
-                    applyBriturnWireState(bleID, state)
+                    if self.attachBLE(light) {
+                        // Dual-mode: only fills a light with NO cloud/WiFi
+                        // status yet; never overrides an authoritative read.
+                        if let rosterID = self.matchRosterID(for: light) {
+                            self.applyBLEDerivedState(rosterID, state)
+                        }
+                        continue
+                    }
+                    self.applyBLEDerivedState(bleID, state)
                 }
             }
             .store(in: &cancellables)
+        // Adverts stop when a light leaves range, so expiry cannot rely on the
+        // states sink firing: sweep on the BLE summary cadence.
+        Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: UInt64(BLEManager.summaryInterval * 1_000_000_000))
+                self?.pruneStaleBLEState()
+            }
+        }
     }
 
     private func saveGroupColour(_ group: String, _ color: (red: Int, green: Int, blue: Int)) {
@@ -909,9 +939,35 @@ public final class DeviceStore: ObservableObject {
     private var dpsIntent: [String: DpsIntent] = [:]
     private static let dpsIntentGrace: TimeInterval = briturnIntentGrace
 
+    /// Roster ids whose `briturnStatus` came from Bluetooth advertisements
+    /// (not WiFi/cloud), with the time it was last refreshed.
+    private var bleDerivedStatus: [String: Date] = [:]
+    /// A BLE-derived reading older than this is unknown again: twice the BLE
+    /// summary interval, since live adverts refresh it far more often.
+    static let bleStateMaxAge: TimeInterval = 2 * BLEManager.summaryInterval
+
+    /// Paints an advertisement-decoded state, but only where no WiFi/cloud
+    /// reading exists (or the current reading is itself BLE-derived), through
+    /// the same intent-aware path as every other wire state.
+    func applyBLEDerivedState(_ id: String, _ state: BriturnState, now: Date = Date()) {
+        guard briturnStatus[id] == nil || bleDerivedStatus[id] != nil else { return }
+        applyBriturnWireState(id, state)
+        bleDerivedStatus[id] = now
+    }
+
+    /// Drops BLE-derived readings that have not been refreshed recently so a
+    /// light that left range shows unknown, not a stale on/off or brightness.
+    func pruneStaleBLEState(now: Date = Date()) {
+        for (id, at) in bleDerivedStatus where now.timeIntervalSince(at) > Self.bleStateMaxAge {
+            bleDerivedStatus[id] = nil
+            briturnStatus[id] = nil
+        }
+    }
+
     /// Paints a wire-read state unless it fights a fresh user intent, judged
     /// channel by channel: on/colour exactly, brightness within tolerance.
     private func applyBriturnWireState(_ id: String, _ state: BriturnState, authoritative: Bool = false) {
+        bleDerivedStatus[id] = nil
         guard var intent = briturnIntent[id] else {
             briturnStatus[id] = state
             return

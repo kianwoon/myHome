@@ -484,7 +484,8 @@ struct DeviceCard: View {
                     HStack(spacing: 6) {
                         Text(device.name)
                             .font(.callout.weight(.semibold))
-                        CloudStatusBadge(online: store.cloudOnline[device.id])
+                        CloudStatusBadge(online: store.cloudOnline[device.id],
+                                         reachability: isBriturn ? store.reachability(for: device) : nil)
                     }
                     HStack(spacing: 6) {
                         Text(summary(state))
@@ -769,14 +770,21 @@ struct RoomChip: View {
 struct CloudStatusBadge: View {
     let online: Bool?
     var envBroken: Bool = false
+    /// Briturn lights pass their shared reachability: a cloud-offline light
+    /// that still has a live Bluetooth link must not read as dead.
+    var reachability: DeviceStore.Reachability?
+
+    private var viaBluetooth: Bool { online == false && reachability == .bluetooth }
 
     private var label: String {
         if envBroken { return "☁ bridge env" }
+        if viaBluetooth { return "🔵 Bluetooth" }
         return DeviceStore.cloudBadgeText(online)
     }
 
     private var tint: Color {
         if envBroken { return .orange }
+        if viaBluetooth { return .blue }
         switch online {
         case .some(true): return .green
         case .some(false): return .red
@@ -793,8 +801,8 @@ struct CloudStatusBadge: View {
             .font(.system(.caption2, design: .monospaced).weight(.medium))
             .foregroundStyle(tint)
             .lineLimit(1)
-            .frame(width: 68, alignment: .leading)
-            .help(online == nil ? "Cloud status pending" : "Tuya cloud connectivity")
+            .frame(width: 84, alignment: .leading)
+            .help(viaBluetooth ? "Cloud offline; controlled over Bluetooth" : (online == nil ? "Cloud status pending" : "Tuya cloud connectivity"))
     }
 }
 
@@ -1241,7 +1249,8 @@ struct DeviceDetailView: View {
                         HStack(alignment: .firstTextBaseline, spacing: 8) {
                             Text(device.name)
                                 .font(.title2.bold())
-                            CloudStatusBadge(online: store.cloudOnline[device.id], envBroken: device.category.lowercased() == "briturn" ? false : store.cloudEnvBroken)
+                            CloudStatusBadge(online: store.cloudOnline[device.id], envBroken: device.category.lowercased() == "briturn" ? false : store.cloudEnvBroken,
+                                             reachability: device.category.lowercased() == "briturn" ? store.reachability(for: device) : nil)
                         }
                         Text("\(device.kind.label) · \(device.category.isEmpty ? "uncategorised" : device.category)")
                             .font(.callout)
@@ -1953,9 +1962,18 @@ struct BriturnControlsView: View {
             }
 
             if let error = store.statusErrors[device.id] {
-                Text(error)
-                    .font(.callout)
-                    .foregroundStyle(.red)
+                if store.reachability(for: device) == .bluetooth {
+                    Text("Reachable over Bluetooth")
+                        .font(.callout)
+                        .foregroundStyle(.blue)
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text(error)
+                        .font(.callout)
+                        .foregroundStyle(.red)
+                }
             }
 
             if let state = store.briturnStatus[device.id] {

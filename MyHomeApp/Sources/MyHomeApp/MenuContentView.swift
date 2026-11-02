@@ -264,6 +264,14 @@ struct DeviceRow: View {
         if device.kind == .climate, let temperature = state.temperature {
             return "\(DPSValue.format(temperature)) °C"
         }
+        if isBriturn {
+            switch store.reachability(for: device) {
+            case .wifi: return device.ip
+            case .cloud: return "Briturn Cloud"
+            case .bluetooth: return "Bluetooth"
+            case .offline: break
+            }
+        }
         if store.isBriturnCloudAvailable(for: device) { return "Briturn Cloud" }
         if !device.hasAddress, store.isBLEAvailable(for: device) { return "Bluetooth" }
         return isEnabled ? device.ip : "Offline"

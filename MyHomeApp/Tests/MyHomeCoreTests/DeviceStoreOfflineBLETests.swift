@@ -115,6 +115,50 @@ final class DeviceStoreOfflineBLETests: XCTestCase {
         XCTAssertEqual(cloudIDs, [onlineItem.canonicalID])
         XCTAssertEqual(c.ble, [bleKey])
     }
+
+    // MARK: - Reachability and BLE-derived state
+
+    func testReachabilityBluetoothWhenCloudOfflineButBLELive() throws {
+        let (store, device, _) = try make(online: false, ble: true)
+        store.bleLiveHook = { $0 == self.bleKey }
+        XCTAssertEqual(store.reachability(for: device), .bluetooth)
+    }
+
+    func testReachabilityOfflineOnlyWithoutAnyPath() throws {
+        let (store, device, _) = try make(online: false, ble: true)
+        store.bleLiveHook = { _ in false }
+        XCTAssertEqual(store.reachability(for: device), .offline)
+    }
+
+    func testReachabilityCloudAndWiFi() throws {
+        let (store, device, _) = try make(online: true, ble: true)
+        store.bleLiveHook = { _ in true }
+        XCTAssertEqual(store.reachability(for: device), .cloud)
+        let lan = Device(id: device.id, name: "Lamp", ip: "192.168.1.9", version: "3.3",
+                         category: "briturn", group: "G", online: true)
+        XCTAssertEqual(store.reachability(for: lan), .wifi)
+    }
+
+    func testBLEStateFillsNilStatusThenGoesStale() throws {
+        let (store, device, _) = try make(online: false, ble: true)
+        let state = DeviceStore.BriturnState(on: true, rawPower: 0x23, mode: 97, r: 0, g: 0, b: 0, w: 128)
+        let t0 = Date()
+        store.applyBLEDerivedState(device.id, state, now: t0)
+        XCTAssertEqual(store.briturnStatus[device.id], state)
+        store.pruneStaleBLEState(now: t0.addingTimeInterval(DeviceStore.bleStateMaxAge - 1))
+        XCTAssertNotNil(store.briturnStatus[device.id])
+        store.pruneStaleBLEState(now: t0.addingTimeInterval(DeviceStore.bleStateMaxAge + 1))
+        XCTAssertNil(store.briturnStatus[device.id])
+    }
+
+    func testBLEStateNeverOverridesWireStatus() async throws {
+        let (store, device, _) = try make(online: true, ble: true)
+        await store.setBriturn(device, on: true)   // cloud hook paints a state
+        let wire = store.briturnStatus[device.id]
+        XCTAssertNotNil(wire)
+        store.applyBLEDerivedState(device.id, DeviceStore.BriturnState(on: false, rawPower: 0x24, mode: 97, r: 0, g: 0, b: 0, w: 0))
+        XCTAssertEqual(store.briturnStatus[device.id], wire)
+    }
 }
 
 @MainActor
