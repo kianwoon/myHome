@@ -115,7 +115,9 @@ enum RoomIcon {
 struct DashboardView: View {
     @EnvironmentObject private var store: DeviceStore
     @State private var group: DeviceGroup = DeviceGroup.allCases.first { ProcessInfo.processInfo.environment["MYHOME_GROUP"] == $0.title.lowercased() } ?? .fans
-    @State private var selectedID: String?
+    /// MYHOME_DEVICE is a diagnostic-only launch hook (same contract as
+    /// MYHOME_ROOM) so the detail pane can be snapshotted headlessly.
+    @State private var selectedID: String? = ProcessInfo.processInfo.environment["MYHOME_DEVICE"].flatMap { $0.isEmpty ? nil : $0 }
     // Which category's button started the current rescan (drives the spinner).
     // Local view state only; the working flag itself stays store.isWorking.
     @State private var rescanningGroup: DeviceGroup?
@@ -1222,6 +1224,11 @@ struct DeviceDetailView: View {
         return lines.joined(separator: "  ·  ")
     }
 
+    /// dp id -> declared capability, from the device's own spec.
+    private var specByDP: [String: Capability] {
+        Dictionary(device.capabilities.map { ($0.dpId, $0) }, uniquingKeysWith: { first, _ in first })
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
@@ -1231,34 +1238,47 @@ struct DeviceDetailView: View {
                         .foregroundStyle(.tint)
                         .frame(width: 46)
 
+                    // The text column owns the whole remaining width: the
+                    // actions sit on their own row beneath it, never beside
+                    // it, so a narrow detail pane cannot squeeze the name into
+                    // a mid-word wrap or truncate the buttons.
                     VStack(alignment: .leading, spacing: 3) {
                         HStack(alignment: .firstTextBaseline, spacing: 8) {
                             Text(device.name)
                                 .font(.title2.bold())
+                                .lineLimit(2)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .layoutPriority(1)
                             CloudStatusBadge(online: store.cloudOnline[device.id], envBroken: store.cloudEnvBroken)
                         }
                         Text("\(device.kind.label) · \(device.category.isEmpty ? "uncategorised" : device.category)")
                             .font(.callout)
                             .foregroundStyle(.secondary)
+                        // Identifiers are one line; elide the middle so both
+                        // ends (the parts people compare) stay visible.
                         Text(device.id)
                             .font(.caption.monospaced())
                             .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
                             .textSelection(.enabled)
+                            .help(device.id)
                         Text(transportLine)
                             .font(.caption.monospaced())
                             .foregroundStyle(.secondary)
-                    }
+                            .fixedSize(horizontal: false, vertical: true)
 
-                    Spacer()
-
-                    HStack(spacing: 8) {
-                        if !device.isBLE && device.category.lowercased() != "briturn" {
-                            Button("Set Room…") { showingRoom = true }
-                                .controlSize(.small)
+                        HStack(spacing: 8) {
+                            if !device.isBLE && device.category.lowercased() != "briturn" {
+                                Button("Set Room…") { showingRoom = true }
+                            }
+                            Button("Rename…") { showingRename = true }
                         }
-                        Button("Rename…") { showingRename = true }
-                            .controlSize(.small)
+                        .controlSize(.small)
+                        .fixedSize()
+                        .padding(.top, 6)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
                 HStack(spacing: 10) {
@@ -1266,7 +1286,10 @@ struct DeviceDetailView: View {
                         Text(watts)
                             .font(.headline.monospacedDigit())
                     }
-                    if let temperature = state.temperature {
+                    // Index-guessed temperature (dp 17/1) is only meaningful
+                    // for climate devices or spec-less ones; elsewhere dp 17
+                    // is e.g. a fan light's colour temperature.
+                    if device.kind == .climate || device.spec == nil, let temperature = state.temperature {
                         Text("🌡 \(DPSValue.format(temperature)) °C")
                             .font(.headline.monospacedDigit())
                     }
@@ -1314,16 +1337,22 @@ struct DeviceDetailView: View {
                         .foregroundStyle(.secondary)
                 } else {
                     VStack(spacing: 0) {
+                        let declared = specByDP
                         ForEach(state.entries(for: device.kind)) { entry in
+                            let capability = declared[entry.key]
                             HStack(alignment: .firstTextBaseline, spacing: 10) {
                                 Text(entry.key)
                                     .font(.callout.monospaced())
                                     .frame(width: 44, alignment: .leading)
-                                Text(entry.label)
+                                // Same name the card shows: the device's own
+                                // declared spec wins over the generic
+                                // per-kind guess (which mislabels e.g. a fan's
+                                // work-mode dp as "Power").
+                                Text(capability?.displayName ?? entry.label)
                                     .font(.callout)
                                     .foregroundStyle(.secondary)
                                 Spacer()
-                                Text(entry.value)
+                                Text(capability.flatMap { cap in state.dps[entry.key].map(cap.formatted) } ?? entry.value)
                                     .font(.callout.monospacedDigit())
                                     .textSelection(.enabled)
                             }
