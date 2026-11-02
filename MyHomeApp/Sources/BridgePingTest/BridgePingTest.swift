@@ -8,6 +8,31 @@ struct BridgePingTest {
         let arguments = CommandLine.arguments
         let mode = arguments.count > 1 ? arguments[1] : "ping"
 
+        if mode == "briturncloud" || mode == "briturncloud-verify-control" {
+            do {
+                let client = BriturnCloudClient.shared
+                let devices = try await client.syncDevices()
+                print("BRITURN_CLOUD_DEVICES", devices.count)
+                print("BRITURN_CLOUD_SUPPORTED", devices.filter(\.supportsLighting).count)
+                let states = try await client.queryStates(devices: devices)
+                print("BRITURN_CLOUD_LIVE_STATES", states.count)
+                if mode == "briturncloud-verify-control",
+                   let device = devices.first(where: { states[$0.canonicalID] != nil }),
+                   let state = states[device.canonicalID] {
+                    // Reassert the existing power state: exercise cloud control without toggling a light.
+                    let confirmed = try await client.control(devices: [device], on: state.on)
+                    guard confirmed[device.canonicalID]?.on == state.on else {
+                        print("BRITURN_CLOUD_CONTROL_UNCONFIRMED"); exit(1)
+                    }
+                    print("BRITURN_CLOUD_CONTROL_CONFIRMED")
+                }
+                exit(devices.isEmpty ? 1 : 0)
+            } catch {
+                print("BRITURN_CLOUD_ERROR", (error as? BriturnCloudError)?.localizedDescription ?? "Request failed")
+                exit(1)
+            }
+        }
+
         if mode == "shapes" {
             proveLooseDecoding()
             return

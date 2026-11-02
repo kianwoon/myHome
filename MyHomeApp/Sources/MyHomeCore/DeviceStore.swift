@@ -45,6 +45,14 @@ public final class DeviceStore: ObservableObject {
 
     /// Bridge roster (Tuya + WiFi briturn devices).
     @Published public private(set) var roster: [Device] = []
+    private var bridgeRoster: [Device] = []
+    private var briturnCloudDevices: [String: BriturnCloudDevice] = [:]
+    @Published public private(set) var briturnCloudSyncing = false
+    @Published public private(set) var briturnCloudError: String?
+    @Published public private(set) var briturnCloudDeviceCount = 0
+    private var lastBriturnCloudSync: Date?
+    private let briturnCloud: BriturnCloudClient
+
     /// Raw BLE discoveries currently being heard (from BLEManager).
     @Published public private(set) var bleLights: [BLELight] = []
     /// Every BLE light ever discovered, persisted. BLE bulbs advertise in
@@ -146,7 +154,9 @@ public final class DeviceStore: ObservableObject {
     /// General rule: behavior-tuning values are user settings, not hard-coded
     /// constants. The constants below are the DEFAULTS; the Settings screen
     /// writes UserDefaults and this initializer snapshots them once.
-    public init(bridge: any BridgeSending = BridgeClient.shared, defaults: UserDefaults = .standard) {
+    public init(bridge: any BridgeSending = BridgeClient.shared, defaults: UserDefaults = .standard,
+                briturnCloud: BriturnCloudClient = .shared) {
+        self.briturnCloud = briturnCloud
         self.bridge = bridge
         self.pollInterval = AppSettings.pollInterval(from: defaults)
         self.scanWindow = AppSettings.scanWindow(from: defaults)
@@ -176,6 +186,102 @@ public final class DeviceStore: ObservableObject {
     private func persistBLESeen() {
         if let data = try? JSONEncoder().encode(Array(bleSeen.values)) {
             UserDefaults.standard.set(data, forKey: Self.bleSeenStorageKey)
+        }
+    }
+
+    private func rebuildBriturnRoster() {
+        roster = BriturnCloudDevice.merge(local: bridgeRoster, cloud: Array(briturnCloudDevices.values))
+            .map { device in
+                guard !bridgeRoster.contains(where: { $0.id == device.id }), let group = bleGroups[device.id] else { return device }
+                return Device(id: device.id, name: device.name, ip: device.ip, version: device.version,
+                              category: device.category, group: group, online: device.online, room: device.room)
+            }
+    }
+
+    public func isBriturnCloudAvailable(for device: Device) -> Bool {
+        briturnCloudDevices[device.id]?.supportsLighting == true
+    }
+
+    @discardableResult
+    public func syncBriturnCloud(force: Bool = true) async -> Int {
+        guard !briturnCloudSyncing else { return briturnCloudDeviceCount }
+        if !force, let last = lastBriturnCloudSync, Date().timeIntervalSince(last) < 60 { return briturnCloudDeviceCount }
+        briturnCloudSyncing = true
+        defer { briturnCloudSyncing = false }
+        do {
+            let devices = try await briturnCloud.syncDevices()
+            let oldIDs = Set(briturnCloudDevices.keys)
+            briturnCloudDevices = Dictionary(devices.map { ($0.canonicalID, $0) }, uniquingKeysWith: { first, _ in first })
+            briturnCloudDeviceCount = devices.count
+            for id in oldIDs.subtracting(briturnCloudDevices.keys) {
+                cloudOnline[id] = nil
+                statusViaCloud[id] = nil
+                if !bridgeRoster.contains(where: { $0.id == id }) { briturnStatus[id] = nil; statusErrors[id] = nil }
+            }
+            for item in devices { cloudOnline[item.canonicalID] = item.online }
+            rebuildBriturnRoster()
+            lastBriturnCloudSync = Date()
+            briturnCloudError = nil
+            await refreshBriturnCloudStates(for: roster.filter { briturnCloudDevices[$0.id] != nil })
+        } catch {
+            briturnCloudError = (error as? BriturnCloudError)?.localizedDescription ?? "Could not sync Briturn Cloud."
+        }
+        return briturnCloudDeviceCount
+    }
+
+    private func refreshBriturnCloudStates(for devices: [Device]) async {
+        let mapped = devices.compactMap { briturnCloudDevices[$0.id] }
+        guard !mapped.isEmpty else {
+            for device in devices { statusErrors[device.id] = "No local address or connected Briturn Cloud device." }
+            return
+        }
+        do {
+            let states = try await briturnCloud.queryStates(devices: mapped)
+            for device in mapped {
+                if let state = states[device.canonicalID] {
+                    applyBriturnWireState(device.canonicalID, state)
+                    statusViaCloud[device.canonicalID] = true
+                    statusErrors[device.canonicalID] = nil
+                    cloudOnline[device.canonicalID] = true
+                } else {
+                    cloudOnline[device.canonicalID] = false
+                    statusErrors[device.canonicalID] = device.supportsLighting ? "Light is offline in Briturn Cloud." : "Cloud controls for this model are not supported yet."
+                }
+            }
+        } catch {
+            let message = (error as? BriturnCloudError)?.localizedDescription ?? "Could not read Briturn Cloud status."
+            for device in mapped { statusErrors[device.canonicalID] = message }
+            briturnCloudError = message
+        }
+    }
+
+    @discardableResult
+    private func controlBriturnCloud(_ devices: [Device], on: Bool?,
+                                    color: (red: Int, green: Int, blue: Int)?, brightness: Int?,
+                                    white: Bool = false, cct: Int?) async -> Bool {
+        let mapped = devices.compactMap { briturnCloudDevices[$0.id] }
+        guard mapped.count == devices.count, !mapped.isEmpty else { return false }
+        let ids = Set(devices.map(\.id))
+        statusLoading.formUnion(ids)
+        defer { statusLoading.subtract(ids) }
+        do {
+            let states = try await briturnCloud.control(devices: mapped, on: on, color: color,
+                                                       brightness: brightness, white: white, cct: cct)
+            for (id, state) in states {
+                applyBriturnWireState(id, state, authoritative: true)
+                statusViaCloud[id] = true
+                statusErrors[id] = nil
+                cloudOnline[id] = true
+            }
+            let missing = ids.subtracting(states.keys)
+            for id in missing { statusErrors[id] = "The light did not confirm cloud control. It may be offline." }
+            briturnCloudError = missing.isEmpty ? nil : "\(missing.count) light(s) did not confirm cloud control."
+            return missing.isEmpty
+        } catch {
+            let message = (error as? BriturnCloudError)?.localizedDescription ?? "Could not control the light through Briturn Cloud."
+            for id in ids { briturnIntent[id] = nil; statusErrors[id] = message }
+            briturnCloudError = message
+            return false
         }
     }
 
@@ -418,7 +524,8 @@ public final class DeviceStore: ObservableObject {
 
     /// nil until a fetch (or confirmed write) has reported dps 1.
     public func power(for device: Device) -> Bool? {
-        isOn[device.id] ?? dpsById[device.id]?["1"]?.boolValue
+        if isBriturn(device) { return briturnStatus[device.id]?.on }
+        return isOn[device.id] ?? dpsById[device.id]?["1"]?.boolValue
     }
 
     public func dps(for device: Device) -> [String: DPSValue] {
@@ -432,6 +539,7 @@ public final class DeviceStore: ObservableObject {
     // MARK: - List / rescan
 
     public func refresh() async {
+        await syncBriturnCloud(force: false)
         isWorking = true
         defer { isWorking = false }
         do {
@@ -446,7 +554,8 @@ public final class DeviceStore: ObservableObject {
             }
             let data = try JSONSerialization.data(withJSONObject: rawDevices)
             let decoded = try JSONDecoder().decode([Device].self, from: data)
-            roster = decoded
+            bridgeRoster = decoded
+            rebuildBriturnRoster()
             // Deliberately no isOn default: unknown power stays indeterminate
             // until status arrives.
             errorText = nil
@@ -692,11 +801,15 @@ public final class DeviceStore: ObservableObject {
         // BLE lights state-source from advertisements via BLEManager.
         guard !device.isBLE else { return }
         guard device.hasAddress else {
-            statusErrors[device.id] = "Briturn device has no IP yet — run a Briturn scan."
+            await refreshBriturnCloudStates(for: [device])
             return
         }
         // NATIVE TRANSPORT: query the light directly.
         guard let state = await FluxClient.query(ip: device.ip) else {
+            if briturnCloudDevices[device.id] != nil {
+                await refreshBriturnCloudStates(for: [device])
+                return
+            }
             // Unreachable: keep last known state; only a never-seen light
             // surfaces the failure.
             if briturnStatus[device.id] == nil {
@@ -705,6 +818,7 @@ public final class DeviceStore: ObservableObject {
             return
         }
         applyBriturnWireState(device.id, state)
+        statusViaCloud[device.id] = false
         statusErrors[device.id] = nil
     }
 
@@ -722,6 +836,10 @@ public final class DeviceStore: ObservableObject {
     ) async {
         guard isBriturn(device) else { return }
         guard on != nil || color != nil || brightness != nil || white || cct != nil else { return }
+        if !device.hasAddress, briturnCloudDevices[device.id] != nil {
+            _ = await controlBriturnCloud([device], on: on, color: color, brightness: brightness, white: white, cct: cct)
+            return
+        }
         // Transport routing: BLE-only lights, and dual-mode lights that lost
         // WiFi (no IP), go over Bluetooth.
         if device.isBLE || (bleFallbackIDs.contains(device.id) && !device.hasAddress) {
@@ -802,6 +920,11 @@ public final class DeviceStore: ObservableObject {
         _ device: Device, on: Bool?, color: (red: Int, green: Int, blue: Int)?,
         brightness: Int?, white: Bool, cct: Int? = nil, prev: BriturnState?, message: String
     ) async {
+        if briturnCloudDevices[device.id] != nil,
+           await controlBriturnCloud([device], on: on, color: color, brightness: brightness, white: white, cct: cct) {
+            return
+        }
+
         if bleFallbackIDs.contains(device.id), let key = bleKey(for: device) {
             sendBriturnBLE(key: key, on: on, color: color, brightness: brightness,
                            white: white, cct: cct)
@@ -933,11 +1056,12 @@ public final class DeviceStore: ObservableObject {
     /// and every derived view update together.
     public func setBriturnGroup(_ device: Device, to group: String?) async {
         // BLE-only lights persist their group app-side.
-        if device.isBLE {
+        if device.isBLE || (briturnCloudDevices[device.id] != nil && !bridgeRoster.contains(where: { $0.id == device.id })) {
             var groups = bleGroups
             if let group = group, !group.isEmpty { groups[device.id] = group }
             else { groups.removeValue(forKey: device.id) }
             bleGroups = groups
+            rebuildBriturnRoster()
             if let data = try? JSONEncoder().encode(groups) {
                 UserDefaults.standard.set(data, forKey: Self.bleGroupsStorageKey)
             }
@@ -973,6 +1097,15 @@ public final class DeviceStore: ObservableObject {
     ) async {
         guard on != nil || color != nil || brightness != nil || cct != nil else { return }
         let memberDevices = members(of: group)
+        let cloudMembers = memberDevices.filter { briturnCloudDevices[$0.id] != nil }
+        if !cloudMembers.isEmpty {
+            let success = await controlBriturnCloud(cloudMembers, on: on, color: color, brightness: brightness, cct: cct)
+            for device in memberDevices where briturnCloudDevices[device.id] == nil {
+                await setBriturn(device, on: on, color: color, brightness: brightness, cct: cct)
+            }
+            errorText = success ? nil : briturnCloudError
+            return
+        }
         let memberIDs = memberDevices.filter(\.hasAddress).map(\.id)
         var payload: [String: Any] = ["cmd": "briturnsetgroup", "group": group]
         if let on = on { payload["on"] = on }
@@ -1131,9 +1264,16 @@ public final class DeviceStore: ObservableObject {
             }
             return collected
         }
+        let failedLocal = Set(results.filter { $0.1 == nil }.map { $0.0 })
+        let cloudTargets = (devices ?? self.devices).filter {
+            briturnCloudDevices[$0.id] != nil && !statusLoading.contains($0.id)
+                && (!$0.hasAddress || failedLocal.contains($0.id))
+        }
+        if !cloudTargets.isEmpty { await refreshBriturnCloudStates(for: cloudTargets) }
         for (id, state, error) in results {
             if let state = state {
                 batch[id] = state
+                statusViaCloud[id] = false
             } else if let error = error {
                 errors[id] = error
             }
@@ -1150,7 +1290,7 @@ public final class DeviceStore: ObservableObject {
             // Poll timeouts on lights with a known state stay quiet (serial
             // bridge congestion, not a real fault); only unknown lights alarm.
             var merged = statusErrors
-            for (id, message) in errors where briturnStatus[id] == nil {
+            for (id, message) in errors where briturnStatus[id] == nil && briturnCloudDevices[id] == nil {
                 merged[id] = message
             }
             statusErrors = merged
@@ -1294,11 +1434,7 @@ public final class DeviceStore: ObservableObject {
     /// Loads every briturn device's wire state once — launch-time parity with
     /// loadAllStatuses, so the on-count and chips are right immediately.
     public func loadAllBriturnStatuses() async {
-        for device in devices where device.category.lowercased() == "briturn" {
-            // BLE lights state-source from advertisements, not the bridge.
-            guard !device.isBLE else { continue }
-            await loadBriturnStatus(for: device)
-        }
+        await refreshBriturnStatuses()
     }
 
     public func loadAllStatuses() async {
@@ -1378,6 +1514,7 @@ public final class DeviceStore: ObservableObject {
     /// Merges cloud-authoritative names/roster into devices.json (bridge side)
     /// and re-reads the roster so new/renamed devices appear immediately.
     public func cloudSync() async {
+        await syncBriturnCloud()
         guard !isCloudSyncing else { return }
         isCloudSyncing = true
         defer { isCloudSyncing = false }
@@ -1404,7 +1541,9 @@ public final class DeviceStore: ObservableObject {
                 cloudEnvBroken = false
                 guard let raw = reply["status"] else { return }
                 let data = try JSONSerialization.data(withJSONObject: raw)
-                cloudOnline = try JSONDecoder().decode([String: Bool].self, from: data)
+                var statuses = try JSONDecoder().decode([String: Bool].self, from: data)
+                for item in briturnCloudDevices.values { statuses[item.canonicalID] = cloudOnline[item.canonicalID] ?? item.online }
+                cloudOnline = statuses
             } else {
                 // General rule: an env-level cloud failure is a distinct fact
                 // from per-device offline; only a bridge-reported capability
@@ -1645,6 +1784,10 @@ public final class DeviceStore: ObservableObject {
     /// Optimistic toggle: flips instantly, then the confirmed reply wins; only
     /// a rejected set reverts to the previous state.
     public func toggle(_ device: Device, to newValue: Bool) async {
+        if isBriturn(device) {
+            await setBriturn(device, on: newValue)
+            return
+        }
         guard device.hasAddress else { return }
         let previous = power(for: device) ?? false
         let previousDps = dpsById[device.id]

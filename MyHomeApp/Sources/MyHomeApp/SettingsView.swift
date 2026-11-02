@@ -59,6 +59,8 @@ private struct CloudSettingsView: View {
 
     var body: some View {
         Form {
+            BriturnCloudSettingsView()
+
             Section {
                 HStack(spacing: 8) {
                     Circle()

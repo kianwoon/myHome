@@ -185,7 +185,7 @@ struct DashboardView: View {
         if store.isOn[device.id] == true || store.briturnStatus[device.id]?.on == true {
             return 0
         }
-        let showsOffline = !(device.hasAddress || device.isBLE) || store.cloudOnline[device.id] == false
+        let showsOffline = !(device.hasAddress || device.isBLE || store.isBriturnCloudAvailable(for: device)) || store.cloudOnline[device.id] == false
         return showsOffline ? 2 : 1
     }
 
@@ -401,7 +401,7 @@ struct DeviceCard: View {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    private var isEnabled: Bool { device.hasAddress || device.isBLE }
+    private var isEnabled: Bool { device.hasAddress || device.isBLE || store.isBriturnCloudAvailable(for: device) }
 
     private var power: Bool? {
         if isBriturn { return store.briturnStatus[device.id]?.on }
@@ -447,6 +447,7 @@ struct DeviceCard: View {
             var transports = ""
             if store.isWiFiAvailable(for: device) { transports += "📶" }
             if store.isBLEAvailable(for: device) { transports += "🔵" }
+            if store.isBriturnCloudAvailable(for: device) { transports += "☁" }
             if !transports.isEmpty { parts.append(transports) }
             return parts.joined(separator: " · ")
         }
@@ -1216,6 +1217,7 @@ struct DeviceDetailView: View {
         var lines: [String] = []
         if device.hasAddress { lines.append("WiFi: \(device.ip)") }
         if store.isBLEAvailable(for: device) { lines.append("Bluetooth: in range") }
+        if store.isBriturnCloudAvailable(for: device) { lines.append("Briturn Cloud: connected") }
         if lines.isEmpty {
             lines.append(device.isBLE ? "Bluetooth: waiting for advertisement…" : "No transport")
         }
@@ -1235,7 +1237,7 @@ struct DeviceDetailView: View {
                         HStack(alignment: .firstTextBaseline, spacing: 8) {
                             Text(device.name)
                                 .font(.title2.bold())
-                            CloudStatusBadge(online: store.cloudOnline[device.id], envBroken: store.cloudEnvBroken)
+                            CloudStatusBadge(online: store.cloudOnline[device.id], envBroken: device.category.lowercased() == "briturn" ? false : store.cloudEnvBroken)
                         }
                         Text("\(device.kind.label) · \(device.category.isEmpty ? "uncategorised" : device.category)")
                             .font(.callout)
@@ -2017,8 +2019,8 @@ struct BriturnControlsView: View {
                 Text("Lights sharing a group can be switched and coloured together.")
             }
 
-            // On-bulb schedules (up to 6, fire even when this Mac is off).
-            if !device.isBLE {
+            // Schedule programming currently requires the local WiFi transport.
+            if !device.isBLE && device.hasAddress {
                 ScheduleEditorSection(
                     title: "Schedule",
                     loadError: store.statusErrors[device.id],

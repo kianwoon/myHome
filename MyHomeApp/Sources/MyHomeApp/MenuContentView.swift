@@ -133,7 +133,7 @@ struct MenuContentView: View {
                 store.briturnStatus[$0.id]?.on == true
             }
         case .device(let device):
-            return store.state(for: device).power ?? false
+            return store.power(for: device) ?? false
         }
     }
 
@@ -180,7 +180,7 @@ struct BriturnGroupMenuRow: View {
 
     /// Mirrors DeviceRow: no address and no BLE sighting means unreachable.
     private var isEnabled: Bool {
-        members.contains { $0.hasAddress || $0.isBLE }
+        members.contains { $0.hasAddress || $0.isBLE || store.isBriturnCloudAvailable(for: $0) }
     }
 
     private var subtitle: String {
@@ -249,7 +249,7 @@ struct DeviceRow: View {
     @EnvironmentObject private var store: DeviceStore
     let device: Device
 
-    private var isEnabled: Bool { device.hasAddress }
+    private var isEnabled: Bool { device.hasAddress || device.isBLE || store.isBriturnCloudAvailable(for: device) }
 
     private var power: Bool? { store.power(for: device) }
 
@@ -261,6 +261,7 @@ struct DeviceRow: View {
         if device.kind == .climate, let temperature = state.temperature {
             return "\(DPSValue.format(temperature)) °C"
         }
+        if store.isBriturnCloudAvailable(for: device) { return "Briturn Cloud" }
         return isEnabled ? device.ip : "Offline"
     }
 

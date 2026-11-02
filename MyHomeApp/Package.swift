@@ -21,6 +21,11 @@ let package = Package(
             dependencies: ["MyHomeCore"],
             path: "Sources/MyHomeApp"
         ),
+        .testTarget(
+            name: "MyHomeCoreTests",
+            dependencies: ["MyHomeCore"],
+            path: "Tests/MyHomeCoreTests"
+        ),
         .executableTarget(
             name: "BridgePingTest",
             dependencies: ["MyHomeCore"],

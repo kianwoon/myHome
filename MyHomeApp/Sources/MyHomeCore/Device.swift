@@ -101,7 +101,7 @@ public enum DeviceKind: String, Equatable {
         switch category.lowercased() {
         case "cl":
             return .curtain
-        case "dj", "xdd":
+        case "dj", "xdd", "briturn":
             return .light
         case "fs", "fsd":
             return .fan

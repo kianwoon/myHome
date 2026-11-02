@@ -44,6 +44,7 @@ struct MyHomeApp: App {
 
         Settings {
             SettingsView()
+                .environmentObject(store)
         }
     }
 }

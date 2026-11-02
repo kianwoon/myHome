@@ -1,5 +1,7 @@
 # Tuya Local Protocol Reference
 
+The native MyHome app also supports Briturn Cloud account authentication, documented separately in [docs/BriturnCloud.md](docs/BriturnCloud.md). It does not use the Tuya LAN protocol below.
+
 This document explains how TinyTuya communicates locally with Tuya Wi‑Fi (and some Zigbee-over-gateway) devices across protocol revisions 3.1 → 3.5. It focuses on on‑LAN packet formats, encryption, session key negotiation, discovery, and command construction. (Cloud protocol is out of scope here.)
 
 Supported revisions: 3.1, 3.2, 3.3, 3.4, 3.5. Each revision incrementally tightens security or changes framing.
