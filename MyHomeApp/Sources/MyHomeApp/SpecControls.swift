@@ -103,26 +103,29 @@ private struct CapabilityRow: View {
                 // AppKit TICK MARKS, rebuilt on every layout pass — so only
                 // SMALL ranges may be stepped; large ranges render
                 // continuous (zero tick marks).
-                let ticks = (upper - lower) / (capability.step ?? 1)
-                if ticks <= 100 {
+                let range = lower...max(lower, upper)
+                let step = capability.step
+                let commit: (Bool) -> Void = { editing in
+                    editingNumber = editing
+                    if !editing {
+                        numberValue = SliderSteps.snap(value: numberValue, range: range, step: step)
+                        let value = numberValue
+                        Task { await store.setDps(device, [capability.dpId: value]) }
+                    }
+                }
                 HStack(spacing: 8) {
                     Text(capability.displayName)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Slider(
-                        value: $numberValue,
-                        in: lower...max(lower, upper),
-                        step: max(capability.step ?? 1, 0.1),
-                        onEditingChanged: { editing in
-                            editingNumber = editing
-                            if !editing {
-                                Task {
-                                    await store.setDps(device, [capability.dpId: numberValue])
-                                }
-                            }
-                        }
-                    )
-                    .controlSize(.mini)
+                    if SliderSteps.isDiscrete(range: range, step: step) {
+                        Slider(value: $numberValue, in: range,
+                               step: max(step ?? 1, 0.1), onEditingChanged: commit)
+                            .controlSize(.mini)
+                    } else {
+                        // Many steps: continuous (no tick marks); snapped on commit.
+                        Slider(value: $numberValue, in: range, onEditingChanged: commit)
+                            .controlSize(.mini)
+                    }
                     Text(numberLabel)
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
@@ -134,29 +137,6 @@ private struct CapabilityRow: View {
                 .onChange(of: state.dps[capability.dpId]?.doubleValue ?? lower) { newValue in
                     if !editingNumber {
                         numberValue = newValue
-                    }
-                }
-                } else {
-                    // Continuous slider: no step, therefore no tick marks.
-                    HStack(spacing: 8) {
-                        Text(capability.displayName)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Slider(value: $numberValue,
-                               in: lower...max(lower, upper)) { editing in
-                            editingNumber = editing
-                            if !editing {
-                                Task { await store.setDps(device, [capability.dpId: numberValue]) }
-                            }
-                        }
-                        .controlSize(.mini)
-                        Text(numberLabel)
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                            .frame(width: 46, alignment: .trailing)
-                    }
-                    .onAppear {
-                        numberValue = state.dps[capability.dpId]?.doubleValue ?? lower
                     }
                 }
             }
