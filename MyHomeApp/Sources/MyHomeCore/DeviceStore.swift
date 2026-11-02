@@ -83,7 +83,8 @@ public final class DeviceStore: ObservableObject {
     /// (IOTWF577 → roster id ending "577"). Three-hex-digit suffixes can in
     /// principle collide across large fleets; with a roster this size the
     /// risk is negligible, and the MAC path takes precedence when present.
-    private func matchRosterID(for light: BLELight) -> String? {
+    private func matchRosterID(for light: BLELight, in candidates: [Device]? = nil) -> String? {
+        let roster = candidates ?? self.roster
         if light.id.hasPrefix("ble-") {
             let mac = String(light.id.dropFirst("ble-".count))
             if mac.count == 12 {
@@ -190,12 +191,21 @@ public final class DeviceStore: ObservableObject {
     }
 
     private func rebuildBriturnRoster() {
-        roster = BriturnCloudDevice.merge(local: bridgeRoster, cloud: Array(briturnCloudDevices.values))
-            .map { device in
-                guard !bridgeRoster.contains(where: { $0.id == device.id }), let group = bleGroups[device.id] else { return device }
-                return Device(id: device.id, name: device.name, ip: device.ip, version: device.version,
-                              category: device.category, group: group, online: device.online, room: device.room)
-            }
+        let merged = BriturnCloudDevice.merge(local: bridgeRoster, cloud: Array(briturnCloudDevices.values))
+        // A BLE-discovered light keeps its app-local group once cloud sync
+        // identifies it (matched by MAC or BLE name suffix, like `devices`).
+        var matchedGroups: [String: String] = [:]
+        for light in bleSeen.values {
+            guard let group = bleGroups[light.id], !group.isEmpty,
+                  let rosterID = matchRosterID(for: light, in: merged) else { continue }
+            matchedGroups[rosterID] = group
+        }
+        roster = merged.map { device in
+            guard !bridgeRoster.contains(where: { $0.id == device.id }) else { return device }
+            guard let group = bleGroups[device.id] ?? matchedGroups[device.id] else { return device }
+            return Device(id: device.id, name: device.name, ip: device.ip, version: device.version,
+                          category: device.category, group: group, online: device.online, room: device.room)
+        }
     }
 
     public func isBriturnCloudAvailable(for device: Device) -> Bool {
