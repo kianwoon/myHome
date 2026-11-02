@@ -16,7 +16,7 @@ extension DeviceStore {
         brightness: Int?, white: Bool, cct: Int?
     ) -> Bool {
         let live = isBLEKeyLive(key)
-        NSLog("MyHome: Briturn route=BLE key=%@ peripheralLive=%@", key, live ? "yes" : "no")
+        AppLog.store.notice("MyHome: Briturn route=BLE key=\(key, privacy: .public) peripheralLive=\(live ? "yes" : "no", privacy: .public)")
         guard live else { return false }
         if let hook = briturnBLESendHook { hook(key, on); return true }
         let ble = BLEManager.shared

@@ -63,9 +63,8 @@ public final class BLEManager: NSObject, ObservableObject {
 
     private func logSummary() {
         let d = diagnostics
-        NSLog("MyHome: BLE auth=%@ state=%@ scanning=%d live=%d lastSeen=%@",
-              d.authorization.rawValue, d.state.rawValue, d.isScanning ? 1 : 0, d.liveCount,
-              d.lastDiscovery.map { ISO8601DateFormatter().string(from: $0) } ?? "never")
+        let lastSeen = d.lastDiscovery.map { ISO8601DateFormatter().string(from: $0) } ?? "never"
+        AppLog.ble.notice("MyHome: BLE auth=\(d.authorization.rawValue, privacy: .public) state=\(d.state.rawValue, privacy: .public) scanning=\(d.isScanning ? 1 : 0, privacy: .public) live=\(d.liveCount, privacy: .public) lastSeen=\(lastSeen, privacy: .public)")
     }
 
     // MARK: - Public control API (called by DeviceStore)
@@ -294,7 +293,7 @@ extension BLEManager: CBCentralManagerDelegate {
 
         let isNew = peripherals[id] == nil
         peripherals[id] = peripheral
-        if isNew { NSLog("MyHome: BLE live peripheral id=%@ name=%@", id, name) }
+        if isNew { AppLog.ble.notice("MyHome: BLE live peripheral id=\(id, privacy: .public) name=\(name, privacy: .public)") }
         diagnostics.liveCount = peripherals.count
         diagnostics.lastDiscovery = Date()
         bleIDByPeripheralUUID[peripheral.identifier] = id

@@ -201,7 +201,7 @@ public final class DeviceStore: ObservableObject {
             let orphans = Set(bridgeRoster.filter { $0.category.lowercased() == "briturn" && briturnCloudDevices[$0.id] == nil }.map(\.id))
             if orphans != warnedBridgeOnlyBriturn {
                 warnedBridgeOnlyBriturn = orphans
-                for id in orphans.sorted() { NSLog("MyHome: bridge Briturn light %@ has no match in the Briturn cloud; showing it from the bridge only", id) }
+                for id in orphans.sorted() { AppLog.store.notice("MyHome: bridge Briturn light \(id, privacy: .public) has no match in the Briturn cloud; showing it from the bridge only") }
             }
         }
         // A BLE-discovered light keeps its app-local group once cloud sync
@@ -254,11 +254,11 @@ public final class DeviceStore: ObservableObject {
         do {
             let reply = try await bridge.request(["cmd": "briturngroup", "id": id, "group": group], timeout: 10)
             guard reply["ok"] as? Bool == true else {
-                NSLog("MyHome: bridge refused group '%@' for %@", group, id)
+                AppLog.store.notice("MyHome: bridge refused group '\(group, privacy: .public)' for \(id, privacy: .public)")
                 return false
             }
         } catch {
-            NSLog("MyHome: bridge group push for %@ failed: %@", id, String(describing: error))
+            AppLog.store.error("MyHome: bridge group push for \(id, privacy: .public) failed: \(String(describing: error), privacy: .private)")
             return false
         }
         guard let index = bridgeRoster.firstIndex(where: { $0.id == id }) else { return true }
@@ -360,7 +360,7 @@ public final class DeviceStore: ObservableObject {
             try data.write(to: url, options: .atomic)
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         } catch {
-            NSLog("Briturn groups probe failed: %@", String(describing: error))
+            AppLog.store.error("Briturn groups probe failed: \(String(describing: error), privacy: .private)")
         }
     }
 
@@ -396,7 +396,7 @@ public final class DeviceStore: ObservableObject {
                                     white: Bool = false, cct: Int?) async -> Bool {
         let mapped = devices.compactMap { briturnCloudDevices[$0.id] }
         guard mapped.count == devices.count, !mapped.isEmpty else { return false }
-        NSLog("MyHome: Briturn route=cloud devices=%d", mapped.count)
+        AppLog.store.notice("MyHome: Briturn route=cloud devices=\(mapped.count, privacy: .public)")
         let ids = Set(devices.map(\.id))
         statusLoading.formUnion(ids)
         defer { statusLoading.subtract(ids) }
@@ -1046,7 +1046,7 @@ public final class DeviceStore: ObservableObject {
             statusErrors[device.id] = "Briturn device has no IP yet — run a Briturn scan."
             return
         }
-        NSLog("MyHome: Briturn route=bridge device=%@", device.id)
+        AppLog.store.notice("MyHome: Briturn route=bridge device=\(device.id, privacy: .public)")
         // CONTROL PATH: the bridge. Group control (briturnsetgroup) is
         // proven working on every light through this exact transport, so
         // individual control uses the same path — no transport doubt. The
