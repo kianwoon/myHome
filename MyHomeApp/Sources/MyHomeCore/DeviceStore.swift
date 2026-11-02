@@ -65,8 +65,7 @@ public final class DeviceStore: ObservableObject {
     private static let bleSeenStorageKey = "briturn.bleSeen"
     /// Uniform view: roster + BLE-only lights. The dedupe is DERIVED here.
     /// Identity rule: a BLE light belongs to a roster entry when the
-    /// manufacturer-data MAC matches, or — these lights advertise no MAC —
-    /// when the BLE name suffix matches the roster id's tail
+    /// BLE name suffix matches the roster id's tail
     /// (IOTWF577 ↔ briturn-…8577). One physical light = one card.
     /// BLE-only lights carry their group from app-local persistence (they
     /// have no roster entry to store it in).
@@ -84,19 +83,10 @@ public final class DeviceStore: ObservableObject {
     }
 
     /// Matches a BLE discovery to its canonical roster id, if it has one.
-    /// Primary: MAC from manufacturer data. Fallback: BLE name suffix
-    /// (IOTWF577 → roster id ending "577"). Three-hex-digit suffixes can in
-    /// principle collide across large fleets; with a roster this size the
-    /// risk is negligible, and the MAC path takes precedence when present.
+    /// BLE ids are peripheral UUIDs (no MAC), so the match is the BLE name
+    /// suffix (IOTWF577 → roster id ending "577").
     private func matchRosterID(for light: BLELight, in candidates: [Device]? = nil) -> String? {
         let roster = candidates ?? self.roster
-        if light.id.hasPrefix("ble-") {
-            let mac = String(light.id.dropFirst("ble-".count))
-            if mac.count == 12 {
-                let byMac = "briturn-" + mac
-                if roster.contains(where: { $0.id == byMac }) { return byMac }
-            }
-        }
         let name = light.name.uppercased()
         for prefix in ["IOTWF", "LEDNETWF", "IOTBT"] where name.hasPrefix(prefix) {
             let suffix = String(name.dropFirst(prefix.count)).lowercased()
@@ -184,9 +174,19 @@ public final class DeviceStore: ObservableObject {
         }
         if let data = defaults.data(forKey: Self.bleSeenStorageKey),
            let stored = try? JSONDecoder().decode([BLELight].self, from: data) {
-            for light in stored { bleSeen[light.id] = light }
+            for light in Self.migrateBLESeen(stored) { bleSeen[light.id] = light }
         }
         bindBLE()
+    }
+
+    /// Pre-UUID entries ("ble-<12 hex>", derived from advert bytes that
+    /// collided across bulbs) can never go live again: drop them. Same-name
+    /// entries with UUID ids are different bulbs and are kept apart.
+    static func migrateBLESeen(_ stored: [BLELight]) -> [BLELight] {
+        stored.filter { light in
+            guard light.id.hasPrefix("ble-") else { return false }
+            return UUID(uuidString: String(light.id.dropFirst("ble-".count))) != nil
+        }
     }
 
     private func persistBLESeen() {
@@ -231,8 +231,8 @@ public final class DeviceStore: ObservableObject {
     private func attachBLE(_ light: BLELight) -> Bool {
         guard let tuyaID = matchRosterID(for: light) else { return false }
         bleFallbackIDs.insert(tuyaID)
-        // The same physical light can advertise under several ids (mfr-derived
-        // MAC, CoreBluetooth UUID): keep them all, resolve the live one at send time.
+        // A name suffix can match several peripherals (re-pairing, duplicates):
+        // keep every UUID id, resolve the live one at send time.
         var keys = bleKeysByDeviceID[tuyaID] ?? []
         if !keys.contains(light.id) { keys.append(light.id) }
         bleKeysByDeviceID[tuyaID] = keys
@@ -436,7 +436,7 @@ public final class DeviceStore: ObservableObject {
     /// Test seams (internal): replace the cloud control call / the BLE send.
     var briturnCloudControlHook: (([BriturnCloudDevice], Bool?) async throws -> [String: BriturnState])?
     var briturnBLESendHook: ((String, Bool?) -> Void)?
-    /// Candidate bleKeys ("ble-<mac>" / "ble-<uuid>") per roster id, for addressing BLEManager.
+    /// Candidate bleKeys ("ble-<peripheral uuid>") per roster id, for addressing BLEManager.
     var bleKeysByDeviceID: [String: [String]] = [:]
     /// Test seam (internal): overrides whether a BLE key has a live peripheral.
     var bleLiveHook: ((String) -> Bool)?
@@ -455,11 +455,7 @@ public final class DeviceStore: ObservableObject {
     /// WiFi roster id's MAC-derived key.
     private func bleKey(for device: Device) -> String? {
         if device.isBLE { return device.id }
-        var candidates = bleKeysByDeviceID[device.id] ?? []
-        if device.id.hasPrefix("briturn-") {
-            let mac = String(device.id.dropFirst("briturn-".count))
-            if mac.count == 12, !candidates.contains("ble-" + mac) { candidates.append("ble-" + mac) }
-        }
+        let candidates = bleKeysByDeviceID[device.id] ?? []
         guard !candidates.isEmpty else { return nil }
         // Prefer a candidate BLEManager currently holds a peripheral for
         // (strongest signal first); otherwise the first candidate.

@@ -16,14 +16,17 @@
 import Foundation
 
 public struct BLELight: Identifiable, Equatable, Codable {
-    public let id: String            // "ble-<mac>"
+    public let id: String            // "ble-<peripheral uuid>" (see BLEManager.lightID)
     public let name: String
     public let rssi: Int
 }
 
 @MainActor
 public final class BLEManager: NSObject, ObservableObject {
-    public static let shared = BLEManager()
+    /// Under XCTest the CBCentralManager is never created: the test host has no
+    /// Bluetooth usage description, so TCC aborts the process asynchronously.
+    public static let shared = BLEManager(
+        startCentral: ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil)
 
     @Published public private(set) var lights: [BLELight] = []
     /// Latest advertisement-decoded state per BLE light id, shared with the
@@ -35,17 +38,13 @@ public final class BLEManager: NSObject, ObservableObject {
 
     private var central: CBCentralManager!
     private var peripherals: [String: CBPeripheral] = [:]   // id -> peripheral
-    /// CoreBluetooth hides the MAC; our ids come from advertisement decoding.
-    /// Every per-characteristic lookup must go through this map, or the
-    /// write-char lookup misses and commands silently never send.
-    private var bleIDByPeripheralUUID: [UUID: String] = [:]
+    /// Pre-filter advert accounting (every peripheral heard, accepted or not).
+    private var advertUUIDsSeen: Set<UUID> = []
+    private var advertUUIDsAccepted: Set<UUID> = []
     private var rawStates: [String: DeviceStore.BriturnState] = [:]
-    // Connection state is keyed by the PERIPHERAL UUID, not the advert id:
-    // one bulb can advertise as both "ble-<mac>" and "ble-<uuid>" (adverts
-    // with/without the Zengge mfr block), and bleIDByPeripheralUUID flips
-    // between them on every duplicate advert. Keying by advert id let a
-    // command queue under one id while discovery completed under the other,
-    // so the queued write was never issued.
+    // Identity is the PERIPHERAL UUID everywhere (ids, link state). Manufacturer
+    // data is only ever used to decode state: the bytes once used as a "MAC"
+    // were state plus a fixed product tail and collided across bulbs.
     /// Pending post-connect actions; the argument is nil on success or the
     /// failure reason (logged by the caller).
     private var connectRequests: [UUID: [(String?) -> Void]] = [:]
@@ -61,9 +60,9 @@ public final class BLEManager: NSObject, ObservableObject {
     /// logged (e.g. the bulb's single link is held by the phone app).
     private static let connectTimeoutNanos: UInt64 = 10_000_000_000
 
-    override private init() {
+    private init(startCentral: Bool) {
         super.init()
-        central = CBCentralManager(delegate: self, queue: nil)
+        if startCentral { central = CBCentralManager(delegate: self, queue: nil) }
         diagnostics.authorization = BLEAuthorization(CBCentralManager.authorization)
         Task { [weak self] in
             while !Task.isCancelled {
@@ -75,9 +74,13 @@ public final class BLEManager: NSObject, ObservableObject {
 
     private func logSummary() {
         let d = diagnostics
+        let total = advertUUIDsSeen.count, acc = advertUUIDsAccepted.count
         let lastSeen = d.lastDiscovery.map { ISO8601DateFormatter().string(from: $0) } ?? "never"
-        AppLog.ble.notice("MyHome: BLE auth=\(d.authorization.rawValue, privacy: .public) state=\(d.state.rawValue, privacy: .public) scanning=\(d.isScanning ? 1 : 0, privacy: .public) live=\(d.liveCount, privacy: .public) lastSeen=\(lastSeen, privacy: .public)")
+        AppLog.ble.notice("MyHome: BLE auth=\(d.authorization.rawValue, privacy: .public) state=\(d.state.rawValue, privacy: .public) scanning=\(d.isScanning ? 1 : 0, privacy: .public) live=\(d.liveCount, privacy: .public) lastSeen=\(lastSeen, privacy: .public) peripherals=\(total, privacy: .public) accepted=\(acc, privacy: .public) filtered=\(total - acc, privacy: .public)")
     }
+
+    /// The one and only light identity: the CoreBluetooth peripheral UUID.
+    static func lightID(for uuid: UUID) -> String { "ble-" + uuid.uuidString.lowercased() }
 
     // MARK: - Public control API (called by DeviceStore)
 
@@ -179,7 +182,7 @@ public final class BLEManager: NSObject, ObservableObject {
     func hasPeripheral(id: String) -> Bool { peripherals[id] != nil }
 
     private func label(_ peripheral: CBPeripheral) -> String {
-        bleIDByPeripheralUUID[peripheral.identifier] ?? "ble-" + peripheral.identifier.uuidString.lowercased()
+        Self.lightID(for: peripheral.identifier)
     }
 
     private func send(id: String, op: String, command: [UInt8]) {
@@ -319,12 +322,33 @@ public final class BLEManager: NSObject, ObservableObject {
         rawStates[id] = state
     }
 
-    private func macFromMfr(_ mfr: Data) -> String? {
-        let b = [UInt8](mfr)
-        guard b.count >= 8 else { return nil }
-        // bytes 2-7 hold the MAC (reversed on air)
-        let mac = b[2...7].reversed().map { String(format: "%02x", $0) }.joined()
-        return mac.count == 12 ? mac : nil
+    /// "<companyId hex>/<payload length>" of the advertised manufacturer data, or "none".
+    static func mfrSummary(_ adv: [String: Any]) -> String {
+        let raw = adv[CBAdvertisementDataManufacturerDataKey]
+        if let all = raw as? Data, all.count >= 2 {
+            let company = Int(all[all.startIndex]) | (Int(all[all.startIndex + 1]) << 8)
+            return String(format: "%04x/%d", company, all.count - 2)
+        }
+        if let dict = raw as? [AnyHashable: Data], let (k, v) = dict.first, let company = k as? Int {
+            return String(format: "%04x/%d", company, v.count)
+        }
+        return "none"
+    }
+
+    /// Registers a discovered light under its peripheral-UUID id and decodes
+    /// state. Returns the id and whether it is new this run.
+    @discardableResult
+    func noteLight(uuid: UUID, name: String, rssi: Int, mfr: Data, hasServiceData: Bool) -> (id: String, isNew: Bool) {
+        let id = Self.lightID(for: uuid)
+        let isNew = !lights.contains { $0.id == id }
+        if isNew {
+            lights.append(BLELight(id: id, name: name, rssi: rssi))
+            lights.sort { $0.name < $1.name }
+        }
+        if !mfr.isEmpty {
+            decodeState(id, mfr: mfr, hasServiceData: hasServiceData, name: name)
+        }
+        return (id, isNew)
     }
 
     private func isZenggeMfrKey(_ key: Int) -> Bool {
@@ -354,8 +378,15 @@ extension BLEManager: CBCentralManagerDelegate {
 
     public func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral,
                                advertisementData: [String: Any], rssi RSSI: NSNumber) {
-        let name = (advertisementData[CBAdvertisementDataLocalNameKey] as? String) ?? peripheral.name ?? ""
-        guard name.hasPrefix("IOTWF") || name.hasPrefix("LEDnetWF") || name.hasPrefix("IOTBT") else { return }
+        let localName = advertisementData[CBAdvertisementDataLocalNameKey] as? String
+        let name = localName ?? peripheral.name ?? ""
+        let accepted = name.hasPrefix("IOTWF") || name.hasPrefix("LEDnetWF") || name.hasPrefix("IOTBT")
+        // Pre-filter log: every peripheral once per run, whatever its name.
+        if advertUUIDsSeen.insert(peripheral.identifier).inserted {
+            AppLog.ble.notice("MyHome: BLE adv uuid=\(peripheral.identifier.uuidString.lowercased(), privacy: .public) name=\(localName ?? "", privacy: .public) periphName=\(peripheral.name ?? "", privacy: .public) rssi=\(RSSI.intValue, privacy: .public) mfr=\(Self.mfrSummary(advertisementData), privacy: .public) accepted=\(accepted, privacy: .public)")
+        }
+        guard accepted else { return }
+        advertUUIDsAccepted.insert(peripheral.identifier)
 
         var mfr = Data()
         var hasServiceData = false
@@ -371,26 +402,12 @@ extension BLEManager: CBCentralManagerDelegate {
             if let keyNumber = key as? Int, isZenggeMfrKey(keyNumber) { mfr = value }
         }
 
-        let id: String
-        if let m = macFromMfr(mfr) {
-            id = "ble-" + m
-        } else {
-            id = "ble-" + peripheral.identifier.uuidString.lowercased()
-        }
-
-        let isNew = peripherals[id] == nil
+        let (id, isNew) = noteLight(uuid: peripheral.identifier, name: name, rssi: RSSI.intValue,
+                                    mfr: mfr, hasServiceData: hasServiceData)
         peripherals[id] = peripheral
         if isNew { AppLog.ble.notice("MyHome: BLE live peripheral id=\(id, privacy: .public) name=\(name, privacy: .public)") }
         diagnostics.liveCount = peripherals.count
         diagnostics.lastDiscovery = Date()
-        bleIDByPeripheralUUID[peripheral.identifier] = id
-        if isNew || lights.first(where: { $0.id == id }) == nil {
-            lights.append(BLELight(id: id, name: name, rssi: RSSI.intValue))
-            lights.sort { $0.name < $1.name }
-        }
-        if !mfr.isEmpty {
-            decodeState(id, mfr: mfr, hasServiceData: hasServiceData, name: name)
-        }
     }
 
     public func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {

@@ -78,7 +78,7 @@ final class DeviceStoreGroupMirrorTests: XCTestCase {
 
     func testBLEReattachedWhenRosterGainsCloudLight() async throws {
         let store = makeStore(RecordingBridge())
-        let light = BLELight(id: "ble-0865f0ef87bf", name: "IOTWFXXXX", rssi: -50)
+        let light = BLELight(id: "ble-cfbf120c-7f3d-b4f1-8827-906f05c07e79", name: "IOTWF87BF", rssi: -50)
         store.bleSeen[light.id] = light
         XCTAssertNil(store.bleKeysByDeviceID["briturn-0865f0ef87bf"])
         let item = try cloud(mac: "0865f0ef87bf", group: nil)
@@ -90,7 +90,7 @@ final class DeviceStoreGroupMirrorTests: XCTestCase {
         store.briturnCloudDevices[other.canonicalID] = other
         store.bridgeRoster = [local(other.canonicalID, group: nil)]
         await store.mirrorCloudGroupsToBridge()
-        XCTAssertEqual(store.bleKeysByDeviceID["briturn-0865f0ef87bf"], ["ble-0865f0ef87bf"])
+        XCTAssertEqual(store.bleKeysByDeviceID["briturn-0865f0ef87bf"], [light.id])
         XCTAssertTrue(store.bleFallbackIDs.contains("briturn-0865f0ef87bf"))
     }
 

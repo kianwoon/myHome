@@ -9,6 +9,7 @@ private final class NullBridge: BridgeSending, @unchecked Sendable {
 @MainActor
 final class DeviceStoreOfflineBLETests: XCTestCase {
     private let mac = "aabbccddeeff"
+    private let bleKey = "ble-11111111-2222-3333-4444-555555555555"
     private func cloudLight(online: Bool) throws -> BriturnCloudDevice {
         try BriturnCloudDevice(json: ["deviceId": 7, "entityType": "TCP_WF", "productId": 95,
                                       "macAddress": mac, "name": "Lamp",
@@ -26,7 +27,10 @@ final class DeviceStoreOfflineBLETests: XCTestCase {
         let item = try cloudLight(online: online)
         let device = noIPDevice(item.canonicalID)
         store.briturnCloudDevices = [item.canonicalID: item]
-        if ble { store.bleFallbackIDs = [item.canonicalID] }
+        if ble {
+            store.bleFallbackIDs = [item.canonicalID]
+            store.bleKeysByDeviceID[item.canonicalID] = [bleKey]
+        }
         let counter = Counter()
         counter.cloudOK = cloudOK
         store.briturnCloudControlHook = { devices, on in
@@ -43,7 +47,7 @@ final class DeviceStoreOfflineBLETests: XCTestCase {
         let (store, device, c) = try make(online: false, ble: true)
         await store.setBriturn(device, on: true)
         XCTAssertEqual(c.cloud, 0)
-        XCTAssertEqual(c.ble, ["ble-" + mac])
+        XCTAssertEqual(c.ble, [bleKey])
         XCTAssertNil(store.statusErrors[device.id])
     }
 
@@ -58,7 +62,7 @@ final class DeviceStoreOfflineBLETests: XCTestCase {
         let (store, device, c) = try make(online: true, ble: true, cloudOK: false)
         await store.setBriturn(device, on: false)
         XCTAssertEqual(c.cloud, 1)
-        XCTAssertEqual(c.ble, ["ble-" + mac])
+        XCTAssertEqual(c.ble, [bleKey])
         XCTAssertNil(store.statusErrors[device.id])
     }
 
@@ -72,16 +76,16 @@ final class DeviceStoreOfflineBLETests: XCTestCase {
 
     func testLiveCandidateKeyIsUsed() async throws {
         let (store, device, c) = try make(online: false, ble: true)
-        store.bleKeysByDeviceID[device.id] = ["ble-641df0500161", "ble-cfbf120c-uuid"]
-        store.bleLiveHook = { $0 == "ble-cfbf120c-uuid" }
+        store.bleKeysByDeviceID[device.id] = ["ble-aaaaaaaa-0000-0000-0000-000000000001", "ble-cfbf120c-7f3d-b4f1-8827-906f05c07e79"]
+        store.bleLiveHook = { $0 == "ble-cfbf120c-7f3d-b4f1-8827-906f05c07e79" }
         await store.setBriturn(device, on: true)
-        XCTAssertEqual(c.ble, ["ble-cfbf120c-uuid"])
+        XCTAssertEqual(c.ble, ["ble-cfbf120c-7f3d-b4f1-8827-906f05c07e79"])
         XCTAssertNil(store.statusErrors[device.id])
     }
 
     func testNoLiveCandidateSurfacesErrorAndRollsBack() async throws {
         let (store, device, c) = try make(online: false, ble: true)
-        store.bleKeysByDeviceID[device.id] = ["ble-641df0500161", "ble-cfbf120c-uuid"]
+        store.bleKeysByDeviceID[device.id] = ["ble-aaaaaaaa-0000-0000-0000-000000000001", "ble-cfbf120c-7f3d-b4f1-8827-906f05c07e79"]
         store.bleLiveHook = { _ in false }
         store.bleDiagnosticsHook = BLEDiagnostics()
         await store.setBriturn(device, on: true)
@@ -109,7 +113,7 @@ final class DeviceStoreOfflineBLETests: XCTestCase {
         store.briturnCloudControlHook = { devices, on in cloudIDs = devices.map(\.canonicalID); return try await base(devices, on) }
         await store.setBriturnGroupState("G", on: true)
         XCTAssertEqual(cloudIDs, [onlineItem.canonicalID])
-        XCTAssertEqual(c.ble, ["ble-" + mac])
+        XCTAssertEqual(c.ble, [bleKey])
     }
 }
 
