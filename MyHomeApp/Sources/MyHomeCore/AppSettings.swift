@@ -8,10 +8,13 @@ import Foundation
 public enum AppSettings {
     public static let pollIntervalKey = "pollIntervalSeconds"
     public static let scanWindowKey = "scanWindowSeconds"
+    public static let autoScanMinutesKey = "autoScanMinutes"
     public static let notifyOfflineKey = "notifyOnDeviceOffline"
 
     public static let defaultPollInterval = 10
     public static let defaultScanWindow = 35
+    public static let defaultAutoScanMinutes = 10
+    public static let autoScanMinutesRange = 0...120
 
     public static let pollIntervalRange = 5...120
     public static let scanWindowRange = 15...60
@@ -25,6 +28,15 @@ public enum AppSettings {
     public static func scanWindow(from defaults: UserDefaults = .standard) -> Int {
         let stored = defaults.object(forKey: scanWindowKey) as? Int
         return min(max(stored ?? defaultScanWindow, scanWindowRange.lowerBound), scanWindowRange.upperBound)
+    }
+
+    /// Minutes between automatic Briturn scans; 0 = off, otherwise at least 1.
+    public static func autoScanMinutes(from defaults: UserDefaults = .standard) -> Int {
+        clampAutoScanMinutes(defaults.object(forKey: autoScanMinutesKey) as? Int ?? defaultAutoScanMinutes)
+    }
+
+    public static func clampAutoScanMinutes(_ minutes: Int) -> Int {
+        min(max(minutes, autoScanMinutesRange.lowerBound), autoScanMinutesRange.upperBound)
     }
 
     public static func notificationsEnabled(from defaults: UserDefaults = .standard) -> Bool {

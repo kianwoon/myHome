@@ -394,16 +394,19 @@ private struct CloudSettingsView: View {
 private struct ControlSettingsView: View {
     @AppStorage("pollIntervalSeconds") private var pollInterval = AppSettings.defaultPollInterval
     @AppStorage("scanWindowSeconds") private var scanWindow = AppSettings.defaultScanWindow
+    @AppStorage("autoScanMinutes") private var autoScanMinutes = AppSettings.defaultAutoScanMinutes
 
     var body: some View {
         Form {
             Section {
                 Stepper("Poll interval: \(pollInterval)s", value: $pollInterval, in: AppSettings.pollIntervalRange)
                 Stepper("Scan window: \(scanWindow)s", value: $scanWindow, in: AppSettings.scanWindowRange)
+                Stepper(autoScanMinutes == 0 ? "Auto-scan for new lights: off" : "Auto-scan for new lights: every \(autoScanMinutes) min",
+                        value: $autoScanMinutes, in: AppSettings.autoScanMinutesRange)
             } header: {
                 Text("Polling")
             } footer: {
-                Text("Poll interval applies the next time polling starts. Scan window applies to the next Rescan.")
+                Text("Poll interval applies the next time polling starts. Scan window applies to the next Rescan. Auto-scan looks for new Briturn lights in the background (0 = off).")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

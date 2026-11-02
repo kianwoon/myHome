@@ -76,6 +76,7 @@ struct LaunchWarmup: View {
                 NSApp.activate(ignoringOtherApps: true)
                 await store.refresh()
                 await store.loadAllStatuses()
+                await store.runAutoScanLoop()
             }
     }
 }

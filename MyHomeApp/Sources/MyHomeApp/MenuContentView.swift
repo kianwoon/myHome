@@ -46,6 +46,14 @@ struct MenuContentView: View {
                 .frame(maxHeight: 420)
             }
 
+            if let notice = store.newDeviceNotice {
+                Text(notice)
+                    .font(.caption)
+                    .foregroundStyle(.green)
+                    .lineLimit(2)
+                    .padding(.horizontal, 4)
+            }
+
             if let error = store.errorText {
                 Text(error)
                     .font(.caption)

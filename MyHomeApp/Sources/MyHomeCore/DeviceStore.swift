@@ -113,6 +113,8 @@ public final class DeviceStore: ObservableObject {
     @Published public private(set) var schedulesError: String?
     @Published public private(set) var errorText: String?
     @Published public private(set) var isWorking = false
+    /// Short-lived "Found N new light" message set by the auto-scan (see DeviceStore+AutoScan.swift).
+    @Published public internal(set) var newDeviceNotice: String?
 
     /// Badge text for the independent cloud-connect fact; nil = not fetched.
     public nonisolated static func cloudBadgeText(_ online: Bool?) -> String {
@@ -130,6 +132,8 @@ public final class DeviceStore: ObservableObject {
     private let scanWindow: Int
     private var loadedStatus: Set<String> = []
     private var pollTask: Task<Void, Never>?
+    var isAutoScanning = false
+    var noticeTask: Task<Void, Never>?
     private var pollObservers = 0
     private var cyclesSinceCloudSync = 0
     private var isCloudSyncing = false
