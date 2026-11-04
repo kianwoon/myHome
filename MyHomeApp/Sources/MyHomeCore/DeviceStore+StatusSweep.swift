@@ -97,8 +97,10 @@ extension DeviceStore {
             lastStatusAt[device.id] = Date()
         }
 
+        let readStartedAt = Date()
         switch await fetchStatus(for: device.id) {
         case .success(let decoded, let viaCloud):
+            guard !readPredatesUserWrite(device.id, startedAt: readStartedAt) else { return }
             applyStatus(device.id, decoded: decoded, viaCloud: viaCloud)
         case .failure(let message):
             if statusErrors[device.id] != message { statusErrors[device.id] = message }
@@ -147,7 +149,7 @@ extension DeviceStore {
         }
         let finished = Date()
         for id in ids { lastStatusAt[id] = finished }
-        applyPollBatch(dps: dpsBatch, viaCloud: viaBatch, errors: errorBatch)
+        applyPollBatch(dps: dpsBatch, viaCloud: viaBatch, errors: errorBatch, readStartedAt: started)
         logSweep(scope: "\(scope)-tuya", devices: ids.count, started: started,
                  detail: "ok=\(dpsBatch.count) failed=\(errorBatch.count) viaCloud=\(viaBatch.values.filter { $0 }.count)")
     }
@@ -175,8 +177,13 @@ extension DeviceStore {
     func applyPollBatch(
         dps: [String: [String: DPSValue]],
         viaCloud: [String: Bool],
-        errors: [String: String]
+        errors: [String: String],
+        readStartedAt: Date? = nil
     ) {
+        // Reads that began before the user's latest command are stale by
+        // construction: drop them rather than flash the old value.
+        let dps = dps.filter { !readPredatesUserWrite($0.key, startedAt: readStartedAt) }
+        let viaCloud = viaCloud.filter { dps[$0.key] != nil }
         guard !dps.isEmpty || !errors.isEmpty else { return }
         if !dps.isEmpty {
             // Reconcile BEFORE merging: the poll is a wire read like any other
@@ -256,7 +263,7 @@ extension DeviceStore {
                 noteLANResult(device.id, ok: false)
             }
         }
-        applyBriturnWireStates(batch)
+        applyBriturnWireStates(batch, readStartedAt: started)
         if !batch.isEmpty {
             var nextVia = statusViaCloud
             var nextErrors = statusErrors
@@ -342,6 +349,7 @@ extension DeviceStore {
             return
         }
         do {
+            let readStartedAt = Date()
             let states = try await briturnCloud.queryStates(devices: mapped)
             nextErrors = statusErrors   // re-base after the await
             var paint: [String: BriturnState] = [:]
@@ -359,7 +367,7 @@ extension DeviceStore {
                     nextErrors[id] = device.supportsLighting ? "Light is offline in Briturn Cloud." : "Cloud controls for this model are not supported yet."
                 }
             }
-            applyBriturnWireStates(paint)
+            applyBriturnWireStates(paint, readStartedAt: readStartedAt)
             if nextVia != statusViaCloud { statusViaCloud = nextVia }
             if nextOnline != cloudOnline { cloudOnline = nextOnline }
         } catch {

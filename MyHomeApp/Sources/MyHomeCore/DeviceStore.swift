@@ -985,6 +985,15 @@ public final class DeviceStore: ObservableObject {
     }
 
     private var dpsIntent: [String: DpsIntent] = [:]
+    /// When the user last commanded each device. A wire read that STARTED
+    /// before this moment predates the command, so it can only carry the old
+    /// value: it is dropped instead of painted (the flicker source).
+    var lastUserWriteAt: [String: Date] = [:]
+
+    func readPredatesUserWrite(_ id: String, startedAt: Date?) -> Bool {
+        guard let startedAt, let wrote = lastUserWriteAt[id] else { return false }
+        return wrote > startedAt
+    }
     private static let dpsIntentGrace: TimeInterval = briturnIntentGrace
 
     /// Roster ids whose `briturnStatus` came from Bluetooth advertisements
@@ -1065,10 +1074,11 @@ public final class DeviceStore: ObservableObject {
     /// Batch form of applyBriturnWireState for sweeps: same per-light intent
     /// rule, but `briturnStatus` is assigned at most ONCE (and not at all
     /// when nothing changed), so a sweep is one invalidation, not one per light.
-    func applyBriturnWireStates(_ states: [String: BriturnState]) {
+    func applyBriturnWireStates(_ states: [String: BriturnState], readStartedAt: Date? = nil) {
         guard !states.isEmpty else { return }
         var next = briturnStatus
         for (id, state) in states {
+            if readPredatesUserWrite(id, startedAt: readStartedAt) { continue }
             if let paint = resolveBriturnWireState(id, state, authoritative: false) { next[id] = paint }
         }
         if next != briturnStatus { briturnStatus = next }
@@ -1087,36 +1097,22 @@ public final class DeviceStore: ObservableObject {
             return state
         }
         var contradicts = false
-        if let want = intent.on {
-            if state.on == want || authoritative {
-                intent.on = nil
-            } else {
-                contradicts = true
-            }
+        if let want = intent.on, state.on != want { contradicts = true }
+        if let want = intent.w, abs(state.whiteLevel - want) > Self.briturnBrightnessTolerance { contradicts = true }
+        if let want = intent.color, !(state.r == want.r && state.g == want.g && state.b == want.b) { contradicts = true }
+        if contradicts && authoritative {
+            // The authoritative readback says the command never took: the
+            // wire is the truth, stop defending.
+            briturnIntent.removeValue(forKey: id)
+            return state
         }
-        if let want = intent.w {
-            if abs(state.whiteLevel - want) <= Self.briturnBrightnessTolerance || authoritative {
-                intent.w = nil
-            } else {
-                contradicts = true
-            }
-        }
-        if let want = intent.color {
-            if (state.r == want.r && state.g == want.g && state.b == want.b) || authoritative {
-                intent.color = nil
-            } else {
-                contradicts = true
-            }
-        }
-        if contradicts && !authoritative {
-            // Mid-transition poll: keep showing what the user painted, but
-            // retain the channels the device already confirmed.
-            briturnIntent[id] = intent
+        if contradicts {
+            // Mid-transition / lagging read: keep showing what the user painted.
             return nil
         }
-        // Confirmed on every touched channel, or the authoritative readback
-        // says the command never took: the wire is the truth.
-        briturnIntent.removeValue(forKey: id)
+        // Every channel agrees. The intent is KEPT until grace expiry so a
+        // lagging cloud or LAN read echoing the OLD value afterwards is still
+        // dropped instead of bouncing the light back.
         return state
     }
 
@@ -1253,6 +1249,7 @@ public final class DeviceStore: ObservableObject {
         // (power, brightness/white, colour) — not just power.
         // CCT readback bytes vary with the temperature, so a CCT set defends
         // power only (no w/colour intent).
+        lastUserWriteAt[device.id] = Date()
         briturnIntent[device.id] = briturnIntentSnapshot(
             on: on, color: color, brightness: cct != nil ? nil : brightness,
             paintedWhite: paintedWhite && cct == nil, painted: painted
@@ -1395,6 +1392,7 @@ public final class DeviceStore: ObservableObject {
         )
         setBriturnStatus(device.id, painted)
         // Same intent rule as the WiFi path: a CCT set defends power only.
+        lastUserWriteAt[device.id] = Date()
         briturnIntent[device.id] = briturnIntentSnapshot(
             on: on, color: color, brightness: cct != nil ? nil : brightness,
             paintedWhite: paintedWhite && cct == nil, painted: painted
@@ -1595,6 +1593,7 @@ public final class DeviceStore: ObservableObject {
             // Each member defends its OWN painted channels: colour-only sets
             // defend colour, white-mode brightness defends w, and every
             // member keeps its individual power display untouched.
+            lastUserWriteAt[id] = Date()
             briturnIntent[id] = briturnIntentSnapshot(
                 on: on, color: color, brightness: cct != nil ? nil : brightness,
                 paintedWhite: paintedWhite && cct == nil, painted: painted
@@ -1945,9 +1944,10 @@ public final class DeviceStore: ObservableObject {
     /// path untouched — e.g. oscillation dp5 in a poll batch, or a curtain's
     /// percent dp (dp2) — because nothing here names a key.
     ///
-    /// Mutates `dpsIntent` exactly as the pre-extraction code did: agreeing
-    /// keys confirm and are dropped, contradicting keys keep their intent at
-    /// the original timestamp, and an expired intent is discarded.
+    /// Mutates `dpsIntent`: every commanded key keeps its intent at the
+    /// original timestamp until the grace window ends (agreeing keys are NOT
+    /// dropped early, so a lagging cloud cannot flip them back), after which
+    /// the intent is discarded and the wire is authoritative.
     func reconciled(_ id: String, _ decoded: [String: DPSValue]) -> [String: DPSValue] {
         var resolved = decoded
         if let intent = dpsIntent[id],
@@ -1955,12 +1955,11 @@ public final class DeviceStore: ObservableObject {
             var pending: [String: DPSValue] = [:]
             for (key, intended) in intent.values {
                 guard let wire = decoded[key] else { continue }
-                if wire == intended {
-                    // Device confirmed the user's instruction: stop defending.
-                    continue
-                }
-                // Stale readback: keep showing the user's command.
-                resolved[key] = intended
+                // Confirmed or stale, the key stays defended until the grace
+                // window ends: a cloud that lags behind the device can echo the
+                // OLD value after the first confirmation, and painting it
+                // would bounce the control back and forth.
+                if wire != intended { resolved[key] = intended }
                 pending[key] = intended
             }
             if pending.isEmpty {
@@ -2012,6 +2011,7 @@ public final class DeviceStore: ObservableObject {
         dpsById[device.id, default: [:]][ "1"] = .bool(newValue)
         // Defend the optimistic paint from stale polls/set replies, exactly
         // like setDps does for arbitrary dps patches.
+        lastUserWriteAt[device.id] = Date()
         dpsIntent[device.id] = DpsIntent(values: ["1": .bool(newValue)], at: Date())
 
         do {
@@ -2057,6 +2057,7 @@ public final class DeviceStore: ObservableObject {
 
         if !optimistic.isEmpty {
             // A newer command supersedes any prior intent for this device.
+            lastUserWriteAt[device.id] = Date()
             dpsIntent[device.id] = DpsIntent(values: optimistic, at: Date())
             var merged = dpsById[device.id] ?? [:]
             for (key, value) in optimistic {
