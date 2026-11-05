@@ -7,6 +7,12 @@ public protocol SecretStore: AnyObject {
     func read(account: String) throws -> String?
     func write(_ secret: String, account: String) throws
     func delete(account: String) throws
+    /// When the stored item was last written (nil when unknown or missing). Never reads the secret.
+    func modificationDate(account: String) -> Date?
+}
+
+public extension SecretStore {
+    func modificationDate(account: String) -> Date? { nil }
 }
 
 public enum SecretStoreError: Error, Equatable, LocalizedError {
@@ -66,15 +72,29 @@ public final class KeychainSecretStore: SecretStore {
         let status = SecItemDelete(query(account) as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else { throw SecretStoreError.keychain(status) }
     }
+
+    /// Attributes only (no kSecReturnData), so this never touches the secret or prompts for it.
+    public func modificationDate(account: String) -> Date? {
+        var request = query(account)
+        request[kSecReturnAttributes as String] = true
+        request[kSecMatchLimit as String] = kSecMatchLimitOne
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(request as CFDictionary, &item) == errSecSuccess,
+              let attributes = item as? [String: Any] else { return nil }
+        return attributes[kSecAttrModificationDate as String] as? Date
+    }
 }
 
 /// Test double; also a safe default when no Keychain is wanted.
 public final class InMemorySecretStore: SecretStore {
     private var values: [String: String] = [:]
-    public init() {}
+    private var dates: [String: Date] = [:]
+    private let clock: () -> Date
+    public init(clock: @escaping () -> Date = Date.init) { self.clock = clock }
     public func read(account: String) throws -> String? { values[account] }
-    public func write(_ secret: String, account: String) throws { values[account] = secret }
-    public func delete(account: String) throws { values[account] = nil }
+    public func write(_ secret: String, account: String) throws { values[account] = secret; dates[account] = clock() }
+    public func delete(account: String) throws { values[account] = nil; dates[account] = nil }
+    public func modificationDate(account: String) -> Date? { dates[account] }
 }
 
 /// A secret as the app actually resolves it, with everything a diagnostic may say
@@ -176,6 +196,7 @@ public struct ResolvedSecret: Equatable, Sendable {
     /// What was sent, in user words.
     public var sentDescription: String {
         var text = "Key sent (from \(source == .keychain ? "Keychain" : "environment"), \(length) characters"
+        if let value { text += ", ending \(KeyFingerprint.ending(value))" }
         if let shapeWarning { text += ", \(shapeWarning)" }
         return text + ")"
     }
@@ -185,19 +206,25 @@ public struct ResolvedSecret: Equatable, Sendable {
 /// The pasted value is sanitized first; a malformed one (several tokens, line breaks,
 /// control characters) is refused and never written. The message never contains the key.
 public func saveSecretVerified(_ secret: String, account: String, in secrets: SecretStore) -> String {
+    saveSecretVerifiedOutcome(secret, account: account, in: secrets).message
+}
+
+/// Same as saveSecretVerified, with an explicit success flag (true only when the
+/// value read back from the store equals the sanitized key just written).
+public func saveSecretVerifiedOutcome(_ secret: String, account: String, in secrets: SecretStore) -> (saved: Bool, message: String) {
     let outcome = APIKeySanitizer.sanitize(secret)
     guard let key = outcome.key else {
-        return APIKeySanitizer.saveMessage(for: outcome.invalid ?? .empty)
+        return (false, APIKeySanitizer.saveMessage(for: outcome.invalid ?? .empty))
     }
     let note = APIKeySanitizer.editNote(for: outcome).map { " " + $0 } ?? ""
     do {
         try secrets.write(key, account: account)
         let back = ResolvedSecret.resolve(secrets: secrets, account: account)
-        if back.value == key { return "Key saved in Keychain (\(key.count) characters)." + note }
-        if let status = back.keychainStatus { return "Key written but could not be read back from the Keychain (status \(status))." }
-        return "Key written but the Keychain returned a different value."
+        if back.value == key { return (true, "Key saved in Keychain (\(key.count) characters)." + note) }
+        if let status = back.keychainStatus { return (false, "Key written but could not be read back from the Keychain (status \(status)).") }
+        return (false, "Key written but the Keychain returned a different value.")
     } catch {
-        return error.localizedDescription
+        return (false, error.localizedDescription)
     }
 }
 

@@ -82,16 +82,6 @@ struct HotkeySettingsView: View {
 /// selected provider (cloud fields for Anthropic / OpenAI, Jev fields for Jev).
 struct PlannerSettingsView: View {
     @AppStorage(AppSettings.plannerProviderKey) private var provider = AppSettings.defaultPlannerProvider
-    @AppStorage(AppSettings.anthropicBaseURLKey) private var anthropicURL = ""
-    @AppStorage(AppSettings.openAIBaseURLKey) private var openAIURL = ""
-    @AppStorage(AppSettings.anthropicModelKey) private var anthropicModel = ""
-    @AppStorage(AppSettings.openAIModelKey) private var openAIModel = ""
-    @AppStorage(AppSettings.plannerTimeoutKey) private var plannerTimeout = AppSettings.defaultPlannerTimeout
-    @AppStorage(AppSettings.plannerMaxTokensKey) private var maxTokens = AppSettings.defaultPlannerMaxTokens
-    @State private var apiKey = ""
-    @State private var keyStatus = ""
-    @State private var testResult = ""
-    @State private var testing = false
 
     private let services: AppServices
 
@@ -109,7 +99,8 @@ struct PlannerSettingsView: View {
                     Text("OpenAI-compatible").tag(AppSettings.PlannerProvider.openAICompatible)
                     Text("Jev decider (OpenRouter)").tag(AppSettings.PlannerProvider.jev)
                 }
-                if provider.isCloud { cloudFields }
+                // .id(provider): a fresh key model and field per provider/account.
+                if provider.isCloud { CloudPlannerFields(services: services, provider: provider).id(provider) }
                 if provider == .jev { JevSettingsFields(services: services) }
             } header: {
                 Text("Natural language")
@@ -121,70 +112,7 @@ struct PlannerSettingsView: View {
         }
         .formStyle(.grouped)
         .padding(.top, 4)
-        .onChange(of: provider) { _ in
-            testResult = ""
-            keyStatus = ""
-            services.reloadPlanner()
-        }
-    }
-
-    @ViewBuilder
-    private var cloudFields: some View {
-        TextField("Base URL", text: baseURL, prompt: Text(defaultBaseURL))
-        TextField("Model", text: model, prompt: Text(modelPlaceholder))
-        SecureField("API key", text: $apiKey, prompt: Text(keyIsSaved ? "Saved in Keychain (type to replace)" : "Paste key"))
-        HStack {
-            Button("Save key") { saveKey() }.disabled(apiKey.isEmpty)
-            Button("Remove key") { removeKey() }.disabled(!keyIsSaved)
-            Text(keyStatus).font(.caption).foregroundStyle(.secondary)
-        }
-        Stepper(String(format: "Request timeout %.0fs", plannerTimeout), value: $plannerTimeout, in: AppSettings.plannerTimeoutRange, step: 1)
-        Stepper("Max reply tokens \(maxTokens)", value: $maxTokens, in: AppSettings.plannerMaxTokensRange, step: 64)
-        HStack {
-            Button(testing ? "Testing…" : "Test connection") { Task { await testConnection() } }
-                .disabled(testing)
-            Text(testResult).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-        }
-    }
-
-    private var account: String { AppSettings.plannerSecretAccount(for: provider) }
-
-    private var keyIsSaved: Bool { ResolvedSecret.resolve(secrets: services.secrets, account: account).source == .keychain }
-
-    private var defaultBaseURL: String {
-        provider == .anthropic ? AppSettings.defaultAnthropicBaseURL : AppSettings.defaultOpenAIBaseURL
-    }
-
-    private var modelPlaceholder: String {
-        provider == .anthropic ? AppSettings.anthropicModelPlaceholder : AppSettings.openAIModelPlaceholder
-    }
-
-    private var baseURL: Binding<String> { provider == .anthropic ? $anthropicURL : $openAIURL }
-    private var model: Binding<String> { provider == .anthropic ? $anthropicModel : $openAIModel }
-
-    private func saveKey() {
-        keyStatus = saveSecretVerified(apiKey, account: account, in: services.secrets)
-        if keyStatus.hasPrefix("Key saved") { apiKey = "" }
-    }
-
-    private func removeKey() {
-        do {
-            try services.secrets.delete(account: account)
-            keyStatus = "Key removed."
-        } catch {
-            keyStatus = error.localizedDescription
-        }
-    }
-
-    private func testConnection() async {
-        if !apiKey.isEmpty {
-            saveKey()
-            if !keyStatus.hasPrefix("Key saved") { testResult = keyStatus; return }   // refused: do not test the old key
-        }
-        testing = true
-        defer { testing = false }
-        let planner = CloudPlanner(controller: services.controller, secrets: services.secrets)
-        testResult = await planner.testConnection()
+        .onChange(of: provider) { _ in services.reloadPlanner() }
     }
 
     private var plannerNote: String {
@@ -201,6 +129,50 @@ struct PlannerSettingsView: View {
             return JevSettingsFields.privacyNote
         }
     }
+}
+
+/// Cloud planner (Anthropic / OpenAI-compatible) fields for one provider.
+struct CloudPlannerFields: View {
+    @AppStorage(AppSettings.anthropicBaseURLKey) private var anthropicURL = ""
+    @AppStorage(AppSettings.openAIBaseURLKey) private var openAIURL = ""
+    @AppStorage(AppSettings.anthropicModelKey) private var anthropicModel = ""
+    @AppStorage(AppSettings.openAIModelKey) private var openAIModel = ""
+    @AppStorage(AppSettings.plannerTimeoutKey) private var plannerTimeout = AppSettings.defaultPlannerTimeout
+    @AppStorage(AppSettings.plannerMaxTokensKey) private var maxTokens = AppSettings.defaultPlannerMaxTokens
+    @StateObject private var keyEntry: SecretKeyEntryModel
+
+    private let services: AppServices
+    private let provider: AppSettings.PlannerProvider
+
+    init(services: AppServices, provider: AppSettings.PlannerProvider) {
+        self.services = services
+        self.provider = provider
+        _keyEntry = StateObject(wrappedValue: SecretKeyEntryModel(account: AppSettings.plannerSecretAccount(for: provider),
+                                                                  secrets: services.secrets))
+    }
+
+    var body: some View {
+        TextField("Base URL", text: baseURL, prompt: Text(defaultBaseURL))
+        TextField("Model", text: model, prompt: Text(modelPlaceholder))
+        SecretKeyEntryView(model: keyEntry, placeholder: keyEntry.hasStoredKey ? "Saved in Keychain (paste to replace)" : "Paste key")
+        Stepper(String(format: "Request timeout %.0fs", plannerTimeout), value: $plannerTimeout, in: AppSettings.plannerTimeoutRange, step: 1)
+        Stepper("Max reply tokens \(maxTokens)", value: $maxTokens, in: AppSettings.plannerMaxTokensRange, step: 64)
+        SecretKeyTestRow(model: keyEntry) { [services] in
+            await CloudPlanner(controller: services.controller, secrets: services.secrets).testConnection()
+        }
+        .onAppear { keyEntry.onStoredKeyChange = { [services] in services.reloadPlanner() } }
+    }
+
+    private var defaultBaseURL: String {
+        provider == .anthropic ? AppSettings.defaultAnthropicBaseURL : AppSettings.defaultOpenAIBaseURL
+    }
+
+    private var modelPlaceholder: String {
+        provider == .anthropic ? AppSettings.anthropicModelPlaceholder : AppSettings.openAIModelPlaceholder
+    }
+
+    private var baseURL: Binding<String> { provider == .anthropic ? $anthropicURL : $openAIURL }
+    private var model: Binding<String> { provider == .anthropic ? $anthropicModel : $openAIModel }
 }
 
 /// Assistant tab: safety settings for executed commands.

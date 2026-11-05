@@ -25,6 +25,7 @@
 		E1E54BFD34E79D5006F9FF9F /* MainWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87AD030C867FB1670213C59C /* MainWindow.swift */; };
 		E35660965C5E27E41E509392 /* MyHomeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 025EB1036E4D31BAC39CC68D /* MyHomeApp.swift */; };
 		E4D6E9F51A7F3A05F7D211E3 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEC2FF8663C0FA7C9EFBC95F /* SettingsView.swift */; };
+		F0A5731F474DC7518231D351 /* SecretKeyEntryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A99861946F3DF615BC4E49B /* SecretKeyEntryView.swift */; };
 		F317B7D65C3E75768462303A /* DeviceEntity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D7042748DAC7386EE28CB1C /* DeviceEntity.swift */; };
 		F4F85783C9717DEEC072F30A /* SpeechEngineSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1E72525B7B501D3D2AC0806 /* SpeechEngineSettingsView.swift */; };
 /* End PBXBuildFile section */
@@ -38,6 +39,7 @@
 		2584D53CB844C49682F5ECA9 /* HotkeySettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeySettingsView.swift; sourceTree = "<group>"; };
 		2B98F9FE07DF7101447DB4CF /* DeviceIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceIntents.swift; sourceTree = "<group>"; };
 		30AA2CA98B2FA5BEA1CEAD6E /* CarbonHotkeyRegistrar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarbonHotkeyRegistrar.swift; sourceTree = "<group>"; };
+		4A99861946F3DF615BC4E49B /* SecretKeyEntryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecretKeyEntryView.swift; sourceTree = "<group>"; };
 		5A40831232019FE17DFCE541 /* AppServices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppServices.swift; sourceTree = "<group>"; };
 		61E3AF12D4C07AE1EE34FA31 /* JevSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JevSettingsView.swift; sourceTree = "<group>"; };
 		6D7042748DAC7386EE28CB1C /* DeviceEntity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceEntity.swift; sourceTree = "<group>"; };
@@ -108,6 +110,7 @@
 				025EB1036E4D31BAC39CC68D /* MyHomeApp.swift */,
 				0AEC1FE03A2D878EBD3DBF96 /* OutputMuteSettingsView.swift */,
 				E6F42298384742B657F3B1FC /* ScheduleSection.swift */,
+				4A99861946F3DF615BC4E49B /* SecretKeyEntryView.swift */,
 				AEC2FF8663C0FA7C9EFBC95F /* SettingsView.swift */,
 				81FE9F3B979384342150D39A /* SpecControls.swift */,
 				F1E72525B7B501D3D2AC0806 /* SpeechEngineSettingsView.swift */,
@@ -212,6 +215,7 @@
 				E35660965C5E27E41E509392 /* MyHomeApp.swift in Sources */,
 				BF74D41E699A0758B5627B88 /* OutputMuteSettingsView.swift in Sources */,
 				C3E075CE935FAC31A677C906 /* ScheduleSection.swift in Sources */,
+				F0A5731F474DC7518231D351 /* SecretKeyEntryView.swift in Sources */,
 				E4D6E9F51A7F3A05F7D211E3 /* SettingsView.swift in Sources */,
 				9F1510C90D309A19D82A7540 /* SpecControls.swift in Sources */,
 				F4F85783C9717DEEC072F30A /* SpeechEngineSettingsView.swift in Sources */,

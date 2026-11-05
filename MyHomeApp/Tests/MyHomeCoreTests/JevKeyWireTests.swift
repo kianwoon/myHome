@@ -105,7 +105,7 @@ final class JevKeyWireTests: XCTestCase {
         XCTAssertEqual(sent["x-title"], AppSettings.jevAppTitle)
         XCTAssertEqual(sent["content-type"], "application/json")
         XCTAssertEqual(server.headers.count, 1, "401 is not retried")
-        XCTAssertTrue(message.hasPrefix("Key sent (from Keychain, \(fakeKey.count) characters), service rejected it"), message)
+        XCTAssertTrue(message.hasPrefix("Key sent (from Keychain, \(fakeKey.count) characters, ending …\(fakeKey.suffix(4))), service rejected it"), message)
         XCTAssertTrue(message.contains("(HTTP 401): User not found."), message)
         XCTAssertFalse(message.contains(fakeKey))
         XCTAssertFalse(message.contains(String(fakeKey.prefix(8))))

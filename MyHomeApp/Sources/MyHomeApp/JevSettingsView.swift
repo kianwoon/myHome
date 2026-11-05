@@ -10,65 +10,32 @@ struct JevSettingsFields: View {
     @AppStorage(AppSettings.jevModelKey) private var model = ""
     @AppStorage(AppSettings.jevThresholdKey) private var threshold = AppSettings.defaultJevThreshold
     @AppStorage(AppSettings.jevTimeoutKey) private var timeout = AppSettings.defaultJevTimeout
-    @State private var apiKey = ""
-    @State private var keyStatus = ""
-    @State private var testResult = ""
-    @State private var testing = false
+    @StateObject private var keyEntry: SecretKeyEntryModel
+
+    init(services: AppServices) {
+        self.services = services
+        _keyEntry = StateObject(wrappedValue: SecretKeyEntryModel(account: AppSettings.jevSecretAccount, secrets: services.secrets,
+                                                                  environmentVariable: AppSettings.jevKeyEnvironmentVariable))
+    }
 
     var body: some View {
         TextField("Decisions endpoint", text: $endpoint, prompt: Text(AppSettings.defaultJevEndpoint))
         TextField("Model", text: $model, prompt: Text(AppSettings.jevModelPlaceholder))
-        SecureField("API key", text: $apiKey, prompt: Text(keyPrompt))
-        HStack {
-            Button("Save key") { saveKey() }.disabled(apiKey.isEmpty)
-            Button("Remove key") { removeKey() }.disabled(!keyIsSaved)
-            Text(keyStatus).font(.caption).foregroundStyle(.secondary)
-        }
+        SecretKeyEntryView(model: keyEntry, placeholder: keyPrompt)
         HStack {
             Text("Accept at")
             Slider(value: $threshold, in: AppSettings.jevThresholdRange, step: AppSettings.jevThresholdStep)
             Text("\(Int((threshold * 100).rounded()))%").font(.caption).monospacedDigit().foregroundStyle(.secondary)
         }
         Stepper(String(format: "Request timeout %.0fs (per attempt)", timeout), value: $timeout, in: AppSettings.jevTimeoutRange, step: 1)
-        HStack {
-            Button(testing ? "Testing…" : "Test connection") { Task { await testConnection() } }
-                .disabled(testing)
-            Text(testResult).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-        }
-    }
-
-    private var keyIsSaved: Bool {
-        ResolvedSecret.resolve(secrets: services.secrets, account: AppSettings.jevSecretAccount).source == .keychain
+        SecretKeyTestRow(model: keyEntry) { [services] in await JevCommandDecider(secrets: services.secrets).testConnection() }
+            .onAppear { keyEntry.onStoredKeyChange = { [services] in services.reloadPlanner() } }
     }
 
     private var keyPrompt: String {
-        if keyIsSaved { return "Saved in Keychain (type to replace)" }
+        if keyEntry.hasStoredKey { return "Saved in Keychain (paste to replace)" }
         let envSet = !(ProcessInfo.processInfo.environment[AppSettings.jevKeyEnvironmentVariable] ?? "").isEmpty
         return envSet ? "Using \(AppSettings.jevKeyEnvironmentVariable) (paste to override)" : "Paste OpenRouter key"
-    }
-
-    private func saveKey() {
-        keyStatus = saveSecretVerified(apiKey, account: AppSettings.jevSecretAccount, in: services.secrets)
-        if keyStatus.hasPrefix("Key saved") { apiKey = "" }
-    }
-
-    private func removeKey() {
-        do {
-            try services.secrets.delete(account: AppSettings.jevSecretAccount)
-            keyStatus = "Key removed."
-        } catch {
-            keyStatus = error.localizedDescription
-        }
-    }
-
-    private func testConnection() async {
-        if !apiKey.isEmpty {
-            saveKey()
-            if !keyStatus.hasPrefix("Key saved") { testResult = keyStatus; return }   // refused: do not test the old key
-        }
-        testing = true
-        defer { testing = false }
-        testResult = await JevCommandDecider(secrets: services.secrets).testConnection()
     }
 
     // allow-hardcode: UI copy.
