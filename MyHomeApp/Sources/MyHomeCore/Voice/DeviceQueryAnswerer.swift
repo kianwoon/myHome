@@ -40,14 +40,14 @@ public enum DeviceQueryAnswerer {
         let unknown = pool.filter { $0.reachability != .offline && $0.isOn == nil }
         let counted = pool.filter { $0.reachability != .offline && $0.isOn != nil }
         let hits = counted.filter { query.state == .any || $0.isOn == (query.state == .on) }
-        let names = list(hits.map(\.name), max: listMax)
+        let names = labelList(hits, max: listMax)
         let scope = scopePhrase(query)
 
         var text: String
         switch (query.aggregation, query.state) {
         case (_, .any):
             // "how many lights (are there)": the whole pool, reachable or not.
-            return "\(countPhrase(pool.count, noun))\(scope): \(list(pool.map(\.name), max: listMax))."
+            return "\(countPhrase(pool.count, noun))\(scope): \(labelList(pool, max: listMax))."
         case (.count, _):
             if hits.isEmpty {
                 text = "No \(noun.plural)\(scope) are \(query.state.rawValue)."
@@ -99,6 +99,33 @@ public enum DeviceQueryAnswerer {
     static func scopePhrase(_ query: StateQuery) -> String {
         guard let name = query.name, !name.isEmpty else { return "" }
         return " matching \u{201C}\(name)\u{201D}"
+    }
+
+    /// A speakable label per device: its group when it has one (several
+    /// lights share the name "study room"; their groups tell them apart),
+    /// otherwise its name.
+    static func label(_ device: DeviceSummary) -> String {
+        if let group = device.group?.trimmingCharacters(in: .whitespaces), !group.isEmpty { return group }
+        return device.name
+    }
+
+    /// Devices sharing a label are spoken once with a count ("study room
+    /// middle (2)"); past `max` labels the rest are "N more" devices.
+    static func labelList(_ devices: [DeviceSummary], max: Int) -> String {
+        var order: [String] = []
+        var counts: [String: Int] = [:]
+        for device in devices {
+            let key = label(device)
+            if counts[key] == nil { order.append(key) }
+            counts[key, default: 0] += 1
+        }
+        let limit = Swift.max(1, max)
+        let spoken = order.prefix(limit).map { key -> String in
+            let n = counts[key] ?? 1
+            return n > 1 ? "\(key) (\(n))" : key
+        }
+        let rest = order.dropFirst(limit).reduce(0) { $0 + (counts[$1] ?? 0) }
+        return CommandPhrasing.list(rest > 0 ? spoken + ["\(rest) more"] : spoken, conjunction: "and")
     }
 
     /// "A, B and C" — or "A, B and 3 more" past `max`.

@@ -277,6 +277,15 @@ final class BLECentralCore: NSObject, @unchecked Sendable {
         statesDirty = true
     }
 
+    /// ZengGe power byte: 0x23 on, 0x24 off; nil for any other value.
+    static func decodePower(_ byte: UInt8) -> Bool? {
+        switch byte {
+        case 0x23: return true
+        case 0x24: return false
+        default: return nil
+        }
+    }
+
     /// Decode the ZengGe v7 manufacturer block. Verified live: with company
     /// id included (CoreBluetooth), POWER sits at byte 3 (0x23 on / 0x24 off).
     /// Only power is trusted here — colour offsets vary by firmware and painted
@@ -288,7 +297,9 @@ final class BLECentralCore: NSObject, @unchecked Sendable {
         let stateOffset = (hasServiceData && b[1] >= 7) ? 3 : 14
         guard b.count >= stateOffset + 11 else { return }
         let s = Array(b[stateOffset...])
-        let on = s[0] == 0x23
+        // Power is tri-state on the wire: 0x23 on, 0x24 off, anything else is
+        // an unrecognised layout — leave the light unknown, never "off".
+        guard let on = Self.decodePower(s[0]) else { return }
         let subMode = s[2]
         let r = Int(s[4]), g = Int(s[5]), bl = Int(s[6])
         let isWhite = subMode == 0x0F
@@ -528,8 +539,9 @@ extension BLECentralCore: CBPeripheralDelegate {
         guard peripherals[id] != nil else { return }
         let now = Date()
         locked { sharedLastAdvert[id] = now }
+        guard let on = Self.decodePower(payload[2]) else { return }
         setState(id, DeviceStore.BriturnState(
-            on: payload[2] == 0x23,
+            on: on,
             rawPower: Int(payload[2]),
             mode: Int(payload[3]),
             r: Int(payload[6]),

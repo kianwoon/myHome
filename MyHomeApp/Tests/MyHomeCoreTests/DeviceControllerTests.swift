@@ -81,10 +81,11 @@ final class DeviceControllerTests: XCTestCase {
     func testContinuousWriteWithoutEchoIsUnverified() async {
         bridge.handler = { _ in ["ok": true] }
         let result = await controller.perform(.level(50), on: DeviceQuery(text: "desk lamp"), origin: .text)
-        XCTAssertEqual(result.outcomes.map(\.status), [.unverified])
+        XCTAssertEqual(result.outcomes.map(\.status.isUnverified), [true], "\(result.outcomes.map(\.status))")
+        XCTAssertFalse(result.succeeded, "sent is not done")
         XCTAssertEqual((setRequests()[0]["dps"] as? [String: Any])?["2"] as? Int, 505)
         XCTAssertEqual(store.dps(for: light)["2"], .number(300), "no optimistic paint for a slider-style value")
-        XCTAssertEqual(result.spokenSummary, "Set Desk Lamp to 50% (not yet confirmed by the device).")
+        XCTAssertTrue(result.spokenSummary.hasPrefix("Sent set Desk Lamp to 50%; Desk Lamp not yet confirmed ("), result.spokenSummary)
     }
 
     func testMultiDeviceNeedsConfirmationThenRuns() async {
@@ -127,6 +128,8 @@ final class DeviceControllerTests: XCTestCase {
 
     func testBriturnSingleWriteGoesThroughSetBriturn() async {
         bridge.handler = { _ in ["ok": true] }
+        // The light answers the read-back with the commanded state.
+        store.briturnLANReadHook = { [store] device in store.briturnStatus[device.id] }
         let result = await controller.perform(.power(true), on: DeviceQuery(text: "reading lamp"), origin: .text)
         XCTAssertEqual(result.outcomes.map(\.status), [.confirmed])
         XCTAssertEqual(bridge.requests.last?["cmd"] as? String, "briturnset")

@@ -238,7 +238,7 @@ final class CloudPlannerTests: XCTestCase {
         XCTAssertTrue(user.contains("(\(PlannerCatalogue.columns))"), user)
         XCTAssertTrue(user.contains("|fan|off|"), "the fan's current state is in the catalogue line: \(user)")
         let system = "\(json["system"] ?? "")"
-        XCTAssertTrue(system.contains("describes a condition rather than a command"), system)
+        XCTAssertTrue(system.lowercased().contains("for a condition pick sensible values"), system)
         XCTAssertTrue(CloudPlanner.defaultInstructions.contains("current state"))
     }
 
@@ -256,5 +256,70 @@ final class CloudPlannerTests: XCTestCase {
 
     func testScrubRemovesKey() {
         XCTAssertEqual(CloudPlanner.scrub("bad \(secretKey) here", key: secretKey), "bad ••• here")
+    }
+}
+
+/// Reply-shape tolerance for OpenAI-compatible reasoning models.
+@MainActor
+final class CloudPlannerReplyTests: XCTestCase {
+    private func body(_ content: Any?, finish: String? = "stop", extra: [String: Any] = [:]) -> Data {
+        var message: [String: Any] = ["role": "assistant"]
+        if let content { message["content"] = content }
+        var choice: [String: Any] = ["message": message]
+        if let finish { choice["finish_reason"] = finish }
+        var root: [String: Any] = ["choices": [choice]]
+        root.merge(extra) { $1 }
+        return try! JSONSerialization.data(withJSONObject: root)
+    }
+
+    private func failure(_ data: Data) -> String? {
+        do { _ = try CloudPlanner.readReply(data, provider: .openAICompatible); return nil }
+        catch PlannerError.failed(let text) { return text }
+        catch { return "other" }
+    }
+
+    func testStringContent() throws {
+        XCTAssertEqual(try CloudPlanner.readReply(body("{\"a\":1}"), provider: .openAICompatible), "{\"a\":1}")
+    }
+
+    func testPartsArrayContentIsJoined() throws {
+        let parts: [[String: Any]] = [["type": "text", "text": "{\"a\":"], ["type": "text", "text": "1}"]]
+        XCTAssertEqual(try CloudPlanner.readReply(body(parts), provider: .openAICompatible), "{\"a\":1}")
+    }
+
+    func testLeadingThinkBlockIsStripped() throws {
+        let text = "<think>hmm {\"x\":0} </think>\n{\"a\":1}"
+        XCTAssertEqual(try CloudPlanner.readReply(body(text), provider: .openAICompatible), "{\"a\":1}")
+        XCTAssertEqual(CloudPlanner.stripThinking("reasoning</think>{\"a\":1}"), "{\"a\":1}")
+        XCTAssertEqual(CloudPlanner.stripThinking("<think>never closed {\"a\":1}"), "")
+    }
+
+    func testLengthWithEmptyContentSaysOutOfTokens() {
+        XCTAssertEqual(failure(body("", finish: "length", extra: ["usage": ["completion_tokens": 64]])), CloudPlanner.outOfTokensMessage)
+        XCTAssertEqual(failure(body(nil, finish: "length")), CloudPlanner.outOfTokensMessage)
+    }
+
+    func testEmptyContentOtherwiseSaysEmptyReply() {
+        XCTAssertEqual(failure(body("", finish: "stop")), CloudPlanner.emptyReplyMessage)
+        XCTAssertEqual(failure(body("<think>only thoughts</think>", finish: "stop")), CloudPlanner.emptyReplyMessage)
+    }
+
+    func testNonJSONBody() {
+        XCTAssertEqual(failure(Data("<html>oops</html>".utf8)), CloudPlanner.notJSONMessage)
+        XCTAssertNil(CloudPlanner.extractText(Data("nope".utf8), provider: .openAICompatible))
+    }
+
+    func testAnthropicBlocksAndMaxTokens() throws {
+        let ok = try JSONSerialization.data(withJSONObject: ["content": [["type": "text", "text": "hi"]], "stop_reason": "end_turn"])
+        XCTAssertEqual(try CloudPlanner.readReply(ok, provider: .anthropic), "hi")
+        let cut = try JSONSerialization.data(withJSONObject: ["content": [], "stop_reason": "max_tokens"])
+        XCTAssertThrowsError(try CloudPlanner.readReply(cut, provider: .anthropic)) {
+            XCTAssertEqual($0 as? PlannerError, .failed(CloudPlanner.outOfTokensMessage))
+        }
+    }
+
+    func testDefaultTokenBudgetIsRoomyForReasoningModels() {
+        XCTAssertTrue(AppSettings.plannerMaxTokensRange.contains(AppSettings.defaultPlannerMaxTokens))
+        XCTAssertGreaterThanOrEqual(AppSettings.defaultPlannerMaxTokens, 4096)
     }
 }

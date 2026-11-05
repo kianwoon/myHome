@@ -67,10 +67,14 @@ public enum DeviceCommand: Equatable, Hashable, Sendable {
     public var isStateChanging: Bool { true }
 }
 
-/// Where a request came from. Policy is origin-agnostic; the origin is kept
-/// for logging and for the spoken reply style.
+/// Where a request came from. Policy is origin-agnostic except that `.url`
+/// (myhome://say) and `.diagnostic` (`--say`) may never confirm a pending
+/// plan; otherwise the origin is kept for logging and the reply style.
 public enum CommandOrigin: String, Codable, Hashable, Sendable {
-    case text, voice, siri, model, dashboard
+    case text, voice, siri, model, dashboard, url, diagnostic
+
+    /// Input any local process can inject: never accepted as the household's "yes".
+    public var canConfirm: Bool { self != .url && self != .diagnostic }
 }
 
 /// Percent helpers shared by the capability map and the parsers.

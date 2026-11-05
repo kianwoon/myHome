@@ -53,7 +53,9 @@ public enum CommandPhrasing {
         case .nothingToDo(let reason):
             return reason
         case .ambiguous(let candidates):
-            return "Which one: \(list(candidates.map(\.name), conjunction: "or"))?"
+            let question = "Which one: \(list(candidates.map(\.name), conjunction: "or"))?"
+            // Namesakes set aside for having no control path are still named.
+            return result.outcomes.isEmpty ? question : "\(question) (\(failures(result.outcomes)).)"
         case .needsConfirmation:
             return "\(action(result.command, target: targetPhrase(result.outcomes.map(\.device), scope: result.scope)))?"
         case .executed:
@@ -61,21 +63,34 @@ public enum CommandPhrasing {
         }
     }
 
+    /// Confirmed devices are stated as done; every unverified or failed device
+    /// is named with its reason — a sent-but-unconfirmed light is never folded
+    /// into "Turned on 4 lights".
     private static func executedSummary(_ result: CommandResult) -> String {
         let good = result.outcomes.filter { $0.status.isSuccess }
-        let bad = result.outcomes.filter { !$0.status.isSuccess }
-        if bad.isEmpty {
-            let target = targetPhrase(good.map(\.device), scope: result.scope)
-            let base = done(result.command, target: target)
-            let unverified = good.filter { if case .unverified = $0.status { return true }; return false }
-            return unverified.isEmpty ? "\(base)." : "\(base) (not yet confirmed by the device)."
+        let pending = result.outcomes.filter { $0.status.isUnverified }
+        let bad = result.outcomes.filter { !$0.status.isSuccess && !$0.status.isUnverified }
+        var parts: [String] = []
+        if !good.isEmpty {
+            let all = result.outcomes.count == good.count
+            let target = all ? targetPhrase(good.map(\.device), scope: result.scope)
+                : "\(good.count) of \(targetPhrase(result.outcomes.map(\.device), scope: result.scope))"
+            parts.append(done(result.command, target: target))
+        } else if !pending.isEmpty {
+            parts.append("Sent \(lowercasedVerb(action(result.command, target: targetPhrase(pending.map(\.device), scope: result.scope))))")
         }
-        if good.isEmpty {
-            if bad.count == 1 { return "Couldn't \(lowercasedVerb(action(result.command, target: bad[0].device.name))): \(bad[0].status.reason)." }
-            return "Couldn't \(lowercasedVerb(action(result.command, target: targetPhrase(bad.map(\.device), scope: result.scope)))): \(failures(bad))."
+        if !pending.isEmpty {
+            let names = list(pending.map { "\($0.device.name) \($0.status.reason)" }, conjunction: "and")
+            parts.append(good.isEmpty ? "\(names)" : names)
         }
-        let target = targetPhrase(result.outcomes.map(\.device), scope: result.scope)
-        return "\(done(result.command, target: "\(good.count) of \(target)")); \(failures(bad))."
+        if !bad.isEmpty {
+            if good.isEmpty, pending.isEmpty {
+                if bad.count == 1 { return "Couldn't \(lowercasedVerb(action(result.command, target: bad[0].device.name))): \(bad[0].status.reason)." }
+                return "Couldn't \(lowercasedVerb(action(result.command, target: targetPhrase(bad.map(\.device), scope: result.scope)))): \(failures(bad))."
+            }
+            parts.append(failures(bad))
+        }
+        return parts.joined(separator: "; ") + "."
     }
 
     private static func failures(_ outcomes: [DeviceOutcome]) -> String {

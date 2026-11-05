@@ -38,6 +38,11 @@ public enum CapabilityMap {
     public enum Expectation: Equatable {
         case dps(dpId: String, value: DPSValue)
         case briturnPower(Bool)
+        /// Brightness percent, compared to the read-back peak channel within a tolerance.
+        case briturnBrightness(Int)
+        case briturnColor(RGB)
+        /// CCT readback bytes vary with the temperature: never comparable.
+        case briturnColorTemperature(Int)
         case accepted
     }
 
@@ -155,9 +160,17 @@ public enum CapabilityMap {
         case .tuya(let dpId, let value):
             return .dps(dpId: dpId, value: value)
         case .briturn(let on, let color, let brightness, let cct):
-            if let on = on, color == nil, brightness == nil, cct == nil { return .briturnPower(on) }
+            if let cct { return .briturnColorTemperature(cct) }
+            if let color { return .briturnColor(color) }
+            if let brightness { return .briturnBrightness(brightness) }
+            if let on { return .briturnPower(on) }
             return .accepted
         }
+    }
+
+    /// Brightness percent of a raw Briturn reading (same rule as `levelPercent`).
+    public static func briturnLevelPercent(_ state: DeviceStore.BriturnState) -> Int {
+        Percent.unscaled(Double(max(state.r, state.g, state.b, state.whiteLevel)), from: 0, 255)
     }
 
     // MARK: - Briturn

@@ -36,6 +36,8 @@ public struct CommandGrammar: Sendable {
     public var statusLeads: Set<String>
     public var confirmWords: Set<String>
     public var cancelWords: Set<String>
+    /// Cancel words that can also ANSWER a question ("no" to "shall I…?").
+    public var answerNoWords: Set<String>
     /// Multi-word phrases map to a percent on the warm(0)…cool(100) scale.
     public var temperaturePhrases: [String: Int]
     public var colorNames: [String: RGB]
@@ -83,6 +85,7 @@ public struct CommandGrammar: Sendable {
         statusLeads: ["is", "are", "what", "whats", "how", "status", "state"],
         confirmWords: ["yes", "yeah", "yep", "sure", "confirm", "ok", "okay", "go", "ahead", "do", "it"],
         cancelWords: ["no", "nope", "cancel", "stop", "never", "mind", "forget", "it", "dont"],
+        answerNoWords: ["no", "nope"],
         temperaturePhrases: ["warm white": 0, "warm": 0, "warmest": 0, "neutral": 50, "neutral white": 50,
                              "cool white": 100, "cool": 100, "cold white": 100, "daylight": 100, "coolest": 100],
         colorNames: ["red": RGB(red: 255, green: 0, blue: 0), "green": RGB(red: 0, green: 255, blue: 0),
@@ -111,7 +114,7 @@ public struct CommandGrammar: Sendable {
                 openVerbs: Set<String>, closeVerbs: Set<String>, stopVerbs: Set<String>, setVerbs: Set<String>,
                 levelVerbs: Set<String>, levelNouns: Set<String>, speedNouns: Set<String>, modeNouns: Set<String>,
                 percentWords: Set<String>, toWords: Set<String>, roomPrepositions: Set<String>, statusLeads: Set<String>,
-                confirmWords: Set<String>, cancelWords: Set<String>, temperaturePhrases: [String: Int],
+                confirmWords: Set<String>, cancelWords: Set<String>, answerNoWords: Set<String> = [], temperaturePhrases: [String: Int],
                 colorNames: [String: RGB], bareNumberGearMax: Int,
                 numberWords: [String: Int] = [:], speedNumberHomophones: [String: Int] = [:],
                 numberScaleWords: [String: Int] = [:], spelledNumberWordMax: Int = 10,
@@ -135,6 +138,7 @@ public struct CommandGrammar: Sendable {
         self.statusLeads = statusLeads
         self.confirmWords = confirmWords
         self.cancelWords = cancelWords
+        self.answerNoWords = answerNoWords
         self.temperaturePhrases = temperaturePhrases
         self.colorNames = colorNames
         self.bareNumberGearMax = bareNumberGearMax

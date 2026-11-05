@@ -87,6 +87,9 @@ struct CloudPlannerFields: View {
     @AppStorage(AppSettings.openAIModelKey) private var openAIModel = ""
     @AppStorage(AppSettings.plannerTimeoutKey) private var plannerTimeout = AppSettings.defaultPlannerTimeout
     @AppStorage(AppSettings.plannerMaxTokensKey) private var maxTokens = AppSettings.defaultPlannerMaxTokens
+    @AppStorage(AppSettings.cloudCatalogueBudgetKey) private var catalogueBudget = AppSettings.defaultCloudCatalogueBudget
+    @AppStorage(AppSettings.cloudMaxDevicesKey) private var cloudMaxDevices = AppSettings.defaultCloudMaxDevices
+    @AppStorage(AppSettings.plannerInstructionsKey) private var housekeeperInstructions = ""
     @StateObject private var keyEntry: SecretKeyEntryModel
 
     private let services: AppServices
@@ -104,7 +107,33 @@ struct CloudPlannerFields: View {
         TextField("Model", text: model, prompt: Text(modelPlaceholder))
         SecretKeyEntryView(model: keyEntry, placeholder: keyEntry.hasStoredKey ? "Saved in Keychain (paste to replace)" : "Paste key")
         Stepper(String(format: "Request timeout %.0fs", plannerTimeout), value: $plannerTimeout, in: AppSettings.plannerTimeoutRange, step: 1)
-        Stepper("Max reply tokens \(maxTokens)", value: $maxTokens, in: AppSettings.plannerMaxTokensRange, step: 64)
+        Stepper("Max tokens \(maxTokens)", value: $maxTokens, in: AppSettings.plannerMaxTokensRange, step: 1024)
+        Stepper("Catalogue budget \(catalogueBudget) chars", value: $catalogueBudget, in: AppSettings.cloudCatalogueBudgetRange, step: 5000)
+        Stepper("Max devices \(cloudMaxDevices)", value: $cloudMaxDevices, in: AppSettings.cloudMaxDevicesRange, step: 10)
+        Text("0 context worries: the model has a large window; these only bound cost and latency.")
+            .font(.caption).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Housekeeper instructions")
+            TextEditor(text: $housekeeperInstructions)
+                .font(.caption.monospaced())
+                .frame(minHeight: 90)
+                .overlay(alignment: .topLeading) {
+                    if housekeeperInstructions.isEmpty {
+                        Text(AppSettings.housekeeperEnabled() ? PlannerPersona.agent : CloudPlanner.defaultInstructions)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.tertiary)
+                            .padding(.horizontal, 5).padding(.vertical, 8)
+                            .allowsHitTesting(false)
+                    }
+                }
+            HStack {
+                Text(housekeeperInstructions.isEmpty ? "Using the default housekeeper." : "Custom instructions in use.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("Reset to default") { housekeeperInstructions = "" }
+                    .disabled(housekeeperInstructions.isEmpty)
+            }
+        }
         SecretKeyTestRow(model: keyEntry) { [services] in
             await CloudPlanner(controller: services.controller, secrets: services.secrets).testConnection()
         }
@@ -144,7 +173,7 @@ struct AssistantSettingsView: View {
             } header: {
                 Text("Safety")
             } footer: {
-                Text("Model-planned requests always ask first. Changes apply to the next command; the controller re-reads these settings when a command starts.")
+                Text("Housekeeper requests follow the housekeeper's own confirmation policy (Settings → AI Models). Changes apply to the next command; the controller re-reads these settings when a command starts.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

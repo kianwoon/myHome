@@ -14,6 +14,10 @@ final class AppServices {
     let store: DeviceStore
     let controller: DeviceController
     let assistant: AssistantCoordinator
+    /// Household notes (Application Support/MyHome) the housekeeper reads and edits.
+    let notes: HouseholdNotes
+    /// The housekeeper agent; attached to the assistant only while enabled.
+    let housekeeper: HousekeeperAgent
     let speech: SpeechCommandRecognizer
     let responder: SpeechResponder
     let secrets: SecretStore = KeychainSecretStore()
@@ -34,6 +38,17 @@ final class AppServices {
         assistant = AssistantCoordinator(controller: controller,
                                          planner: PlannerFactory.makePlanner(controller: controller, secrets: secrets))
         assistant.jevDecider = PlannerFactory.makeJevDecider(secrets: secrets)
+        notes = HouseholdNotes()
+        let tools = HousekeeperTools(controller: controller, notes: notes, policy: .fromDefaults(),
+                                     outputBudget: AppSettings.housekeeperToolOutputBudget())
+        housekeeper = HousekeeperAgent(controller: controller, tools: tools, transport: nil, limits: .fromDefaults(),
+                                       persona: AppSettings.plannerInstructions(fallback: PlannerPersona.agent),
+                                       snapshotBudget: AppSettings.cloudCatalogueBudget(), snapshotMaxDevices: AppSettings.cloudMaxDevices())
+        // Diagnostics: the last reply (and the housekeeper's trace) in last-reply.json.
+        assistant.replySink = { reply, utterance, origin, trace in
+            LastReplyStore.write(LastReplyRecord(timestamp: Date(), utterance: utterance, origin: origin.rawValue,
+                                                 kind: String(describing: reply.kind), source: reply.source, text: reply.text, trace: trace))
+        }
         speech = SpeechCommandRecognizer()
         responder = SpeechResponder()
         speech.contextualStrings = { [store] in
@@ -60,6 +75,7 @@ final class AppServices {
         hotkey.onPress = { [weak self] in self?.hotkeyPressed() }
         hotkey.onRelease = { [weak self] in self?.hotkeyReleased() }
         bindOutputGate()
+        reloadHousekeeper()
     }
 
     // MARK: Output muting while listening
@@ -168,6 +184,46 @@ final class AppServices {
     func reloadPlanner() {
         assistant.planner = PlannerFactory.makePlanner(controller: controller, secrets: secrets)
         assistant.jevDecider = PlannerFactory.makeJevDecider(secrets: secrets)
+        reloadHousekeeper()
+    }
+
+    /// Re-reads Settings → AI Models → Housekeeper agent (and the Cloud LLM
+    /// provider it runs on). The agent is detached while disabled.
+    func reloadHousekeeper() {
+        housekeeper.transport = AgentTransportFactory.make(secrets: secrets, requestTimeout: AppSettings.housekeeperRequestTimeout())
+        housekeeper.limits = .fromDefaults()
+        housekeeper.tools.policy = .fromDefaults()
+        housekeeper.tools.outputBudget = AppSettings.housekeeperToolOutputBudget()
+        housekeeper.persona = AppSettings.plannerInstructions(fallback: PlannerPersona.agent)
+        housekeeper.snapshotBudget = AppSettings.cloudCatalogueBudget()
+        housekeeper.snapshotMaxDevices = AppSettings.cloudMaxDevices()
+        assistant.housekeeper = AppSettings.housekeeperEnabled() ? housekeeper : nil
+        assistant.housekeeperFastPath = AppSettings.housekeeperFastPath()
+    }
+
+    // MARK: Diagnostics (--say / myhome://say / --probe-tools)
+
+    /// Runs `text` exactly like a typed command, once the roster and the
+    /// Briturn states are loaded (a cold launch snapshots nothing otherwise).
+    @discardableResult
+    func sayForDiagnostics(_ text: String, via: String, origin: CommandOrigin) async -> AssistantReply {
+        AppLog.assistant.notice("diagnostic say via \(via, privacy: .public): \(text, privacy: .public)")
+        await ensureRosterLoaded()
+        await store.loadAllBriturnStatuses()
+        let unread = controller.summaries().filter { $0.isControllable && $0.isOn == nil }.count
+        AppLog.assistant.notice("diagnostic say: roster=\(self.store.devices.count, privacy: .public) controllableWithoutReading=\(unread, privacy: .public)")
+        return await assistant.handle(text, origin: origin)
+    }
+
+    /// Learns how the configured provider passes tool calls; the outcome is
+    /// recorded in UserDefaults and in last-reply.json.
+    @discardableResult
+    func probeToolsForDiagnostics() async -> AgentToolProbe.Outcome {
+        let outcome = await AgentToolProbe.runAndRecord(secrets: secrets)
+        LastReplyStore.write(LastReplyRecord(timestamp: Date(), utterance: AppSettings.probeLaunchArgument, origin: "diagnostic",
+                                             kind: "probe", source: "probe", text: outcome.summary, trace: nil))
+        reloadHousekeeper()
+        return outcome
     }
 
     /// An intent can run before any window loaded the roster (cold launch

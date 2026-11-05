@@ -19,9 +19,15 @@ public struct DeviceQuery: Equatable, Hashable, Sendable {
     public var requiredCapability: SemanticCapability?
     /// Explicit ids (Shortcuts entities, model proposals): bypasses text matching.
     public var ids: [String]?
+    /// Commands only: when the best matches mix devices with and without a
+    /// control path, drop the unreachable ones so a namesake never shadows a
+    /// reachable device. Status queries leave this off.
+    public var preferControllable: Bool
 
     public init(text: String? = nil, room: String? = nil, group: String? = nil, kind: DeviceKind? = nil,
-                wantsSet: Bool = false, requiredCapability: SemanticCapability? = nil, ids: [String]? = nil) {
+                wantsSet: Bool = false, requiredCapability: SemanticCapability? = nil, ids: [String]? = nil,
+                preferControllable: Bool = false) {
+        self.preferControllable = preferControllable
         self.text = text
         self.room = room
         self.group = group
@@ -148,10 +154,14 @@ public struct DeviceResolver {
     public let vocabulary: ResolverVocabulary
     /// Capability filter (the controller passes CapabilityMap through the store).
     public let supports: (Device, SemanticCapability) -> Bool
+    /// Whether any control path (LAN, Bluetooth, cloud) exists for the device.
+    public let isControllable: (Device) -> Bool
 
     public init(devices: [Device], config: ResolverConfig = ResolverConfig(),
                 vocabulary: ResolverVocabulary = .standard,
-                supports: @escaping (Device, SemanticCapability) -> Bool = { _, _ in true }) {
+                supports: @escaping (Device, SemanticCapability) -> Bool = { _, _ in true },
+                isControllable: @escaping (Device) -> Bool = { _ in true }) {
+        self.isControllable = isControllable
         self.devices = devices
         self.config = config
         self.vocabulary = vocabulary
@@ -209,6 +219,19 @@ public struct DeviceResolver {
     // MARK: - Resolution
 
     public func resolve(_ query: DeviceQuery) -> Resolution {
+        resolveReporting(query).resolution
+    }
+
+    /// Like `resolve`, plus the matching devices that were set aside because
+    /// they have no control path, so a caller can report them instead of
+    /// letting a namesake vanish from the reply.
+    public func resolveReporting(_ query: DeviceQuery) -> (resolution: Resolution, dropped: [Device]) {
+        var dropped: [Device] = []
+        let resolution = resolve(query, dropped: &dropped)
+        return (resolution, dropped)
+    }
+
+    private func resolve(_ query: DeviceQuery, dropped: inout [Device]) -> Resolution {
         if let ids = query.ids, !ids.isEmpty {
             let wanted = Set(ids)
             let found = devices.filter { wanted.contains($0.id) && passesCapability($0, query) }
@@ -235,6 +258,14 @@ public struct DeviceResolver {
             relaxed = true
         }
         guard !candidates.isEmpty else { return .none }
+
+        if query.preferControllable {
+            let reachable = candidates.filter { isControllable($0.device) }
+            if !reachable.isEmpty {
+                dropped = candidates.filter { !isControllable($0.device) }.map(\.device)
+                candidates = reachable
+            }
+        }
 
         if candidates.count == 1, !relaxed {
             return .single(candidates[0].device)

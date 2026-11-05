@@ -99,6 +99,7 @@ final class AssistantCoordinatorTests: XCTestCase {
     }
 
     func testAmbiguityCanBeAnsweredByName() async {
+        assistant = AssistantCoordinator(controller: controller, planner: nil) // grammar-only: a planner escalates ambiguity
         let ask = await assistant.handle("turn on the lamp", origin: .voice)
         XCTAssertEqual(ask.kind, .ambiguous)
         XCTAssertNotNil(assistant.pendingChoice)
@@ -110,6 +111,7 @@ final class AssistantCoordinatorTests: XCTestCase {
     }
 
     func testOpenChoiceIgnoresACommandNamingAnotherDevice() async {
+        assistant = AssistantCoordinator(controller: controller, planner: nil) // grammar-only: a planner escalates ambiguity
         // Open choice: Desk Lamp / Floor Lamp. "the fan" is a clear match to a
         // device outside the choice, so it must run as a NEW command.
         _ = await assistant.handle("turn on the lamp", origin: .voice)
@@ -123,6 +125,7 @@ final class AssistantCoordinatorTests: XCTestCase {
     }
 
     func testOpenChoiceRejectsPartialMatchAnswer() async {
+        assistant = AssistantCoordinator(controller: controller, planner: nil) // grammar-only: a planner escalates ambiguity
         _ = await assistant.handle("turn on the lamp", origin: .voice)
         XCTAssertNotNil(assistant.pendingChoice)
         // "kitchen lamp" only partially matches the candidates ("lamp"): not a pick.

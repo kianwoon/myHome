@@ -59,6 +59,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AppServices.shared.startHotkey()
         // Undo a mute left behind by a crash / force-quit while listening.
         AppServices.shared.recoverAudioOutput()
+        // Diagnostics: `--say "text"` / `--probe-tools` launch arguments.
+        DiagnosticLaunch.run(arguments: CommandLine.arguments, services: AppServices.shared)
+    }
+
+    /// `myhome://say?text=…` (see DiagnosticLaunch).
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls { DiagnosticLaunch.handle(url, services: AppServices.shared) }
     }
 
     func applicationWillTerminate(_ notification: Notification) {

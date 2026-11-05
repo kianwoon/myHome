@@ -36,9 +36,21 @@ public extension AppSettings {
     static let defaultSpeechSenseVoiceEnabled = true
     /// Pass device and room names to Qwen3-ASR as hotwords.
     static let speechHotwordBiasKey = "speechHotwordBias"
-    static let defaultSpeechHotwordBias = true
-    /// At most this many hotwords are passed (the decoder prompt is bounded).
-    static let speechMaxHotwords = 64
+    /// Off by default: with a long device list Qwen3-ASR echoes the list back
+    /// as the transcript. Opt-in only.
+    static let defaultSpeechHotwordBias = false
+    /// At most this many hotwords are passed (the decoder prompt is bounded;
+    /// a long list invites the decoder to echo it).
+    static let speechMaxHotwords = 16
+    /// Echo guard: a transcript is rejected when this many distinct hotwords
+    /// appear in it...
+    static let speechEchoMinDistinctHotwords = 3
+    /// ...and they cover at least this fraction of its characters.
+    static let speechEchoCoverage = 0.6
+    /// Hotwords shorter than this are ignored by the echo guard.
+    static let speechEchoMinHotwordLength = 3
+    /// Characters per audio second above which a transcript is implausible.
+    static let speechMaxCharsPerSecond = 30.0
     /// Also look for models installed by the Pop app (read-only).
     static let speechUsePopModelsKey = "speechUsePopModels"
     static let defaultSpeechUsePopModels = true

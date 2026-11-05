@@ -55,6 +55,8 @@ struct AIModelsSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            if provider.isCloud { HousekeeperSettingsSection(services: services) }
         }
         .formStyle(.grouped)
         .padding(.top, 4)
@@ -63,7 +65,7 @@ struct AIModelsSettingsView: View {
     }
 
     // allow-hardcode: UI copy.
-    static let routingNote = "1. The built-in parser handles direct commands (\u{201C}turn on the desk lamp\u{201D}) and simple questions (\u{201C}how many lights are on?\u{201D}) on this Mac. 2. If it can't, Jev (when on) classifies the request: a command → Jev picks the device and action; a question about devices → counted on this Mac; a situation (\u{201C}the room is stuffy\u{201D}) → the Cloud LLM. 3. Without Jev, the Cloud LLM gets everything the parser can't handle. Jev cannot answer free text or invent actions — situations need a Cloud LLM. Anything a model proposes is confirmed before it runs."
+    static let routingNote = "1. The built-in parser handles \u{201C}yes\u{201D}/\u{201C}no\u{201D} for a pending confirmation and, when the fast path is on, direct single-device commands (\u{201C}turn on the desk lamp\u{201D}) and simple questions (\u{201C}how many lights are on?\u{201D}) on this Mac. 2. With a Cloud LLM configured and the housekeeper agent on, everything else goes to the housekeeper: it sees the live state of every device, acts through tools, answers questions from real state, and asks only when it truly cannot decide. 3. Without a Cloud LLM, Jev (when on) classifies the request and the parser answers what it can."
     // allow-hardcode: UI copy.
     static let jevOffNote = "Off: nothing is sent to Jev."
 
@@ -76,7 +78,7 @@ struct AIModelsSettingsView: View {
             if let reason = services.assistant.planner?.unavailableReason { return "Unavailable: \(reason)." }
             return "Requests the parser cannot handle are planned by the on-device model; the plan is confirmed before anything runs."
         case .anthropic, .openAICompatible:
-            return "Privacy: when the parser cannot handle a request, your command and your device names, room names, kinds, capabilities and current on/off state and level are sent to the provider above. Device ids and credentials are not. The key is kept in the macOS Keychain. Plans are always confirmed before anything runs."
+            return "Privacy: when the parser cannot handle a request, your command and your device names, room names, kinds, capabilities and current on/off state and level are sent to the provider above. Device ids and credentials are not. The key is kept in the macOS Keychain. Actions run through the device controller's checks; sweeping changes and smart sockets are confirmed first."
         }
     }
 }

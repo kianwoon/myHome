@@ -36,5 +36,16 @@
 	<string>MyHome turns your spoken commands into device actions, on this Mac when possible.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.myhome.app.say</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>myhome</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>

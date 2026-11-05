@@ -107,7 +107,7 @@ final class CapabilityMapTests: XCTestCase {
         XCTAssertEqual(power, .success(.briturn(on: false, color: nil, brightness: nil, cct: nil)))
         XCTAssertEqual(CapabilityMap.expectation(for: .briturn(on: false, color: nil, brightness: nil, cct: nil)), .briturnPower(false))
         XCTAssertEqual(CapabilityMap.plan(.level(40), for: profile), .success(.briturn(on: nil, color: nil, brightness: 40, cct: nil)))
-        XCTAssertEqual(CapabilityMap.expectation(for: .briturn(on: nil, color: nil, brightness: 40, cct: nil)), .accepted)
+        XCTAssertEqual(CapabilityMap.expectation(for: .briturn(on: nil, color: nil, brightness: 40, cct: nil)), .briturnBrightness(40))
         XCTAssertEqual(CapabilityMap.plan(.colorTemperature(100), for: profile), .success(.briturn(on: nil, color: nil, brightness: nil, cct: 100)))
         XCTAssertEqual(CapabilityMap.plan(.fanSpeed(1), for: profile), .failure(.unsupported(.fanSpeed)))
     }

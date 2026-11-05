@@ -144,7 +144,7 @@ public final class JevCommandDecider {
             device = pool[0]
         } else {
             let catalogue = PlannerCatalogue(devices: pool, utterance: utterance,
-                                             budget: AppSettings.cloudCatalogueBudget(from: defaults),
+                                             budget: AppSettings.jevCatalogueBudget,
                                              maxDevices: min(AppSettings.plannerMaxDevices(from: defaults), AppSettings.jevChoiceOptionsRange.upperBound),
                                              toolOutputBudget: AppSettings.plannerToolOutputBudget(from: defaults))
             let shown = catalogue.shown

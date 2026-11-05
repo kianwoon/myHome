@@ -459,6 +459,7 @@ public final class DeviceStore: ObservableObject {
             }
             for (id, state) in states {
                 applyBriturnWireState(id, state, authoritative: true)
+                lastWriteReadback[id] = (state, Date())
                 statusViaCloud[id] = true
                 statusErrors[id] = nil
                 cloudOnline[id] = true
@@ -482,6 +483,21 @@ public final class DeviceStore: ObservableObject {
     /// These are DUAL-MODE lights: BLE enriches the WiFi entry as a fallback
     /// transport — it never creates a duplicate card.
     var bleFallbackIDs: Set<String> = []
+    /// Ids whose last write went over Bluetooth, which carries no reply: the
+    /// outcome stays "unverified" until a wire read (advert, poll) confirms it.
+    var briturnUnacknowledged: Set<String> = []
+    /// Positive evidence for the verifier: the device's own state as reported
+    /// right after a write (bridge readback, cloud reply, Tuya dps echo).
+    var lastWriteReadback: [String: (state: BriturnState, at: Date)] = [:]
+    var lastSetReply: [String: (dps: [String: DPSValue], at: Date)] = [:]
+    /// Ids whose last set the bridge DEFINITELY rejected (paint reverted).
+    var lastSetRejected: Set<String> = []
+    /// Test seams (internal): the direct LAN read and the BLE advert state.
+    var briturnLANReadHook: ((Device) async -> BriturnState?)?
+    var bleStateReadHook: ((String) -> BriturnState?)?
+    // allow-hardcode: user-facing error text.
+    static let noTransportMessage = "No WiFi address or Bluetooth path for this light — it was not sent the command."
+    static let lanMissMessage = "The light did not take the command (no reply on the LAN)."
     /// Test seams (internal): replace the cloud control call / the BLE send.
     var briturnCloudControlHook: (([BriturnCloudDevice], Bool?) async throws -> [String: BriturnState])?
     var briturnBLESendHook: ((String, Bool?) -> Void)? {
@@ -512,7 +528,7 @@ public final class DeviceStore: ObservableObject {
 
     /// The BLE key for a device: its own entry if BLE-only, else the matched
     /// WiFi roster id's MAC-derived key.
-    private func bleKey(for device: Device) -> String? {
+    func bleKey(for device: Device) -> String? {
         if device.isBLE { return device.id }
         let candidates = bleKeysByDeviceID[device.id] ?? []
         guard !candidates.isEmpty else { return nil }
@@ -766,9 +782,16 @@ public final class DeviceStore: ObservableObject {
         )
     }
 
-    /// nil until a fetch (or confirmed write) has reported dps 1.
+    /// nil until a fetch (or confirmed write) has reported dps 1. A Briturn
+    /// light reachable only over Bluetooth reports nil (unknown) unless its
+    /// reading is attested by an advert or by this app's own write: a WiFi or
+    /// cloud reading taken before the light went Bluetooth-only is never
+    /// refreshed (the sweep skips it) and must not read as a current "off".
     public func power(for device: Device) -> Bool? {
-        if isBriturn(device) { return briturnStatus[device.id]?.on }
+        if isBriturn(device) {
+            guard let state = briturnStatus[device.id] else { return nil }
+            return hasCurrentBriturnReading(device) ? state.on : nil
+        }
         return isOn[device.id] ?? dpsById[device.id]?["1"]?.boolValue
     }
 
@@ -989,6 +1012,8 @@ public final class DeviceStore: ObservableObject {
     /// before this moment predates the command, so it can only carry the old
     /// value: it is dropped instead of painted (the flicker source).
     var lastUserWriteAt: [String: Date] = [:]
+    /// Briturn ids whose power this run commanded (see hasCurrentBriturnReading).
+    var lastPowerWriteAt: [String: Date] = [:]
 
     func readPredatesUserWrite(_ id: String, startedAt: Date?) -> Bool {
         guard let startedAt, let wrote = lastUserWriteAt[id] else { return false }
@@ -1008,11 +1033,42 @@ public final class DeviceStore: ObservableObject {
     /// Paints an advertisement-decoded state, but only where no WiFi/cloud
     /// reading exists (or the current reading is itself BLE-derived), through
     /// the same intent-aware path as every other wire state.
-    func applyBLEDerivedState(_ id: String, _ state: BriturnState, now: Date = Date(), source: String? = nil) {
-        guard briturnStatus[id] == nil || bleDerivedStatus[id] != nil else { return }
-        applyBriturnWireState(id, state)
+    func applyBLEDerivedState(_ id: String, _ state: BriturnState, now: Date = Date(), source: String? = nil, authoritativePower: Bool = false) {
+        if authoritativePower, let prev = briturnStatus[id] {
+            // Bluetooth is this light's only live path: its on/off is the truth
+            // now, even over an older WiFi/cloud reading. Only the power bit is
+            // taken — dual-mode firmware's advert colour bytes are not trusted.
+            // An agreeing advert still attests the reading (marks it
+            // Bluetooth-derived) so it is trusted and ages out like any other.
+            if prev.on != state.on {
+                applyBriturnWireState(id, BriturnState(on: state.on, rawPower: state.rawPower, mode: prev.mode,
+                                                       r: prev.r, g: prev.g, b: prev.b, w: prev.w, cool: prev.cool, firmware: prev.firmware))
+            }
+        } else if briturnStatus[id] == nil || bleDerivedStatus[id] != nil {
+            applyBriturnWireState(id, state)
+        } else {
+            return
+        }
         bleDerivedStatus[id] = now
         if let source { bleDerivedSource[id] = source }
+    }
+
+    /// False for a Bluetooth-only light whose `briturnStatus` came from
+    /// neither a live advert nor a user write this run (a stale LAN/cloud
+    /// reading from before the light lost WiFi and cloud).
+    func hasCurrentBriturnReading(_ device: Device) -> Bool {
+        guard reachability(for: device) == .bluetooth else { return true }
+        // Only a write that commanded POWER attests on/off: a brightness-only
+        // write paints power from the (possibly stale) previous reading.
+        return bleDerivedStatus[device.id] != nil || lastPowerWriteAt[device.id] != nil
+    }
+
+
+
+    /// True when the roster light can currently be reached over Bluetooth only.
+    func bluetoothIsOnlyLivePath(_ id: String) -> Bool {
+        guard let device = roster.first(where: { $0.id == id }) else { return false }
+        return reachability(for: device) == .bluetooth
     }
 
     /// Paints BLE advert states. `pendingIntentsOnly` (the advert tick) only
@@ -1037,7 +1093,7 @@ public final class DeviceStore: ObservableObject {
                 target = bleID
             }
             if pendingIntentsOnly && briturnIntent[target] == nil { continue }
-            applyBLEDerivedState(target, state, source: bleID)
+            applyBLEDerivedState(target, state, source: bleID, authoritativePower: target != bleID && bluetoothIsOnlyLivePath(target))
         }
     }
 
@@ -1088,6 +1144,7 @@ public final class DeviceStore: ObservableObject {
     /// read contradicts a fresh user intent and must be dropped.
     private func resolveBriturnWireState(_ id: String, _ state: BriturnState, authoritative: Bool) -> BriturnState? {
         bleDerivedStatus[id] = nil
+        briturnUnacknowledged.remove(id)
         guard var intent = briturnIntent[id] else {
             return state
         }
@@ -1185,6 +1242,7 @@ public final class DeviceStore: ObservableObject {
     /// fresh readback as the new state — the device, not the request, is
     /// authoritative. Brightness (0-100) scales the peak colour channel; the
     /// base is the explicit colour when given, else the device's current one.
+    @discardableResult
     public func setBriturn(
         _ device: Device,
         on: Bool? = nil,
@@ -1192,23 +1250,22 @@ public final class DeviceStore: ObservableObject {
         brightness: Int? = nil,
         white: Bool = false,
         cct: Int? = nil
-    ) async {
-        guard isBriturn(device) else { return }
-        guard on != nil || color != nil || brightness != nil || white || cct != nil else { return }
+    ) async -> WriteAck {
+        guard isBriturn(device) else { return .failed("not a Briturn light") }
+        guard on != nil || color != nil || brightness != nil || white || cct != nil else { return .failed("nothing to set") }
         if !device.hasAddress, briturnCloudDevices[device.id] != nil {
-            await setBriturnCloudOrBLE(device, on: on, color: color, brightness: brightness, white: white, cct: cct)
-            return
+            return await setBriturnCloudOrBLE(device, on: on, color: color, brightness: brightness, white: white, cct: cct)
         }
         // Transport routing: BLE-only lights, and dual-mode lights that lost
         // WiFi (no IP), go over Bluetooth.
         if device.isBLE || (bleFallbackIDs.contains(device.id) && !device.hasAddress) {
-            await setBriturnViaBLE(device, on: on, color: color, brightness: brightness,
-                                   white: white || cct != nil, cct: cct)
-            return
+            return await setBriturnViaBLE(device, on: on, color: color, brightness: brightness,
+                                          white: white || cct != nil, cct: cct)
         }
         guard device.hasAddress else {
-            statusErrors[device.id] = "Briturn device has no IP yet — run a Briturn scan."
-            return
+            let message = "Briturn device has no IP yet — run a Briturn scan."
+            statusErrors[device.id] = message
+            return .failed(message)
         }
         AppLog.store.notice("MyHome: Briturn route=bridge device=\(device.id, privacy: .public)")
         // CONTROL PATH: the bridge. Group control (briturnsetgroup) is
@@ -1250,6 +1307,7 @@ public final class DeviceStore: ObservableObject {
         // CCT readback bytes vary with the temperature, so a CCT set defends
         // power only (no w/colour intent).
         lastUserWriteAt[device.id] = Date()
+        if on != nil { lastPowerWriteAt[device.id] = Date() }
         briturnIntent[device.id] = briturnIntentSnapshot(
             on: on, color: color, brightness: cct != nil ? nil : brightness,
             paintedWhite: paintedWhite && cct == nil, painted: painted
@@ -1257,19 +1315,22 @@ public final class DeviceStore: ObservableObject {
         do {
             let reply = try await bridge.request(payload, timeout: 30)
             guard reply["ok"] as? Bool == true else {
-                await fallbackToBLEOrFail(device, on: on, color: color, brightness: brightness,
-                                          white: white || cct != nil, cct: cct, prev: prev,
-                                          message: reply["error"] as? String ?? "Briturn set failed.")
-                return
+                return await fallbackToBLEOrFail(device, on: on, color: color, brightness: brightness,
+                                                 white: white || cct != nil, cct: cct, prev: prev,
+                                                 message: reply["error"] as? String ?? "Briturn set failed.")
             }
             statusErrors[device.id] = nil
             if let raw = reply["status"] as? [String: Any], let state = BriturnState(reply: raw) {
+                // The bridge read the light back after the write: the device, not the request, is the state.
                 applyBriturnWireState(device.id, state, authoritative: true)
+                lastWriteReadback[device.id] = (state, Date())
+                return .applied(readback: state)
             }
+            return .applied(readback: nil)
         } catch {
-            await fallbackToBLEOrFail(device, on: on, color: color, brightness: brightness,
-                                      white: white || cct != nil, cct: cct, prev: prev,
-                                      message: error.localizedDescription)
+            return await fallbackToBLEOrFail(device, on: on, color: color, brightness: brightness,
+                                             white: white || cct != nil, cct: cct, prev: prev,
+                                             message: error.localizedDescription)
         }
     }
 
@@ -1286,27 +1347,26 @@ public final class DeviceStore: ObservableObject {
     private func setBriturnCloudOrBLE(
         _ device: Device, on: Bool?, color: (red: Int, green: Int, blue: Int)?,
         brightness: Int?, white: Bool, cct: Int?
-    ) async {
+    ) async -> WriteAck {
         let viaBLEWhite = white || cct != nil
         let bleOK = isBLEAvailable(for: device) && bleKey(for: device) != nil
         if isCloudOffline(device), bleOK {
             statusErrors[device.id] = nil
-            await setBriturnViaBLE(device, on: on, color: color, brightness: brightness, white: viaBLEWhite, cct: cct)
-            return
+            return await setBriturnViaBLE(device, on: on, color: color, brightness: brightness, white: viaBLEWhite, cct: cct)
         }
         let prev = briturnStatus[device.id]
         if await controlBriturnCloud([device], on: on, color: color, brightness: brightness, white: white, cct: cct) {
-            return
+            return .applied(readback: lastWriteReadback[device.id]?.state)
         }
         if bleOK {
             statusErrors[device.id] = nil
-            await setBriturnViaBLE(device, on: on, color: color, brightness: brightness, white: viaBLEWhite, cct: cct)
-            return
+            return await setBriturnViaBLE(device, on: on, color: color, brightness: brightness, white: viaBLEWhite, cct: cct)
         }
-        let message = statusErrors[device.id] ?? "Could not control the light through Briturn Cloud."
-        statusErrors[device.id] = message + " (Bluetooth not in range for this light.)"
+        let message = (statusErrors[device.id] ?? "Could not control the light through Briturn Cloud.") + " (Bluetooth not in range for this light.)"
+        statusErrors[device.id] = message
         briturnIntent.removeValue(forKey: device.id)
         setBriturnStatus(device.id, prev)
+        return .failed(message)
     }
 
     /// General rule: when the WiFi transport fails for a dual-mode light that
@@ -1316,26 +1376,30 @@ public final class DeviceStore: ObservableObject {
     private func fallbackToBLEOrFail(
         _ device: Device, on: Bool?, color: (red: Int, green: Int, blue: Int)?,
         brightness: Int?, white: Bool, cct: Int? = nil, prev: BriturnState?, message: String
-    ) async {
+    ) async -> WriteAck {
         if briturnCloudDevices[device.id] != nil,
            await controlBriturnCloud([device], on: on, color: color, brightness: brightness, white: white, cct: cct) {
-            return
+            return .applied(readback: lastWriteReadback[device.id]?.state)
         }
 
         if bleFallbackIDs.contains(device.id), let key = bleKey(for: device) {
             if sendBriturnBLE(key: key, on: on, color: color, brightness: brightness,
                               white: white, cct: cct) {
                 statusErrors[device.id] = nil
-            } else {
-                statusErrors[device.id] = bleUnreachableReason(for: device)
-                briturnIntent.removeValue(forKey: device.id)
-                setBriturnStatus(device.id, prev)
+                briturnUnacknowledged.insert(device.id)
+                return .sent
             }
-            return
+            let reason = bleUnreachableReason(for: device)
+            statusErrors[device.id] = reason
+            briturnIntent.removeValue(forKey: device.id)
+            setBriturnStatus(device.id, prev)
+            return .failed(reason)
         }
-        statusErrors[device.id] = message + " (Bluetooth not in range for this light.)"
+        let full = message + " (Bluetooth not in range for this light.)"
+        statusErrors[device.id] = full
         briturnIntent.removeValue(forKey: device.id)
         setBriturnStatus(device.id, prev)
+        return .failed(full)
     }
 
     /// Transport availability for a briturn device: WiFi (has a routable IP)
@@ -1354,6 +1418,7 @@ public final class DeviceStore: ObservableObject {
     /// BLE-transport set: same optimistic paint + intent rules as the WiFi
     /// path; reconciliation comes from BLE advertisements instead of a bridge
     /// readback, so a failed command self-corrects on the next advert.
+    @discardableResult
     private func setBriturnViaBLE(
         _ device: Device,
         on: Bool?,
@@ -1361,21 +1426,25 @@ public final class DeviceStore: ObservableObject {
         brightness: Int?,
         white: Bool,
         cct: Int? = nil
-    ) async {
+    ) async -> WriteAck {
         guard let key = bleKey(for: device) else {
-            statusErrors[device.id] = "Bluetooth not seen for this light yet — is it powered and in range?"
-            return
+            let message = "Bluetooth not seen for this light yet — is it powered and in range?"
+            statusErrors[device.id] = message
+            return .failed(message)
         }
         let ble = BLEManager.shared
         let prev = briturnStatus[device.id]
         guard sendBriturnBLE(key: key, on: on, color: color, brightness: brightness,
                              white: white, cct: cct) else {
-            statusErrors[device.id] = bleUnreachableReason(for: device)
+            let reason = bleUnreachableReason(for: device)
+            statusErrors[device.id] = reason
             briturnIntent.removeValue(forKey: device.id)
             setBriturnStatus(device.id, prev)
-            return
+            return .failed(reason)
         }
 
+        statusErrors[device.id] = nil
+        briturnUnacknowledged.insert(device.id)
         let nextOn = on ?? (prev?.on ?? false)
         let paintedWhite = white || (color == nil && (prev?.isWhiteMode ?? false) && brightness != nil)
         let paintedW = paintedWhite
@@ -1393,6 +1462,7 @@ public final class DeviceStore: ObservableObject {
         setBriturnStatus(device.id, painted)
         // Same intent rule as the WiFi path: a CCT set defends power only.
         lastUserWriteAt[device.id] = Date()
+        if on != nil { lastPowerWriteAt[device.id] = Date() }
         briturnIntent[device.id] = briturnIntentSnapshot(
             on: on, color: color, brightness: cct != nil ? nil : brightness,
             paintedWhite: paintedWhite && cct == nil, painted: painted
@@ -1403,6 +1473,7 @@ public final class DeviceStore: ObservableObject {
             guard let self, let s = ble.state(for: key) else { return }
             self.applyBriturnWireState(device.id, s)
         }
+        return .sent
     }
 
     /// Sorted distinct group names across the briturn roster. Derived, never
@@ -1503,15 +1574,17 @@ public final class DeviceStore: ObservableObject {
     /// the single-device path uses), then the bridge's applied-count reply is
     /// the authority; failed members fall back to their true state on the
     /// next poll cycle.
+    @discardableResult
     public func setBriturnGroupState(
         _ group: String,
         on: Bool? = nil,
         color: (red: Int, green: Int, blue: Int)? = nil,
         brightness: Int? = nil,
         cct: Int? = nil
-    ) async {
-        guard on != nil || color != nil || brightness != nil || cct != nil else { return }
+    ) async -> [String: WriteAck] {
+        guard on != nil || color != nil || brightness != nil || cct != nil else { return [:] }
         let memberDevices = members(of: group)
+        var acks: [String: WriteAck] = [:]
         let cloudMembers = memberDevices.filter { briturnCloudDevices[$0.id] != nil }
         if !cloudMembers.isEmpty {
             // Cloud-offline members that Bluetooth can reach never go to the
@@ -1531,20 +1604,36 @@ public final class DeviceStore: ObservableObject {
                     }
                 }
             }
+            for device in viaCloud where !recovered.contains(device.id) {
+                acks[device.id] = statusErrors[device.id].map { .failed($0) } ?? .applied(readback: lastWriteReadback[device.id]?.state)
+            }
             for device in bleOnly + viaCloud.filter({ recovered.contains($0.id) }) {
                 statusErrors[device.id] = nil
-                await setBriturnViaBLE(device, on: on, color: color, brightness: brightness,
-                                       white: cct != nil, cct: cct)
+                acks[device.id] = await setBriturnViaBLE(device, on: on, color: color, brightness: brightness,
+                                                         white: cct != nil, cct: cct)
             }
             for device in memberDevices where briturnCloudDevices[device.id] == nil {
-                await setBriturn(device, on: on, color: color, brightness: brightness, cct: cct)
+                acks[device.id] = await setBriturn(device, on: on, color: color, brightness: brightness, cct: cct)
             }
             let unrecovered = viaCloud.contains { statusErrors[$0.id] != nil && !recovered.contains($0.id) }
             if !success && !unrecovered { briturnCloudError = nil }
             errorText = (success || !unrecovered) ? nil : briturnCloudError
-            return
+            return acks
         }
-        let memberIDs = memberDevices.filter(\.hasAddress).map(\.id)
+        // Members whose only live path is Bluetooth (no address, or the LAN
+        // down while adverts are heard) get the same command one by one over
+        // BLE; a member with neither path is refused, never silently skipped.
+        let viaBLE = memberDevices.filter { routesGroupWriteOverBLE($0) }
+        let viaLAN = memberDevices.filter { $0.hasAddress && !viaBLE.contains($0) }
+        for device in memberDevices where !viaLAN.contains(device) && !viaBLE.contains(device) {
+            statusErrors[device.id] = Self.noTransportMessage
+            acks[device.id] = .failed(Self.noTransportMessage)
+            AppLog.store.notice("MyHome: group \(group, privacy: .public) member \(device.id, privacy: .public) has no WiFi or Bluetooth path; not sent")
+        }
+        if !viaBLE.isEmpty {
+            AppLog.store.notice("MyHome: group \(group, privacy: .public): \(viaLAN.count, privacy: .public) via LAN, \(viaBLE.count, privacy: .public) via Bluetooth")
+        }
+        let memberIDs = viaLAN.map(\.id)
         var payload: [String: Any] = ["cmd": "briturnsetgroup", "group": group]
         if let on = on { payload["on"] = on }
         if let color = color {
@@ -1566,6 +1655,7 @@ public final class DeviceStore: ObservableObject {
                     briturnStatus[memberIDs.first ?? ""]?.b ?? 0, 1)
             )
         }
+        let previousStates = Dictionary(uniqueKeysWithValues: memberIDs.map { ($0, briturnStatus[$0]) })
         for id in memberIDs {
             let prev = briturnStatus[id]
             let nextOn = on ?? (prev?.on ?? false)
@@ -1594,28 +1684,63 @@ public final class DeviceStore: ObservableObject {
             // defend colour, white-mode brightness defends w, and every
             // member keeps its individual power display untouched.
             lastUserWriteAt[id] = Date()
+            if on != nil { lastPowerWriteAt[id] = Date() }
             briturnIntent[id] = briturnIntentSnapshot(
                 on: on, color: color, brightness: cct != nil ? nil : brightness,
                 paintedWhite: paintedWhite && cct == nil, painted: painted
             )
         }
-        do {
-            let reply = try await bridge.request(payload, timeout: 30)
-            guard reply["ok"] as? Bool == true else {
-                errorText = reply["error"] as? String ?? "Group set failed."
-                // Nothing was applied: drop the defensive intents so the next
-                // poll is free to correct the optimistic paint.
-                for id in memberIDs { briturnIntent.removeValue(forKey: id) }
-                return
+        if !memberIDs.isEmpty {
+            do {
+                let reply = try await bridge.request(payload, timeout: 30)
+                if reply["ok"] as? Bool == true {
+                    errorText = nil
+                    // The bridge answers ok for the GROUP and reports each light
+                    // separately: a light that never took the packets keeps its
+                    // real state and its own error, never a painted success.
+                    let results = reply["results"] as? [String: Bool] ?? [:]
+                    for id in memberIDs {
+                        if results[id] == false {
+                            statusErrors[id] = Self.lanMissMessage
+                            briturnIntent.removeValue(forKey: id)
+                            setBriturnStatus(id, previousStates[id] ?? nil)
+                            acks[id] = .failed(Self.lanMissMessage)
+                        } else {
+                            if statusErrors[id] != nil { statusErrors[id] = nil }
+                            acks[id] = .applied(readback: nil)
+                        }
+                    }
+                } else {
+                    errorText = reply["error"] as? String ?? "Group set failed."
+                    // Nothing was applied: drop the defensive intents so the next
+                    // poll is free to correct the optimistic paint.
+                    for id in memberIDs {
+                        briturnIntent.removeValue(forKey: id)
+                        acks[id] = .failed(errorText ?? "Group set failed.")
+                    }
+                }
+            } catch {
+                errorText = error.localizedDescription
+                for id in memberIDs {
+                    briturnIntent.removeValue(forKey: id)
+                    acks[id] = .failed(error.localizedDescription)
+                }
             }
-            errorText = nil
-        } catch {
-            errorText = error.localizedDescription
-            for id in memberIDs { briturnIntent.removeValue(forKey: id) }
+        }
+        for device in viaBLE {
+            acks[device.id] = await setBriturnViaBLE(device, on: on, color: color, brightness: brightness, white: cct != nil, cct: cct)
         }
         // The poll cycle re-reads members and reconciles any failures, but a
         // full sweep takes seconds — reconcile just this group immediately.
         await refreshBriturnStatuses(limitingTo: members(of: group))
+        return acks
+    }
+
+    /// A group member goes over Bluetooth when that is its only live path.
+    private func routesGroupWriteOverBLE(_ device: Device) -> Bool {
+        guard isBLEAvailable(for: device), bleKey(for: device) != nil else { return false }
+        if !device.hasAddress { return true }
+        return reachability(for: device) == .bluetooth
     }
 
     // MARK: - Polling
@@ -1990,6 +2115,11 @@ public final class DeviceStore: ObservableObject {
     }
 
     public static func decodeDps(_ raw: Any) throws -> [String: DPSValue] {
+        // A nil wrapped as Any (a bridge echo with no dps) is not a JSON object:
+        // JSONSerialization would raise, not throw, so validate first.
+        guard JSONSerialization.isValidJSONObject(raw) else {
+            throw DecodingError.dataCorrupted(DecodingError.Context(codingPath: [], debugDescription: "dps is not a JSON object"))
+        }
         let data = try JSONSerialization.data(withJSONObject: raw)
         return try JSONDecoder().decode([String: DPSValue].self, from: data)
     }
@@ -2054,6 +2184,7 @@ public final class DeviceStore: ObservableObject {
         guard device.hasAddress else { return false }
         let previousDps = dpsById[device.id]
         let previousOn = isOn[device.id]
+        lastSetRejected.remove(device.id)
 
         if !optimistic.isEmpty {
             // A newer command supersedes any prior intent for this device.
@@ -2091,6 +2222,7 @@ public final class DeviceStore: ObservableObject {
                 dpsById[device.id] = previousDps
                 isOn[device.id] = previousOn
                 dpsIntent.removeValue(forKey: device.id)
+                lastSetRejected.insert(device.id)
             }
             errorText = message
             return false
@@ -2121,11 +2253,9 @@ public final class DeviceStore: ObservableObject {
     /// reply carries no dps the optimistic value is left in place.
     private func applyConfirmedReply(_ id: String, reply: [String: Any]) throws {
         guard let raw = reply["dps"] else { return }
-        applyStatus(
-            id,
-            decoded: try Self.decodeDps(raw),
-            viaCloud: reply["via"] as? String == "cloud"
-        )
+        let decoded = try Self.decodeDps(raw)
+        lastSetReply[id] = (decoded, Date())
+        applyStatus(id, decoded: decoded, viaCloud: reply["via"] as? String == "cloud")
     }
 
     private func revert(device: Device, isOn previousOn: Bool, dps previousDps: [String: DPSValue]?) {

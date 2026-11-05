@@ -254,6 +254,9 @@ public final class SegmentingTranscriber: @unchecked Sendable {
     private let onSegment: SegmentHandler
     private let onActivity: ActivityHandler
     private let engineName: String
+    /// Returns true for decoded text that must be dropped (hotword echo);
+    /// arguments are the text and the segment's audio seconds.
+    private let rejectText: (@Sendable (String, Double) -> Bool)?
     /// Audio is handed to the segmenter in slices of this size (0 = whole
     /// chunk) so speech onset is located to the slice even when the tap
     /// coalesced seconds of audio while a decode was running.
@@ -278,7 +281,9 @@ public final class SegmentingTranscriber: @unchecked Sendable {
     public init(segmenter: SpeechSegmenting, decoder: OfflineSpeechDecoder, sampleRate: Int,
                 preRollSeconds: Float, queue: DispatchQueue,
                 onSegment: @escaping SegmentHandler, onActivity: @escaping ActivityHandler = { _ in },
-                vadLookbackSamples: Int = 0, ingestSliceSamples: Int = 0, engineName: String = "") {
+                vadLookbackSamples: Int = 0, ingestSliceSamples: Int = 0, engineName: String = "",
+                rejectText: (@Sendable (String, Double) -> Bool)? = nil) {
+        self.rejectText = rejectText
         self.segmenter = segmenter
         self.decoder = decoder
         self.sampleRate = sampleRate
@@ -400,6 +405,10 @@ public final class SegmentingTranscriber: @unchecked Sendable {
             let audioMs = samples.count * 1000 / max(1, sampleRate)
             AppLog.assistant.info("speech segment decoded engine=\(self.engineName, privacy: .public) decodeMs=\(ms) audioMs=\(audioMs) chars=\(text.count)")
             lock.lock(); processedWindows += 1; lock.unlock()
+            if !text.isEmpty, let rejectText, rejectText(text, Double(audioMs) / 1000) {
+                AppLog.assistant.info("speech output rejected as hotword echo chars=\(text.count) audioMs=\(audioMs)")
+                continue
+            }
             guard !text.isEmpty, text != lastDecodedText else { continue }
             lastDecodedText = text
             onSegment(text)

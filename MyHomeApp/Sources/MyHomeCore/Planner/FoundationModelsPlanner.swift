@@ -131,8 +131,9 @@ struct FindDevicesTool: Tool {
 public final class FoundationModelsPlanner: NaturalLanguagePlanner {
     // allow-hardcode: these are the model instructions (a prompt), reviewed
     // guidance that AppSettings.plannerInstructions can override at runtime.
-    public static let defaultInstructions = """
-    Turn a home-control request into device actions. Use only device handles (like d3) from the list or tool results.
+    public static let defaultInstructions = PlannerPersona.housekeeper + """
+
+    Use only device handles (like d3) from the list or tool results.
     Call findDevices when a phrase could mean several devices or the device is not listed.
     If the request is ambiguous or impossible, return no actions and ask a short question in clarification.
     Levels are percents 0-100; fan speeds are gear numbers. Do not add actions that were not asked for.

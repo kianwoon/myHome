@@ -40,18 +40,18 @@ public final class CloudPlanner: NaturalLanguagePlanner {
                    maxTokens: AppSettings.plannerMaxTokens(from: defaults),
                    timeout: AppSettings.plannerTimeout(from: defaults),
                    catalogueBudget: AppSettings.cloudCatalogueBudget(from: defaults),
-                   maxDevices: AppSettings.plannerMaxDevices(from: defaults),
+                   maxDevices: AppSettings.cloudMaxDevices(from: defaults),
                    toolOutputBudget: AppSettings.plannerToolOutputBudget(from: defaults),
                    instructions: AppSettings.plannerInstructions(from: defaults, fallback: CloudPlanner.defaultInstructions))
         }
     }
 
     // allow-hardcode: the model prompt (reviewed guidance; AppSettings.plannerInstructions overrides it).
-    public nonisolated static let defaultInstructions = """
-    Turn a home-control request into device actions. Use only device handles (like d3) from the list.
+    public nonisolated static let defaultInstructions = PlannerPersona.housekeeper + """
+
+    Use only device handles (like d3) from the list.
     If the request is ambiguous, impossible, or names nothing in the list, return no actions and ask a short question in clarification.
     Levels are percents 0-100; fan speeds are gear numbers. Do not add actions that were not asked for.
-    If the user describes a condition rather than a command (for example "the room is stuffy", "it's too dark"), propose the device actions that address it (stuffy: turn on a fan and set a sensible speed), using each device's current state and only the handles listed.
     """
 
     private let controller: DeviceController
@@ -126,7 +126,10 @@ public final class CloudPlanner: NaturalLanguagePlanner {
         small.maxTokens = AppSettings.plannerMaxTokensRange.lowerBound
         do {
             _ = try await Self.complete(config: small, key: key, system: "Reply with the single word OK.", user: "ping", session: session)
-            return "Connected: \(config.model) replied."
+            return "Connected: \(config.model) replied. \(await toolProbeSummary())"
+        } catch PlannerError.failed(let text) where text == Self.outOfTokensMessage || text == Self.emptyReplyMessage {
+            // The tiny probe budget can be eaten by a reasoning model; the provider and key still worked.
+            return "Connected: \(config.model) answered (\(text)). \(await toolProbeSummary())"
         } catch PlannerError.failed(let text) {
             AppLog.assistant.info("planner test failed: \(secret.logSummary, privacy: .public)")
             guard text.contains("rejected the API key") else { return text }
@@ -143,6 +146,15 @@ public final class CloudPlanner: NaturalLanguagePlanner {
         } catch {
             return Self.scrub(error.localizedDescription, key: key)
         }
+    }
+
+    /// How the housekeeper's tool calls travel through this provider: the
+    /// recorded probe, or a fresh one when none was recorded for this model.
+    private func toolProbeSummary() async -> String {
+        let config = self.config
+        if defaults.string(forKey: AppSettings.housekeeperProbedModelKey) == config.model,
+           let summary = AppSettings.housekeeperProbeSummary(from: defaults) { return summary + "." }
+        return await AgentToolProbe.runAndRecord(defaults: defaults, secrets: secrets, session: session).summary
     }
 
     // MARK: - Request / response (static so tests can drive them directly)
@@ -226,21 +238,72 @@ public final class CloudPlanner: NaturalLanguagePlanner {
         guard let http = response as? HTTPURLResponse else { throw PlannerError.failed("the server sent no HTTP response") }
         // The body is never quoted: providers can echo (part of) the key in errors.
         guard (200..<300).contains(http.statusCode) else { throw PlannerError.failed(statusMessage(http.statusCode)) }
-        guard let text = extractText(data, provider: config.provider) else {
-            throw PlannerError.failed("the provider's reply could not be read")
-        }
-        return text
+        return try readReply(data, provider: config.provider)
     }
 
+    /// Provider-reported "ran out of tokens" markers (OpenAI / Anthropic).
+    static let truncationReasons: Set<String> = ["length", "max_tokens"]
+    static let thinkOpen = "<think>"
+    static let thinkClose = "</think>"
+    static let notJSONMessage = "the provider's reply was not JSON"
+    static let emptyReplyMessage = "the model returned an empty reply"
+    static let outOfTokensMessage = "the model ran out of tokens before answering; raise Max tokens in Settings → AI Models or pick a non-reasoning model"
+
     static func extractText(_ data: Data, provider: AppSettings.PlannerProvider) -> String? {
-        guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
-        if provider == .anthropic {
-            let blocks = (root["content"] as? [[String: Any]]) ?? []
-            let text = blocks.compactMap { $0["text"] as? String }.joined()
-            return text.isEmpty ? nil : text
+        try? readReply(data, provider: provider)
+    }
+
+    /// The reply text, or a key-free `PlannerError.failed` saying why there is none.
+    static func readReply(_ data: Data, provider: AppSettings.PlannerProvider) throws -> String {
+        guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            AppLog.assistant.info("planner reply was not a JSON object")
+            throw PlannerError.failed(notJSONMessage)
         }
-        let message = ((root["choices"] as? [[String: Any]])?.first)?["message"] as? [String: Any]
-        return (message?["content"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        let raw: String
+        let finish: String?
+        if provider == .anthropic {
+            raw = contentText(root["content"])
+            finish = root["stop_reason"] as? String
+        } else {
+            let choice = (root["choices"] as? [[String: Any]])?.first
+            let message = choice?["message"] as? [String: Any]
+            // Some servers answer in the legacy `text` field of the choice.
+            raw = contentText(message?["content"]) .nonEmpty ?? contentText(choice?["text"])
+            finish = choice?["finish_reason"] as? String
+        }
+        let text = stripThinking(raw)
+        if !text.isEmpty { return text }
+        let completion = ((root["usage"] as? [String: Any])?["completion_tokens"] ?? (root["usage"] as? [String: Any])?["output_tokens"]) as? Int
+        AppLog.assistant.info("planner reply had no text: keys=\(root.keys.sorted().joined(separator: ","), privacy: .public) finish=\(finish ?? "none", privacy: .public) completion_tokens=\(completion.map(String.init) ?? "none", privacy: .public)")
+        if let finish, truncationReasons.contains(finish) { throw PlannerError.failed(outOfTokensMessage) }
+        throw PlannerError.failed(emptyReplyMessage)
+    }
+
+    /// `content` as a string, or an array of parts / {type:"text",text} objects joined.
+    static func contentText(_ content: Any?) -> String {
+        if let string = content as? String { return string }
+        guard let parts = content as? [Any] else { return "" }
+        return parts.compactMap { part -> String? in
+            if let string = part as? String { return string }
+            guard let object = part as? [String: Any] else { return nil }
+            let type = object["type"] as? String
+            return (type == nil || type == "text" || type == "output_text") ? object["text"] as? String : nil
+        }.joined()
+    }
+
+    /// Drops hidden-reasoning `<think>…</think>` blocks (an unclosed one hides everything after it).
+    static func stripThinking(_ text: String) -> String {
+        var rest = text
+        while let open = rest.range(of: thinkOpen) {
+            if let close = rest.range(of: thinkClose, range: open.upperBound..<rest.endIndex) {
+                rest.removeSubrange(open.lowerBound..<close.upperBound)
+            } else {
+                rest.removeSubrange(open.lowerBound..<rest.endIndex)
+            }
+        }
+        // A stray closer (the opener was cut by the provider): keep what follows it.
+        if let close = rest.range(of: thinkClose, options: .backwards) { rest = String(rest[close.upperBound...]) }
+        return rest.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// The model sometimes wraps JSON in prose or fences; take the outermost object.
@@ -275,4 +338,8 @@ public final class CloudPlanner: NaturalLanguagePlanner {
         guard let key, !key.isEmpty else { return text }
         return text.replacingOccurrences(of: key, with: "•••")
     }
+}
+
+private extension String {
+    var nonEmpty: String? { isEmpty ? nil : self }
 }

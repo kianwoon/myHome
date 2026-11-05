@@ -1,5 +1,6 @@
 // Orchestrates one conversation turn: text/voice in → Level-1 grammar →
-// (fallback) Level-2 planner → DeviceController → reply. Owns the pending
+// the housekeeper agent (Cloud LLM with tools; see +Housekeeper) or, without
+// one, the Level-2 planner / Jev → DeviceController → reply. Owns the pending
 // confirmation so "yes"/"no" can finish a multi-device or ambiguous request.
 // Everything that touches a device still goes through DeviceController.
 import Combine
@@ -30,6 +31,8 @@ public final class AssistantCoordinator: ObservableObject {
     public static let modelSource = "model"
     /// Replies produced by the Jev decider (a choice classifier).
     public static let jevSource = "jev"
+    /// Replies produced by the housekeeper agent (Cloud LLM with tools).
+    public static let housekeeperSource = "housekeeper"
     /// Lead-in when Jev could not settle a request and the user is asked.
     public static let jevUnsureLead = "Jev wasn't sure"
     /// Reply when a voice session ended with no recognised words.
@@ -41,17 +44,24 @@ public final class AssistantCoordinator: ObservableObject {
     /// Set when Settings → AI Models enables Jev (router & matcher). It only
     /// ADVISES: an accepted match is always confirmed before it runs.
     public var jevDecider: JevCommandDecider?
+    /// Set when a Cloud LLM is configured and the housekeeper is enabled: it
+    /// then handles everything but confirm/cancel and the parser fast path.
+    public var housekeeper: HousekeeperAgent?
+    /// Parsed single-device commands / state questions run without the model.
+    public var housekeeperFastPath = AppSettings.housekeeperFastPath()
     public var timeouts: AssistantTimeouts
     /// State questions name at most this many devices (AppSettings.stateQueryListMax).
     public var stateQueryListMax = AppSettings.stateQueryListMax()
+    /// Diagnostics: every reply, with the housekeeper's trace when it produced it.
+    public var replySink: ((AssistantReply, String, CommandOrigin, AgentTrace?) -> Void)?
     private var activeTask: Task<AssistantReply, Never>?
 
     @Published public private(set) var replies: [AssistantReply] = []
     @Published public private(set) var isBusy = false
     /// Requests waiting for "yes" (one per planned step).
-    @Published public private(set) var pending: [CommandRequest] = []
+    @Published public internal(set) var pending: [CommandRequest] = []
     /// Devices the user must pick between after an ambiguous request.
-    @Published public private(set) var pendingChoice: (command: DeviceCommand, candidates: [DeviceSummary])?
+    @Published public internal(set) var pendingChoice: (command: DeviceCommand, candidates: [DeviceSummary])?
 
     public init(controller: DeviceController, parser: VoiceCommandParser = VoiceCommandParser(), planner: NaturalLanguagePlanner? = nil,
                 timeouts: AssistantTimeouts = AssistantTimeouts()) {
@@ -74,6 +84,8 @@ public final class AssistantCoordinator: ObservableObject {
         activeTask = task
         let reply = await task.value
         replies.append(reply)
+        AppLog.assistant.info("reply kind=\(String(describing: reply.kind), privacy: .public) source=\(reply.source, privacy: .public) text=\(reply.text, privacy: .public)")
+        replySink?(reply, utterance, origin, reply.source == Self.housekeeperSource ? housekeeper?.lastTrace : nil)
         return reply
     }
 
@@ -86,6 +98,12 @@ public final class AssistantCoordinator: ObservableObject {
     /// Runs every pending request (the user said yes).
     @discardableResult
     public func confirmPending() async -> AssistantReply? {
+        // A housekeeper plan runs through the agent's apply path (fan power-first, undo).
+        if hasPendingConfirmation, let agent = housekeeper, agent.tools.hasPendingConfirmation {
+            let reply = await runHousekeeperConfirmed(agent)
+            replies.append(reply)
+            return reply
+        }
         guard let reply = await runPending() else { return nil }
         replies.append(reply)
         return reply
@@ -93,6 +111,7 @@ public final class AssistantCoordinator: ObservableObject {
 
     @discardableResult
     public func cancelPending() -> AssistantReply {
+        housekeeper?.tools.clearPendingConfirmation()
         let reply = dropPending()
         replies.append(reply)
         return reply
@@ -123,21 +142,45 @@ public final class AssistantCoordinator: ObservableObject {
 
     // MARK: - Processing
 
-    private func runPending() async -> AssistantReply? {
+    func runPending() async -> AssistantReply? {
         guard !pending.isEmpty else { return nil }
         let requests = pending
         pending = []
         var results: [CommandResult] = []
+        var timedOut = false
         for var request in requests {
             request.confirmed = true   // the user just said yes
-            guard let result = await boundedPerform(request) else { return timeoutReply() }
-            results.append(result)
+            // Outcomes are kept as they arrive: a slow request costs only its
+            // own devices ("took too long") and later ones are "not attempted",
+            // never the whole confirmed set.
+            if timedOut {
+                results.append(Self.uncertainResult(request, controller: controller, reason: Self.notAttemptedText))
+                continue
+            }
+            if let result = await boundedPerform(request) {
+                results.append(result)
+            } else {
+                if Task.isCancelled { return timeoutReply() }
+                timedOut = true
+                results.append(Self.uncertainResult(request, controller: controller, reason: Self.tookTooLongText))
+            }
         }
         let text = results.map(\.spokenSummary).joined(separator: " ")
-        return AssistantReply(kind: .executed, text: text, result: results.last, source: Self.grammarSource)
+        let anySent = results.contains { $0.outcomes.contains { $0.status.wasSent } }
+        return AssistantReply(kind: anySent ? .executed : .error, text: text, result: results.last, source: Self.grammarSource)
     }
 
-    private func dropPending() -> AssistantReply {
+    // allow-hardcode: spoken UI copy.
+    static let notAttemptedText = "not attempted (an earlier step took too long)"
+    static let tookTooLongText = "took too long; the device may still apply it"
+
+    static func uncertainResult(_ request: CommandRequest, controller: DeviceController, reason: String) -> CommandResult {
+        CommandResult(disposition: .executed, command: request.command, scope: nil,
+                      outcomes: request.resolution.devices.map { DeviceOutcome(device: controller.summary(for: $0), status: .uncertain(reason)) },
+                      pendingRequest: nil)
+    }
+
+    func dropPending() -> AssistantReply {
         pending = []
         pendingChoice = nil
         return AssistantReply(kind: .info, text: "Cancelled.", source: Self.grammarSource)
@@ -152,8 +195,8 @@ public final class AssistantCoordinator: ObservableObject {
 
     private func process(_ utterance: String, origin: CommandOrigin) async -> AssistantReply {
         let intent = parser.parse(utterance)
-        if origin == .voice {
-            AppLog.assistant.debug("voice utterance: \(utterance, privacy: .private) parsed=\(Self.intentName(intent), privacy: .public)")
+        do {
+            AppLog.assistant.info("utterance: \(utterance, privacy: .public) origin=\(String(describing: origin), privacy: .public) parsed=\(Self.intentName(intent), privacy: .public)")
         }
         // An answer to "which one?": a bare name ("the desk one") keeps the
         // pending command; a full command names both the device and a new command.
@@ -171,8 +214,21 @@ public final class AssistantCoordinator: ObservableObject {
                 break
             }
         }
+        // With a housekeeper: the parser only keeps confirm/cancel and its
+        // fast path; everything else (commands, questions, situations) is the agent's.
+        if let housekeeper, housekeeper.isAvailable {
+            return await handleWithHousekeeper(utterance, intent: intent, origin: origin, agent: housekeeper)
+        }
+        return await processWithoutHousekeeper(utterance, intent: intent, origin: origin, usePlanner: true)
+    }
+
+    /// The pre-agent flow: parser → planner (unknown phrasing) / Jev → reply.
+    /// Also the fallback when the housekeeper could not be reached.
+    func processWithoutHousekeeper(_ utterance: String, intent: ParsedIntent, origin: CommandOrigin, usePlanner: Bool) async -> AssistantReply {
+        let planner = usePlanner ? self.planner : nil
         switch intent {
         case .confirm:
+            guard origin.canConfirm else { return AssistantReply(kind: .info, text: Self.confirmRefusedText, source: Self.grammarSource) }
             if let reply = await runPending() { return reply }
             return AssistantReply(kind: .info, text: "Nothing is waiting for confirmation.", source: Self.grammarSource)
         case .cancel:
@@ -203,11 +259,6 @@ public final class AssistantCoordinator: ObservableObject {
                 default:
                     break
                 }
-            }
-            if case .nothingToDo = result.disposition, let planner, planner.isAvailable {
-                // The grammar understood the shape but not the device: let the
-                // model try with the registry in front of it.
-                return await planWithModel(utterance, origin: origin)
             }
             return reply(for: result, source: Self.grammarSource)
         case .unknown:
@@ -256,7 +307,7 @@ public final class AssistantCoordinator: ObservableObject {
         return AssistantReply(kind: .status, text: text, source: Self.grammarSource)
     }
 
-    private func reply(for result: CommandResult, source: String) -> AssistantReply {
+    func reply(for result: CommandResult, source: String) -> AssistantReply {
         switch result.disposition {
         case .executed:
             return AssistantReply(kind: .executed, text: result.spokenSummary, result: result, source: source)
@@ -273,12 +324,13 @@ public final class AssistantCoordinator: ObservableObject {
 
     // MARK: - Level 2
 
-    private func boundedPerform(_ request: CommandRequest) async -> CommandResult? {
+    func boundedPerform(_ request: CommandRequest) async -> CommandResult? {
         let controller = self.controller
-        return await Deadline.run(seconds: timeouts.command) { @MainActor in await controller.perform(request) }
+        let seconds = timeouts.command(forDevices: request.resolution.devices.count)
+        return await Deadline.run(seconds: seconds) { @MainActor in await controller.perform(request) }
     }
 
-    private func timeoutReply() -> AssistantReply {
+    func timeoutReply() -> AssistantReply {
         let text = Task.isCancelled ? "Cancelled." : "That took too long; the device may still apply it."
         return AssistantReply(kind: Task.isCancelled ? .info : .error, text: text, source: Self.grammarSource)
     }
@@ -303,7 +355,7 @@ public final class AssistantCoordinator: ObservableObject {
         case .success(let proposed):
             plan = proposed
         case .failure(let failure):
-            AppLog.assistant.error("planner failed: \(String(describing: failure.error))")
+            AppLog.assistant.error("planner failed: \(Self.message(for: failure.error), privacy: .public)")
             return AssistantReply(kind: .error, text: "The planner couldn't plan that: \(Self.message(for: failure.error)).", source: Self.modelSource)
         }
         if let question = plan.clarification, plan.steps.isEmpty {
@@ -325,6 +377,10 @@ public final class AssistantCoordinator: ObservableObject {
         if requests.isEmpty {
             return AssistantReply(kind: .error, text: "The model named devices I don't know (\(unknownIDs.joined(separator: ", "))).", source: Self.modelSource)
         }
+        let stepNames = requests.map { request in
+            "\(request.resolution.devices.map { controller.summary(for: $0).name }.joined(separator: ", ")) -> \(String(describing: request.command))"
+        }
+        AppLog.assistant.info("planned \(plan.steps.count) step(s), \(requests.count) usable: \(stepNames.joined(separator: " | "), privacy: .public)")
         // A model-authored plan is always confirmed first, whatever its size:
         // the user sees exactly what will run before anything runs.
         pending = requests

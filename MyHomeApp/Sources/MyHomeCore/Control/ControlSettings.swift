@@ -15,6 +15,19 @@ public extension AppSettings {
     static let defaultConfirmDeviceCount = 2
     static let confirmDeviceCountRange = 1...100
 
+    /// Read-back tolerance for a percent level (brightness, position).
+    static let verifyLevelToleranceKey = "commandVerifyLevelTolerance"
+    static let defaultVerifyLevelTolerance = 10
+    static let verifyLevelToleranceRange = 1...50
+    /// A reading older than this is re-read before a command (pre-check).
+    static let stateFreshnessKey = "commandStateFreshnessSeconds"
+    static let defaultStateFreshness: TimeInterval = 30
+    static let stateFreshnessRange: ClosedRange<TimeInterval> = 2...600
+    /// Pause between read-back attempts while verifying a write.
+    static let verifySettleKey = "commandVerifySettleSeconds"
+    static let defaultVerifySettle: TimeInterval = 0.8
+    static let verifySettleRange: ClosedRange<TimeInterval> = 0.1...10
+
     static let resolverAmbiguityMarginKey = "resolverAmbiguityMargin"
     static let defaultResolverAmbiguityMargin = 0.1
     static let resolverMinCoverageKey = "resolverMinCoverage"
@@ -33,6 +46,19 @@ public extension AppSettings {
 
     static func commandVerifyTimeout(from defaults: UserDefaults = .standard) -> TimeInterval {
         clamped(defaults.object(forKey: commandVerifyTimeoutKey) as? Double, defaultCommandVerifyTimeout, commandVerifyTimeoutRange)
+    }
+
+    static func verifyLevelTolerance(from defaults: UserDefaults = .standard) -> Int {
+        let stored = defaults.object(forKey: verifyLevelToleranceKey) as? Int ?? defaultVerifyLevelTolerance
+        return min(max(stored, verifyLevelToleranceRange.lowerBound), verifyLevelToleranceRange.upperBound)
+    }
+
+    static func stateFreshness(from defaults: UserDefaults = .standard) -> TimeInterval {
+        clamped(defaults.object(forKey: stateFreshnessKey) as? Double, defaultStateFreshness, stateFreshnessRange)
+    }
+
+    static func verifySettle(from defaults: UserDefaults = .standard) -> TimeInterval {
+        clamped(defaults.object(forKey: verifySettleKey) as? Double, defaultVerifySettle, verifySettleRange)
     }
 
     static func confirmDeviceCount(from defaults: UserDefaults = .standard) -> Int {
@@ -157,6 +183,9 @@ public extension AppSettings {
     static let assistantCommandTimeoutKey = "assistantCommandTimeoutSeconds"
     static let defaultAssistantCommandTimeout: TimeInterval = 15
     static let assistantCommandTimeoutRange: ClosedRange<TimeInterval> = 2...120
+    /// Extra wait per additional device in one command: each device is
+    /// pre-checked, written and read back in turn (several seconds apiece).
+    static let defaultAssistantPerDeviceTimeout: TimeInterval = 8
 
     static func plannerCatalogueBudget(from defaults: UserDefaults = .standard) -> Int {
         clampedInt(defaults.object(forKey: plannerCatalogueBudgetKey) as? Int, defaultPlannerCatalogueBudget, plannerCatalogueBudgetRange)
@@ -211,14 +240,21 @@ public extension AppSettings {
     static let openAIModelKey = "plannerOpenAIModel"
     static let anthropicModelPlaceholder = "model name, e.g. claude-sonnet-4-5"
     static let openAIModelPlaceholder = "model name, e.g. gpt-4o-mini or a local model"
-    /// Cap on the reply length requested from the cloud model.
+    /// Cap on the reply length requested from the cloud model (reasoning models spend it on hidden thinking, so the default is generous).
     static let plannerMaxTokensKey = "plannerMaxTokens"
-    static let defaultPlannerMaxTokens = 1024
-    static let plannerMaxTokensRange = 64...8192
-    /// A cloud model has room for far more catalogue than the on-device one.
+    static let defaultPlannerMaxTokens = 16384
+    static let plannerMaxTokensRange = 64...131072
+    /// A cloud model has room for far more catalogue than the on-device one
+    /// (large context window): these only bound cost and latency.
     static let cloudCatalogueBudgetKey = "plannerCloudCatalogueBudgetChars"
-    static let defaultCloudCatalogueBudget = 8000
-    static let cloudCatalogueBudgetRange = 500...60000
+    static let defaultCloudCatalogueBudget = 60000
+    static let cloudCatalogueBudgetRange = 500...400000
+    /// Devices listed to the cloud planner; the on-device `plannerMaxDevices` stays tight.
+    static let cloudMaxDevicesKey = "plannerCloudMaxDevices"
+    static let defaultCloudMaxDevices = 500
+    static let cloudMaxDevicesRange = 1...2000
+    /// Jev's device-choice catalogue keeps its own small budget (not the cloud planner's).
+    static let jevCatalogueBudget = 8000
     /// Hosts that may be reached over plain http (local model servers).
     static let plainHTTPHosts: Set<String> = ["localhost", "127.0.0.1", "::1", "[::1]"]
 
@@ -255,6 +291,10 @@ public extension AppSettings {
         return stored.isEmpty ? fallback : stored
     }
 
+    static func cloudMaxDevices(from defaults: UserDefaults = .standard) -> Int {
+        clampedInt(defaults.object(forKey: cloudMaxDevicesKey) as? Int, defaultCloudMaxDevices, cloudMaxDevicesRange)
+    }
+
     static func plannerMaxDevices(from defaults: UserDefaults = .standard) -> Int {
         let stored = defaults.object(forKey: plannerMaxDevicesKey) as? Int ?? defaultPlannerMaxDevices
         return min(max(stored, plannerMaxDevicesRange.lowerBound), plannerMaxDevicesRange.upperBound)
@@ -269,10 +309,20 @@ public extension AppSettings {
 public struct AssistantTimeouts: Equatable, Sendable {
     public var planner: TimeInterval
     public var command: TimeInterval
+    /// Added per device beyond the first (`command(forDevices:)`).
+    public var perDevice: TimeInterval
 
-    public init(planner: TimeInterval = AppSettings.defaultPlannerTimeout, command: TimeInterval = AppSettings.defaultAssistantCommandTimeout) {
+    public init(planner: TimeInterval = AppSettings.defaultPlannerTimeout, command: TimeInterval = AppSettings.defaultAssistantCommandTimeout,
+                perDevice: TimeInterval = AppSettings.defaultAssistantPerDeviceTimeout) {
         self.planner = planner
         self.command = command
+        self.perDevice = perDevice
+    }
+
+    /// Deadline for one command over `count` devices: a whole room must not
+    /// share a single device's budget.
+    public func command(forDevices count: Int) -> TimeInterval {
+        command + perDevice * Double(max(count - 1, 0))
     }
 
     public static func fromDefaults(_ defaults: UserDefaults = .standard) -> AssistantTimeouts {
@@ -283,16 +333,31 @@ public struct AssistantTimeouts: Equatable, Sendable {
 public struct ControlConfig: Equatable, Sendable {
     public var verifyTimeout: TimeInterval
     public var confirmationDeviceThreshold: Int
+    /// Read-back tolerance for percent levels.
+    public var levelTolerance: Int
+    /// Readings older than this are refreshed before a write.
+    public var stateFreshness: TimeInterval
+    /// Pause between read-back attempts.
+    public var settleInterval: TimeInterval
 
     public init(verifyTimeout: TimeInterval = AppSettings.defaultCommandVerifyTimeout,
-                confirmationDeviceThreshold: Int = AppSettings.defaultConfirmDeviceCount) {
+                confirmationDeviceThreshold: Int = AppSettings.defaultConfirmDeviceCount,
+                levelTolerance: Int = AppSettings.defaultVerifyLevelTolerance,
+                stateFreshness: TimeInterval = AppSettings.defaultStateFreshness,
+                settleInterval: TimeInterval = AppSettings.defaultVerifySettle) {
         self.verifyTimeout = verifyTimeout
         self.confirmationDeviceThreshold = confirmationDeviceThreshold
+        self.levelTolerance = levelTolerance
+        self.stateFreshness = stateFreshness
+        self.settleInterval = settleInterval
     }
 
     public static func fromDefaults(_ defaults: UserDefaults = .standard) -> ControlConfig {
         ControlConfig(verifyTimeout: AppSettings.commandVerifyTimeout(from: defaults),
-                      confirmationDeviceThreshold: AppSettings.confirmDeviceCount(from: defaults))
+                      confirmationDeviceThreshold: AppSettings.confirmDeviceCount(from: defaults),
+                      levelTolerance: AppSettings.verifyLevelTolerance(from: defaults),
+                      stateFreshness: AppSettings.stateFreshness(from: defaults),
+                      settleInterval: AppSettings.verifySettle(from: defaults))
     }
 }
 

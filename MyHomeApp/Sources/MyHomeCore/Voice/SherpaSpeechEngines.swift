@@ -386,6 +386,7 @@ public enum SherpaTranscriberFactory {
         // Re-check right before construction: sherpa fatalErrors on bad assets.
         guard SpeechModelStore.isInstalled(request.model.kind, at: dir) else { return nil }
         let cache = SherpaRecognizerCache.shared
+        let echoWords = request.hotwords
         let hotwords = request.model.kind == .qwenAsr ? HotwordList.format(request.hotwords) : ""
         let language = request.model.kind == .senseVoice ? SenseVoiceLanguage.pin(for: request.localeIdentifier) : ""
         let recognizer = cache.queue.sync {
@@ -398,7 +399,10 @@ public enum SherpaTranscriberFactory {
                                      queue: cache.queue, onSegment: onSegment, onActivity: onActivity,
                                      vadLookbackSamples: SileroSegmenter.lookbackSamples(request.profile),
                                      ingestSliceSamples: SpeechModelSpec.vadWindowSize,
-                                     engineName: request.model.kind.rawValue)
+                                     engineName: request.model.kind.rawValue,
+                                     rejectText: { text, seconds in
+                                         HotwordEcho.isEcho(text, hotwords: echoWords, audioSeconds: seconds)
+                                     })
     }
 }
 

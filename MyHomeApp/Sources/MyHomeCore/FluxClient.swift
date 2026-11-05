@@ -25,8 +25,12 @@ public enum FluxClient {
 
     // MARK: - Public API
 
+    /// The test host must never reach a real light (fixtures carry real-looking IPs).
+    static let isUnderXCTest = NSClassFromString("XCTestCase") != nil
+
     public static func query(ip: String) async -> DeviceStore.BriturnState? {
-        await run(ip: ip) { sock in
+        if isUnderXCTest { return nil }
+        return await run(ip: ip) { sock in
             guard sendAll(sock, [0x81, 0x8A, 0x8B]) else { return nil }
             var buffer = [UInt8](repeating: 0, count: 64)
             let n = recv(sock, &buffer, buffer.count, 0)

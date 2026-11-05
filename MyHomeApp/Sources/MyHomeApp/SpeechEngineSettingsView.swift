@@ -28,7 +28,7 @@ struct SpeechEngineSettingsSection: View {
         } footer: {
             Text("Speech runs on this Mac with offline models (sherpa-onnx), the same ones the Pop app uses. "
                  + "Qwen3-ASR is tried first; SenseVoice takes over if it is missing or stops responding. "
-                 + "Name biasing applies to Qwen3-ASR.")
+                 + "Name biasing applies to Qwen3-ASR and is off by default: a long device list can make the engine echo the list back instead of what you said.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
