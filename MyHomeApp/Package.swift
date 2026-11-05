@@ -37,7 +37,9 @@ let package = Package(
         .testTarget(
             name: "MyHomeCoreTests",
             dependencies: ["MyHomeCore"],
-            path: "Tests/MyHomeCoreTests"
+            path: "Tests/MyHomeCoreTests",
+            // Jev decision envelopes (shapes from Pop's fixtures, fake ids only).
+            resources: [.copy("Fixtures")]
         ),
         .executableTarget(
             name: "BridgePingTest",

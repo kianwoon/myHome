@@ -167,11 +167,52 @@ final class AssistantCoordinatorTests: XCTestCase {
         planner.isAvailable = false
         let reply = await assistant.handle("make it cosy", origin: .text)
         XCTAssertEqual(reply.kind, .error)
-        XCTAssertEqual(reply.text, "Sorry, I didn't understand that (scripted off).")
+        XCTAssertEqual(reply.text, "I read \u{201C}make it cosy\u{201D} but couldn't match it to a command (scripted off).")
         XCTAssertTrue(planner.asked.isEmpty)
         let none = AssistantCoordinator(controller: controller, planner: nil)
         let plain = await none.handle("make it cosy", origin: .text)
-        XCTAssertEqual(plain.text, "Sorry, I didn't understand that.")
+        XCTAssertEqual(plain.text, "I read \u{201C}make it cosy\u{201D} but couldn't match it to a command.")
+    }
+
+    // MARK: Real recogniser transcript shapes (Qwen3-ASR / SenseVoice output)
+
+    /// Exact strings the installed engines returned for `say`-rendered
+    /// commands: sentence case, trailing period, spelled numbers, ITN glue,
+    /// plural artefacts, and a verb clipped by a late microphone start.
+    func testRealTranscriptShapesRunWithoutAPlanner() async {
+        let none = AssistantCoordinator(controller: controller, planner: nil)
+        let cases: [(heard: String, power: Bool?, speed: Int?)] = [
+            ("Turn on the study fan.", true, nil),
+            ("Turn off the study fan.", false, nil),
+            ("Set the study fan speed to two.", nil, 2),
+            ("The study fans speed to three.", nil, 3),
+            ("Set the study fan speed to4.", nil, 4),
+            ("On the study fan.", true, nil),
+            ("Off the study fan.", false, nil),
+        ]
+        for item in cases {
+            let reply = await none.handle(item.heard, origin: .voice)
+            XCTAssertEqual(reply.kind, .executed, "\(item.heard) → \(reply.text)")
+            if let power = item.power { XCTAssertEqual(store.power(for: fan), power, item.heard) }
+            if let speed = item.speed { XCTAssertTrue(reply.text.contains("\(speed)"), "\(item.heard) → \(reply.text)") }
+        }
+    }
+
+    func testUnparseableVoiceShowsWhatWasHeard() async {
+        let none = AssistantCoordinator(controller: controller, planner: nil)
+        let reply = await none.handle("Roroom lights.", origin: .voice)
+        XCTAssertEqual(reply.kind, .error)
+        XCTAssertEqual(reply.text, "I heard \u{201C}Roroom lights.\u{201D} but couldn't match it to a command.")
+    }
+
+    func testEmptyOrPunctuationOnlyIsNothingHeard() async {
+        let none = AssistantCoordinator(controller: controller, planner: nil)
+        let reply = await none.handle(" . ", origin: .voice)
+        XCTAssertEqual(reply.text, AssistantCoordinator.nothingHeardText)
+        let silent = none.noteNothingHeard()
+        XCTAssertEqual(silent.kind, .info)
+        XCTAssertEqual(silent.text, "I didn't hear anything.")
+        XCTAssertEqual(none.replies.last, silent)
     }
 
     func testModelErrorIsReportedNotCrashing() async {

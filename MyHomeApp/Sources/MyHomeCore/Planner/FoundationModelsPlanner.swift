@@ -26,7 +26,17 @@ public enum PlannerFactory {
             return nil
         case .anthropic, .openAICompatible:
             return CloudPlanner(controller: controller, defaults: defaults, secrets: secrets, session: session)
+        case .jev:
+            return nil   // Jev is a classifier, not a planner: see makeJevDecider
         }
+    }
+
+    /// The Jev decider when it is the chosen provider, else nil.
+    @MainActor
+    public static func makeJevDecider(defaults: UserDefaults = .standard, secrets: SecretStore = KeychainSecretStore(),
+                                      transport: JevTransport = URLSessionJevTransport()) -> JevCommandDecider? {
+        guard AppSettings.plannerProvider(from: defaults) == .jev else { return nil }
+        return JevCommandDecider(defaults: defaults, secrets: secrets, transport: transport)
     }
 
     /// Why the Apple on-device planner is off on this Mac; nil when it can run.

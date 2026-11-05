@@ -45,6 +45,11 @@ public struct CommandGrammar: Sendable {
     /// Only trusted for the value of a speed/gear setting, where a word that is
     /// not a number cannot otherwise be a value.
     public var speedNumberHomophones: [String: Int]
+    /// Multipliers for spelled-out numbers ("one hundred" → 100).
+    public var numberScaleWords: [String: Int]
+    /// Spelled numbers at or below this stay words unless part of a longer
+    /// run, so "the desk one" still names a device (see valueFromPhrase).
+    public var spelledNumberWordMax: Int
 
     // allow-hardcode: this is the spoken-command grammar (verbs, particles,
     // colour names) — reviewed vocabulary, not a scoring oracle; it is
@@ -77,8 +82,13 @@ public struct CommandGrammar: Sendable {
                      "white": RGB(red: 255, green: 255, blue: 255), "magenta": RGB(red: 255, green: 0, blue: 255)],
         bareNumberGearMax: DeviceState.numericFanSpeedMax,
         numberWords: ["zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8,
-                      "nine": 9, "ten": 10],
-        speedNumberHomophones: ["do": 2, "too": 2, "tu": 2, "for": 4]
+                      "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
+                      "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19,
+                      "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60, "seventy": 70,
+                      "eighty": 80, "ninety": 90],
+        speedNumberHomophones: ["do": 2, "too": 2, "tu": 2, "for": 4],
+        numberScaleWords: ["hundred": 100],
+        spelledNumberWordMax: 10
     )
 
     public init(fillerPrefix: [String], powerVerbs: Set<String>, onWords: Set<String>, offWords: Set<String>,
@@ -87,7 +97,8 @@ public struct CommandGrammar: Sendable {
                 percentWords: Set<String>, toWords: Set<String>, roomPrepositions: Set<String>, statusLeads: Set<String>,
                 confirmWords: Set<String>, cancelWords: Set<String>, temperaturePhrases: [String: Int],
                 colorNames: [String: RGB], bareNumberGearMax: Int,
-                numberWords: [String: Int] = [:], speedNumberHomophones: [String: Int] = [:]) {
+                numberWords: [String: Int] = [:], speedNumberHomophones: [String: Int] = [:],
+                numberScaleWords: [String: Int] = [:], spelledNumberWordMax: Int = 10) {
         self.fillerPrefix = fillerPrefix
         self.powerVerbs = powerVerbs
         self.onWords = onWords
@@ -111,6 +122,8 @@ public struct CommandGrammar: Sendable {
         self.bareNumberGearMax = bareNumberGearMax
         self.numberWords = numberWords
         self.speedNumberHomophones = speedNumberHomophones
+        self.numberScaleWords = numberScaleWords
+        self.spelledNumberWordMax = spelledNumberWordMax
     }
 }
 
@@ -126,7 +139,7 @@ public struct VoiceCommandParser {
     public func parse(_ utterance: String) -> ParsedIntent {
         // "50%" → "50 percent" so the symbol survives tokenisation.
         let spaced = utterance.replacingOccurrences(of: "%", with: " percent ")
-        var tokens = TextNormalizer.rawTokens(spaced)
+        var tokens = mergeSpelledNumbers(splitGluedValues(TextNormalizer.rawTokens(spaced)))
         // Leading filler is dropped only when something follows it: "ok" alone
         // is a confirmation, "ok turn on the fan" is a command.
         while tokens.count > 1, let first = tokens.first, grammar.fillerPrefix.contains(first) { tokens.removeFirst() }
@@ -147,6 +160,69 @@ public struct VoiceCommandParser {
         return .unknown(utterance)
     }
 
+    /// The numeric value a request carries ("to 40", "speed two", "50%"), read
+    /// with the same normalisation as `parse`: the number after a value
+    /// particle ("to"/"at") when there is one, else the last number. Used when
+    /// a classifier chose the action; the value itself is never guessed.
+    public func value(in utterance: String) -> Int? {
+        let spaced = utterance.replacingOccurrences(of: "%", with: " percent ")
+        let tokens = mergeSpelledNumbers(splitGluedValues(TextNormalizer.rawTokens(spaced)))
+        for (index, token) in tokens.enumerated() where grammar.toWords.contains(token) && index + 1 < tokens.count {
+            if let number = Int(tokens[index + 1]) { return number }
+        }
+        return tokens.compactMap { Int($0) }.last
+    }
+
+    // MARK: - Recogniser artefacts
+
+    /// SenseVoice's inverse text normalisation glues a digit onto "to"
+    /// ("speed to2"); split only a value particle followed by digits, never a
+    /// device name like "8e6d".
+    private func splitGluedValues(_ tokens: [String]) -> [String] {
+        tokens.flatMap { token -> [String] in
+            for word in grammar.toWords where token.count > word.count && token.hasPrefix(word) {
+                let rest = String(token.dropFirst(word.count))
+                if Int(rest) != nil { return [word, rest] }
+            }
+            return [token]
+        }
+    }
+
+    /// Qwen3-ASR spells numbers out ("fifty percent", "twenty five"). A run of
+    /// number words becomes digits when it is compound or above
+    /// `spelledNumberWordMax`; a lone small word ("one") is left alone.
+    private func mergeSpelledNumbers(_ tokens: [String]) -> [String] {
+        var out: [String] = []
+        var index = 0
+        while index < tokens.count {
+            var total = 0, current = 0, end = index
+            while end < tokens.count {
+                if let value = grammar.numberWords[tokens[end]] {
+                    // "twenty five" adds; "five five" does not compound.
+                    if current > 0, !(current % 10 == 0 && current >= 20 && value < 10) { break }
+                    current += value
+                } else if let scale = grammar.numberScaleWords[tokens[end]], end > index {
+                    current = max(current, 1) * scale
+                    total += current
+                    current = 0
+                } else {
+                    break
+                }
+                end += 1
+            }
+            let run = end - index
+            let value = total + current
+            if run > 1 || (run == 1 && value > grammar.spelledNumberWordMax) {
+                out.append(String(value))
+                index = end
+            } else {
+                out.append(tokens[index])
+                index += 1
+            }
+        }
+        return out
+    }
+
     // MARK: - Power
 
     private func parsePower(_ tokens: [String]) -> ParsedIntent? {
@@ -161,7 +237,10 @@ public struct VoiceCommandParser {
         // ("the light on the desk"), not a command.
         let atEnd = particleIndex == tokens.count - 1
         let afterVerb = hasVerb && particleIndex == 1
-        guard afterVerb || atEnd else { return nil }
+        // A leading particle ("off the study fan") is a command whose verb the
+        // recogniser clipped (the mic opened a moment after the user spoke).
+        let leading = particleIndex == 0 && tokens.count > 1
+        guard afterVerb || atEnd || leading else { return nil }
         let on = grammar.onWords.contains(particle)
         var rest = tokens
         rest.remove(at: particleIndex)

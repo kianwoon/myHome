@@ -43,14 +43,18 @@ struct AssistantSettingsView: View {
 
             HotkeySettingsSection(hotkey: services.hotkey)
 
+            OutputMuteSettingsSection(gate: services.outputGate)
+
             Section {
                 Picker("Planner for free-form requests", selection: $provider) {
                     Text("None (direct commands only)").tag(AppSettings.PlannerProvider.none)
                     Text("Apple on-device").tag(AppSettings.PlannerProvider.apple)
                     Text("Anthropic API").tag(AppSettings.PlannerProvider.anthropic)
                     Text("OpenAI-compatible").tag(AppSettings.PlannerProvider.openAICompatible)
+                    Text("Jev decider (OpenRouter)").tag(AppSettings.PlannerProvider.jev)
                 }
                 if provider.isCloud { cloudFields }
+                if provider == .jev { JevSettingsFields(services: services) }
             } header: {
                 Text("Natural language")
             } footer: {
@@ -162,6 +166,8 @@ struct AssistantSettingsView: View {
             return "Requests the grammar cannot parse are planned by the on-device model; the plan is confirmed before anything runs."
         case .anthropic, .openAICompatible:
             return "Privacy: when the grammar cannot parse a request, your command and your device names, room names, kinds and capabilities are sent to the provider above. Device ids, states and credentials are not. The key is kept in the macOS Keychain. Plans are always confirmed before anything runs."
+        case .jev:
+            return JevSettingsFields.privacyNote
         }
     }
 }

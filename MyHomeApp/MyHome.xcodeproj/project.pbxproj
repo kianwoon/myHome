@@ -17,8 +17,10 @@
 		730898B9CD47FB4BEC807FB0 /* HotkeyHUD.swift in Sources */ = {isa = PBXBuildFile; fileRef = D48416B1996D9F389EFCD501 /* HotkeyHUD.swift */; };
 		75E092B4D2C38EE52FACDB60 /* MyHomeCore in Frameworks */ = {isa = PBXBuildFile; productRef = 19644969924D90A9445210AB /* MyHomeCore */; };
 		7A5D77E6A587FD8B1839123D /* HotkeySettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2584D53CB844C49682F5ECA9 /* HotkeySettingsView.swift */; };
+		9973CA02EFF81E9AD2082DCF /* JevSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61E3AF12D4C07AE1EE34FA31 /* JevSettingsView.swift */; };
 		9F1510C90D309A19D82A7540 /* SpecControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81FE9F3B979384342150D39A /* SpecControls.swift */; };
 		B83897D1AB817ECC93E271AB /* MenuContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA216D0C142E0CFF19B47BC6 /* MenuContentView.swift */; };
+		BF74D41E699A0758B5627B88 /* OutputMuteSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0AEC1FE03A2D878EBD3DBF96 /* OutputMuteSettingsView.swift */; };
 		C3E075CE935FAC31A677C906 /* ScheduleSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6F42298384742B657F3B1FC /* ScheduleSection.swift */; };
 		E1E54BFD34E79D5006F9FF9F /* MainWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87AD030C867FB1670213C59C /* MainWindow.swift */; };
 		E35660965C5E27E41E509392 /* MyHomeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 025EB1036E4D31BAC39CC68D /* MyHomeApp.swift */; };
@@ -30,12 +32,14 @@
 /* Begin PBXFileReference section */
 		025EB1036E4D31BAC39CC68D /* MyHomeApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MyHomeApp.swift; sourceTree = "<group>"; };
 		0339E1273FFE7B7433B83A9F /* MyHomeApp */ = {isa = PBXFileReference; lastKnownFileType = folder; name = MyHomeApp; path = .; sourceTree = SOURCE_ROOT; };
+		0AEC1FE03A2D878EBD3DBF96 /* OutputMuteSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OutputMuteSettingsView.swift; sourceTree = "<group>"; };
 		11E100ACADA9A41A06DEDB9D /* BriturnColorWheel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BriturnColorWheel.swift; sourceTree = "<group>"; };
 		1D898F519E81CDFABF41FADA /* CommandBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandBarView.swift; sourceTree = "<group>"; };
 		2584D53CB844C49682F5ECA9 /* HotkeySettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeySettingsView.swift; sourceTree = "<group>"; };
 		2B98F9FE07DF7101447DB4CF /* DeviceIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceIntents.swift; sourceTree = "<group>"; };
 		30AA2CA98B2FA5BEA1CEAD6E /* CarbonHotkeyRegistrar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarbonHotkeyRegistrar.swift; sourceTree = "<group>"; };
 		5A40831232019FE17DFCE541 /* AppServices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppServices.swift; sourceTree = "<group>"; };
+		61E3AF12D4C07AE1EE34FA31 /* JevSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JevSettingsView.swift; sourceTree = "<group>"; };
 		6D7042748DAC7386EE28CB1C /* DeviceEntity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceEntity.swift; sourceTree = "<group>"; };
 		81FE9F3B979384342150D39A /* SpecControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpecControls.swift; sourceTree = "<group>"; };
 		87AD030C867FB1670213C59C /* MainWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainWindow.swift; sourceTree = "<group>"; };
@@ -98,9 +102,11 @@
 				1D898F519E81CDFABF41FADA /* CommandBarView.swift */,
 				D48416B1996D9F389EFCD501 /* HotkeyHUD.swift */,
 				2584D53CB844C49682F5ECA9 /* HotkeySettingsView.swift */,
+				61E3AF12D4C07AE1EE34FA31 /* JevSettingsView.swift */,
 				87AD030C867FB1670213C59C /* MainWindow.swift */,
 				EA216D0C142E0CFF19B47BC6 /* MenuContentView.swift */,
 				025EB1036E4D31BAC39CC68D /* MyHomeApp.swift */,
+				0AEC1FE03A2D878EBD3DBF96 /* OutputMuteSettingsView.swift */,
 				E6F42298384742B657F3B1FC /* ScheduleSection.swift */,
 				AEC2FF8663C0FA7C9EFBC95F /* SettingsView.swift */,
 				81FE9F3B979384342150D39A /* SpecControls.swift */,
@@ -200,9 +206,11 @@
 				646792CA2BA4E73F87349A4C /* DeviceIntents.swift in Sources */,
 				730898B9CD47FB4BEC807FB0 /* HotkeyHUD.swift in Sources */,
 				7A5D77E6A587FD8B1839123D /* HotkeySettingsView.swift in Sources */,
+				9973CA02EFF81E9AD2082DCF /* JevSettingsView.swift in Sources */,
 				E1E54BFD34E79D5006F9FF9F /* MainWindow.swift in Sources */,
 				B83897D1AB817ECC93E271AB /* MenuContentView.swift in Sources */,
 				E35660965C5E27E41E509392 /* MyHomeApp.swift in Sources */,
+				BF74D41E699A0758B5627B88 /* OutputMuteSettingsView.swift in Sources */,
 				C3E075CE935FAC31A677C906 /* ScheduleSection.swift in Sources */,
 				E4D6E9F51A7F3A05F7D211E3 /* SettingsView.swift in Sources */,
 				9F1510C90D309A19D82A7540 /* SpecControls.swift in Sources */,

@@ -87,6 +87,35 @@ public extension AppSettings {
         defaults.object(forKey: spokenRepliesKey) as? Bool ?? defaultSpokenReplies
     }
 
+    // MARK: Output muting while listening
+
+    /// What happens to the speakers while the microphone is open.
+    enum ListenOutputMode: String, CaseIterable, Identifiable, Sendable {
+        case off, mute, duck
+        public var id: String { rawValue }
+    }
+
+    static let listenOutputModeKey = "listenOutputMode"
+    static let defaultListenOutputMode = ListenOutputMode.mute
+    /// Duck level = fraction of the CURRENT output volume kept while listening.
+    static let listenDuckLevelKey = "listenDuckLevel"
+    static let defaultListenDuckLevel = 0.15
+    static let listenDuckLevelRange = 0.0...0.9
+    static let listenDuckLevelStep = 0.05
+    /// Crash-recovery record (JSON) written when the output is changed and
+    /// removed when it is restored.
+    static let listenOutputPendingKey = "listenOutputPendingRestore"
+    /// Volumes within this distance count as "still the value we set".
+    static let outputVolumeTolerance: Float = 0.02
+
+    static func listenOutputMode(from defaults: UserDefaults = .standard) -> ListenOutputMode {
+        defaults.string(forKey: listenOutputModeKey).flatMap(ListenOutputMode.init(rawValue:)) ?? defaultListenOutputMode
+    }
+
+    static func listenDuckLevel(from defaults: UserDefaults = .standard) -> Double {
+        clamped(defaults.object(forKey: listenDuckLevelKey) as? Double, defaultListenDuckLevel, listenDuckLevelRange)
+    }
+
     // MARK: Planner (Apple Foundation Models)
 
     /// Override for the model instructions; empty = the bundled default.
@@ -148,6 +177,8 @@ public extension AppSettings {
     /// Which model plans requests the rule parser cannot understand.
     enum PlannerProvider: String, CaseIterable, Identifiable, Sendable {
         case none, apple, anthropic, openAICompatible
+        /// Jev decider: a choice classifier (device, then action), not a planner.
+        case jev
         public var id: String { rawValue }
         /// Sends device/room names and the command to a remote host.
         public var isCloud: Bool { self == .anthropic || self == .openAICompatible }

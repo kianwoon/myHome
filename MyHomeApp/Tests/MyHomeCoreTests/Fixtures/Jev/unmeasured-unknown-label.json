@@ -1,0 +1,10 @@
+{
+  "model": "jev-1.13.0",
+  "answers": {
+    "device": {
+      "type": "choice",
+      "choice": "d99",
+      "probabilities": { "d99": 0.95, "d1": 0.05 }
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "answers": {
+    "device": {
+      "type": "choice",
+      "choice": "d1",
+      "probabilities": { "d1": 0.99 }
+    }
+  }
+}

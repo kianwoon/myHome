@@ -4,7 +4,8 @@
 // AVAudioApplication permission with a handshake watchdog, a liveness probe
 // that restarts on the next engine, and bounded model-load / flush timeouts.
 // Apple's SFSpeechRecognizer is not used. One session yields at most one
-// utterance, delivered through `onUtterance`. Transcripts are never logged.
+// utterance, delivered through `onUtterance`, or `onNothingHeard` when it
+// ended with no words. Transcripts are logged only at .debug, marked private.
 import AVFoundation
 import Foundation
 import os
@@ -43,6 +44,9 @@ public final class SpeechCommandRecognizer: ObservableObject {
 
     /// Called once per session with the trimmed, non-empty final transcript.
     public var onUtterance: ((String) -> Void)?
+    /// Called once when a session that should have delivered ended with no
+    /// recognised words (released too early, silence, no-speech timeout).
+    public var onNothingHeard: (() -> Void)?
     /// Phrases to favour (device and room names), passed to Qwen3-ASR as
     /// hotwords; asked at the start of each session so renames are picked up.
     public var contextualStrings: (@MainActor () -> [String])?
@@ -64,6 +68,9 @@ public final class SpeechCommandRecognizer: ObservableObject {
     private var delivered = false
     private var generation = 0
     private var starting = false
+    /// When the user asked to listen (hold-to-talk key-down / mic click);
+    /// the gap to a live tap is speech that was never recorded.
+    private var requestedAt: TimeInterval?
 
     public init(defaults: UserDefaults = .standard, bundle: Bundle = .main, chain: SpeechEngineChain = SpeechEngineChain()) {
         self.defaults = defaults
@@ -170,6 +177,7 @@ public final class SpeechCommandRecognizer: ObservableObject {
             return
         }
         starting = true
+        requestedAt = ProcessInfo.processInfo.systemUptime
         generation += 1
         let current = generation
         status = .requestingPermission
@@ -338,7 +346,9 @@ public final class SpeechCommandRecognizer: ObservableObject {
         isListening = true
         status = .listening
         armLiveness(kind: kind, generation: current)
-        AppLog.assistant.debug("speech session started engine=\(kind.rawValue, privacy: .public)")
+        let startupMs = requestedAt.map { Int((ProcessInfo.processInfo.systemUptime - $0) * 1000) } ?? -1
+        requestedAt = nil
+        AppLog.assistant.info("speech session started engine=\(kind.rawValue, privacy: .public) startupMs=\(startupMs)")
         return true
     }
 
@@ -375,7 +385,7 @@ public final class SpeechCommandRecognizer: ObservableObject {
                 case .endpoint, .maxDuration: self.endUtterance(); return
                 case .noSpeech:
                     self.lastError = "No speech was heard."
-                    self.finish(deliver: false)
+                    self.finish(deliver: false, reportEmpty: true)
                     return
                 }
             }
@@ -446,7 +456,7 @@ public final class SpeechCommandRecognizer: ObservableObject {
         }
     }
 
-    private func finish(deliver: Bool) {
+    private func finish(deliver: Bool, reportEmpty: Bool = false) {
         tickTask?.cancel()
         tickTask = nil
         livenessTask?.cancel()
@@ -461,12 +471,19 @@ public final class SpeechCommandRecognizer: ObservableObject {
         generation += 1   // invalidate late callbacks from this session
         let final = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         let shouldDeliver = deliver && !delivered && !final.isEmpty
-        if shouldDeliver { delivered = true }
+        // A session that failed (mic/conversion error) reports that error, not silence.
+        let nothingHeard = (deliver || reportEmpty) && !delivered && final.isEmpty && (reportEmpty || lastError == nil)
+        if shouldDeliver || nothingHeard { delivered = true }
+        AppLog.assistant.info("speech session ended engine=\(self.activeEngine?.rawValue ?? "none", privacy: .public) segments=\(self.segments.count) chars=\(final.count) delivered=\(shouldDeliver)")
+        if shouldDeliver {
+            AppLog.assistant.debug("speech transcript: \(final, privacy: .private)")
+        }
         isListening = false
         switch status {
         case .listening, .transcribing, .loadingModel, .requestingPermission: status = .idle
         default: break
         }
         if shouldDeliver { onUtterance?(final) }
+        if nothingHeard { onNothingHeard?() }
     }
 }

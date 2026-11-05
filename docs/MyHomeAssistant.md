@@ -94,6 +94,53 @@ always shown and confirmed before anything runs. Planner and command awaits are 
 `plannerTimeoutSeconds` / `assistantCommandTimeoutSeconds`; on timeout the command bar shows a
 message, the spinner resets, and a Cancel button abandons a request in flight.
 
+### Jev decider — choice classifier (`MyHomeCore/Planner/JevClient.swift`, `JevCommandDecider.swift`, `Control/JevSettings.swift`, `MyHomeApp/JevSettingsView.swift`)
+
+Provider **Jev decider (OpenRouter)** in Settings → Assistant. Jev is not a planner: it only
+answers *choice* questions with a label and per-label probabilities (the opencode jev wire
+contract, `POST https://openrouter.ai/api/alpha/decisions`, body `{model, state, questions}`).
+The rule parser always runs first — a request it fully understands (`turn off the study fan`)
+never leaves the Mac. Jev is asked only when the parser cannot settle the request:
+
+* **Stage A — which device?** Options are the short catalogue handles (`d1`, `d2` …) from the
+  compact `PlannerCatalogue`, each described by name, room, kind and capabilities (budgeted,
+  ≤ 255 options). For an ambiguous parse (`turn on the lamp`) only the parser's candidates are
+  offered; for a known command only devices that support it.
+* **Stage B — which action?** Only the actions the chosen device supports
+  (`power-on`, `power-off`, `set-level`, `set-speed`, `set-color-temperature`, `open`,
+  `close`, `stop`). Skipped when the parser already knows the command. Numeric values come
+  from the transcript via the rule parser (`VoiceCommandParser.value(in:)`); with no value the
+  user is asked for one.
+
+The stages are **two sequential calls**: decision questions are independent within one
+request, so Stage B's per-device options cannot depend on Stage A's answer in a single batch
+(the same two-stage shape as opencode's `jev_hat`). A lone candidate is taken without a call.
+
+**Gate and fail-open.** A choice is accepted only when `probabilities[choice]` ≥ the threshold
+(default 0.7, slider 0.3…1.0; the 0.3 confidence floor also binds inside the fold) —
+`confidence` is never used. An envelope without a non-empty `model` echo, a row whose
+probability map lacks the chosen label, a label that was not offered, HTTP errors, timeouts
+or no key all fail open: the reply falls back to the parser's own answer and says
+"Jev wasn't sure — did you mean …?" with the options Jev leaned to (or the parser's
+candidates), so the user is asked, never guessed for. Retries: network error, timeout, 429
+and 5xx only — 3 attempts, 200 ms then 600 ms back-off, each attempt bounded by the timeout
+(default 3 s). Worst case is about 10 s per stage, so a two-stage request is also bounded by
+`plannerTimeoutSeconds`.
+
+**Safety.** Jev only advises. An accepted match becomes a proposal that waits for "yes"
+(source `jev`, origin `.model`), exactly like a model-authored plan, even for a single
+device; `DeviceController` policy still decides what runs. A failed call never authorizes
+anything. Replies start with what was heard (`I heard "…"`).
+
+**Key and privacy.** The key is stored in the Keychain (`SecretStore`, account
+`jev-openrouter`), with `OPENROUTER_API_KEY` from the environment as a fallback; it is sent
+only as a `Bearer` header to the configured host, redirects are refused, plain `http` is
+allowed for localhost only, and no error text quotes a response body or the key. The
+transcript plus device names, room names, kinds and capabilities are sent to the endpoint;
+device ids, states and credentials are not. A pasted `openrouter/<id>` model spec has the
+transport prefix stripped. **Test connection** sends a minimal two-option choice question
+and reports the model echo.
+
 ### Speech (`MyHomeCore/Voice/SpeechCommandRecognizer.swift`, `SpeechResponder.swift`)
 
 Speech-to-text runs **offline on this Mac** with the same engine stack as the Pop app;
@@ -154,6 +201,16 @@ Settings → Assistant → **Hold-to-talk shortcut**: click the field, press a c
 * `HotkeyController` is the testable state machine (registration is injected): key-repeat and release-without-press are ignored, re-binding or sleep while held counts as a release. Releasing before the speech model has loaded (or while the microphone prompt is up) cancels the pending start instead of leaving the recogniser listening; the first press with no microphone permission triggers the normal permission prompt.
 * The utterance wiring lives in `AppServices`, so it works with every window closed. A small non-activating floating panel (never takes focus from the frontmost app) shows Listening…, the live transcript, the result and **Yes / No** for a pending confirmation (model plans always need one), then disappears after `hotkeyHUDDismissSeconds` (default 4; `hotkeyHUDConfirmDismissSeconds`, default 15, while a confirmation is pending — a confirmation left unanswered stays pending in the command bar). The spoken reply is unchanged.
 * Safety is unchanged: the shortcut only starts listening; policy checks, the multi-device threshold and always-confirm for model plans still apply.
+
+### Muting the speakers while listening (`MyHomeCore/Voice/AudioOutputGate.swift`, `CoreAudioOutputController.swift`, `MyHomeApp/OutputMuteSettingsView.swift`)
+
+While the microphone is open (hold-to-talk **and** the command-bar mic share one recogniser, so both paths are covered) the default output is muted, so music or a video never leaks into the recogniser. Settings → Assistant → **While listening**: **Off**, **Mute** (default) or **Duck** (slider: fraction of the *current* volume kept, range in `ControlSettings`).
+
+* Captures the exact state first and restores exactly that afterwards. An output you had already muted (or set to zero) is never touched, so it can never be force-unmuted. A volume or mute change you make yourself during the hold wins over the restore.
+* Restored on release, cancel, error, release-before-ready, quit (`applicationWillTerminate`) and sleep, and **before** the spoken reply (`SpeechResponder`) so the reply is audible. Overlapping sessions share one mute (reference counted).
+* If the default output device changes mid-hold, the original device is restored and the new one is not touched.
+* A `pendingRestore` record is written to UserDefaults before the output is changed and removed on restore; after a crash or force-quit the next launch restores the device only if it is still the same device and still in the state MyHome set.
+* Prefers `kAudioDevicePropertyMute`; outputs without it (some Bluetooth, AirPlay, HDMI) fall back to the volume scalar (main, else the stereo channels). If an output has neither, the HUD and Settings show "Cannot mute this output" instead of failing silently. **Check this output** in Settings reports what the current device supports without changing the audio.
 
 ### Siri / Shortcuts (`MyHomeApp/Intents/`)
 
@@ -221,3 +278,7 @@ Choices and why:
 * Numbers may be digits or spelled out up to ten ("two"); a misheard "to do" / "to too" is read as 2 only as the value of a speed setting.
 * Siri / Shortcuts discovery was verified by building the bundle and inspecting
   `Metadata.appintents` (three intents, entity query, enum), not by invoking Siri on a device.
+
+## Building and installing the app
+
+`MyHomeApp/scripts/build-standalone.sh` builds a self-contained, ad-hoc signed (hardened runtime plus `Xcode/MyHome.entitlements`) `MyHome.app` with the Swift release binary (sherpa-onnx is statically linked, so no extra dylibs), the embedded Python bridge runtime, `bridge.py` and tinytuya. It writes to `MyHomeApp/build/standalone/` (gitignored; override with `MYHOME_OUT_DIR`, and set `MYHOME_SIGN_IDENTITY` for a real certificate) and never installs anything: copy the bundle to `/Applications` yourself after quitting the running app. For the Xcode path (needed for Siri / Shortcuts App Intents metadata), pass `-clonedSourcePackagesDirPath` pointing outside `/tmp` (e.g. `~/Library/Caches/MyHomeSourcePackages`), because `/tmp` is wiped on reboot and SwiftPM checkouts there silently disappear: `xcodebuild -project MyHome.xcodeproj -scheme MyHome -clonedSourcePackagesDirPath ~/Library/Caches/MyHomeSourcePackages build`.

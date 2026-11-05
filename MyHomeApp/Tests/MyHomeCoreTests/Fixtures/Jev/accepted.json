@@ -1,0 +1,12 @@
+{
+  "model": "jev-1.13.0",
+  "answers": {
+    "device": {
+      "type": "choice",
+      "choice": "d1",
+      "confidence": 0.91,
+      "probabilities": { "d1": 0.91, "d2": 0.06, "d3": 0.03 }
+    }
+  },
+  "usage": { "input_tokens": 0, "output_tokens": 0, "cost": 0.0001 }
+}

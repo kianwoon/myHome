@@ -15,6 +15,8 @@ final class HotkeyHUD: ObservableObject {
     }
 
     @Published private(set) var phase: Phase = .hidden
+    /// Set when the speakers could not be muted for this session.
+    @Published var outputNotice: String?
 
     /// Set by AppServices (they run the same confirm path as the command bar).
     var onConfirm: (() -> Void)?
@@ -90,7 +92,7 @@ final class HotkeyHUD: ObservableObject {
         guard awaitingUtterance, isActive else { return }
         switch status {
         case .unavailable(let reason): showMessage(reason, isError: true)
-        case .idle: showMessage("Didn't catch that.")
+        case .idle: showMessage(AssistantCoordinator.nothingHeardText)
         default: break
         }
     }
@@ -180,6 +182,9 @@ struct HotkeyHUDView: View {
                 }
                 if !speech.transcript.isEmpty {
                     Text(speech.transcript).font(.callout).foregroundStyle(.secondary).lineLimit(3)
+                }
+                if let notice = hud.outputNotice {
+                    Label(notice, systemImage: "speaker.slash").font(.caption).foregroundStyle(.orange)
                 }
             case .working:
                 HStack(spacing: 8) {

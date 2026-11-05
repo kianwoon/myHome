@@ -57,9 +57,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
         // Global hold-to-talk shortcut (Settings → Assistant); a no-op until set.
         AppServices.shared.startHotkey()
+        // Undo a mute left behind by a crash / force-quit while listening.
+        AppServices.shared.recoverAudioOutput()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        AppServices.shared.restoreAudioOutput()
         BridgeClient.shared.stop()
     }
 }

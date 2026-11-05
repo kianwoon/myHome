@@ -222,6 +222,9 @@ public enum SpeechModelSpec {
     static let inferenceThreads = 2
     static let featureDim = 80
     static let vadWindowSize = 512
+    /// sherpa-onnx opens a segment 2 windows (+ min speech) before detection;
+    /// one more window covers the chunk in which detection happened.
+    static let vadLookbackWindows = 3
     static let vadBufferSeconds: Float = 30
     static let qwenMaxTotalLen = 512
     static let qwenMaxNewTokens = 128

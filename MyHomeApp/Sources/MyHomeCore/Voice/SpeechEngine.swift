@@ -191,6 +191,47 @@ public protocol SpeechSegmenting: AnyObject {
     func popSegment() -> [Float]?
     /// Close any open segment (end of audio).
     func flush()
+    /// Next closed segment with the absolute index (in samples accepted so
+    /// far) of its first sample, when the segmenter knows it.
+    func popTimedSegment() -> TimedSpeechSegment?
+}
+
+/// A closed VAD segment; `start` is nil when the segmenter cannot place it.
+public struct TimedSpeechSegment {
+    public let start: Int?
+    public let samples: [Float]
+
+    public init(start: Int?, samples: [Float]) {
+        self.start = start
+        self.samples = samples
+    }
+}
+
+public extension SpeechSegmenting {
+    func popTimedSegment() -> TimedSpeechSegment? {
+        popSegment().map { TimedSpeechSegment(start: nil, samples: $0) }
+    }
+}
+
+/// Pre-roll aligned to the segment's real start. Silero's segment already
+/// reaches back (2 windows + min speech) before the detection point, so
+/// prepending the ring snapshot taken AT detection repeats ~0.3 s of the first
+/// word; the decoder then drops that word ("Set the study fan…" → "The study
+/// fan…"). Only audio strictly before `segmentStart` is prepended.
+public enum AlignedPreRoll {
+    /// - Parameters:
+    ///   - snapshot: ring contents ending at absolute index `snapshotEnd`.
+    ///   - observedSilenceSamples: non-speech samples seen up to `snapshotEnd`.
+    public static func prefix(_ snapshot: [Float], snapshotEnd: Int, segmentStart: Int,
+                              observedSilenceSamples: Int, capacity: Int) -> [Float] {
+        guard segmentStart <= snapshotEnd else { return [] }
+        let silenceBeforeStart = observedSilenceSamples - (snapshotEnd - segmentStart)
+        let snapshotStart = snapshotEnd - snapshot.count
+        let wanted = max(0, min(capacity, silenceBeforeStart, segmentStart - snapshotStart))
+        guard wanted > 0 else { return [] }
+        let upper = segmentStart - snapshotStart
+        return Array(snapshot[(upper - wanted)..<upper])
+    }
 }
 
 /// An offline (whole-segment) recognizer.
@@ -212,6 +253,13 @@ public final class SegmentingTranscriber: @unchecked Sendable {
     private let queue: DispatchQueue
     private let onSegment: SegmentHandler
     private let onActivity: ActivityHandler
+    private let engineName: String
+    /// Audio is handed to the segmenter in slices of this size (0 = whole
+    /// chunk) so speech onset is located to the slice even when the tap
+    /// coalesced seconds of audio while a decode was running.
+    private let ingestSliceSamples: Int
+    /// Pre-roll actually prepended (the ring also holds the VAD look-back).
+    private let preRollCapacity: Int
 
     private let lock = NSLock()
     private var pending: [Float] = []
@@ -222,19 +270,28 @@ public final class SegmentingTranscriber: @unchecked Sendable {
     private var lastDecodedText = ""
     private var preRoll: PreRollBuffer
     private var onsetPreRoll: [Float]?
+    private var onsetSnapshot: (samples: [Float], end: Int, silence: Int)?
+    private var fedSamples = 0
     private var silenceSinceCloseSamples: Int
     private var reportedActive = false
 
     public init(segmenter: SpeechSegmenting, decoder: OfflineSpeechDecoder, sampleRate: Int,
                 preRollSeconds: Float, queue: DispatchQueue,
-                onSegment: @escaping SegmentHandler, onActivity: @escaping ActivityHandler = { _ in }) {
+                onSegment: @escaping SegmentHandler, onActivity: @escaping ActivityHandler = { _ in },
+                vadLookbackSamples: Int = 0, ingestSliceSamples: Int = 0, engineName: String = "") {
         self.segmenter = segmenter
         self.decoder = decoder
         self.sampleRate = sampleRate
         self.queue = queue
         self.onSegment = onSegment
         self.onActivity = onActivity
-        self.preRoll = PreRollBuffer(capacity: Int(Double(preRollSeconds) * Double(sampleRate)))
+        self.engineName = engineName
+        self.ingestSliceSamples = ingestSliceSamples
+        let capacity = Int(Double(preRollSeconds) * Double(sampleRate))
+        self.preRollCapacity = max(0, capacity)
+        // The ring must reach back past the VAD's own look-back to hold a full
+        // pre-roll BEFORE the segment start.
+        self.preRoll = PreRollBuffer(capacity: max(0, capacity) + max(0, vadLookbackSamples))
         self.silenceSinceCloseSamples = preRoll.capacity
     }
 
@@ -297,6 +354,16 @@ public final class SegmentingTranscriber: @unchecked Sendable {
     }
 
     private func ingest(_ chunk: [Float]) {
+        guard ingestSliceSamples > 0, chunk.count > ingestSliceSamples else { return ingestSlice(chunk) }
+        var start = 0
+        while start < chunk.count {
+            let end = min(start + ingestSliceSamples, chunk.count)
+            ingestSlice(Array(chunk[start..<end]))
+            start = end
+        }
+    }
+
+    private func ingestSlice(_ chunk: [Float]) {
         let wasSpeech = segmenter.isSpeechDetected
         let snapshot = preRoll.samples
         segmenter.accept(chunk)
@@ -304,24 +371,34 @@ public final class SegmentingTranscriber: @unchecked Sendable {
         let isSpeech = segmenter.isSpeechDetected
         if !wasSpeech, isSpeech, onsetPreRoll == nil {
             onsetPreRoll = PreRollClamp.clamp(snapshot, observedSilenceSamples: silenceSinceCloseSamples,
-                                              capacity: preRoll.capacity)
+                                              capacity: preRollCapacity)
+            onsetSnapshot = (snapshot, fedSamples, silenceSinceCloseSamples)
         } else if !wasSpeech, !isSpeech {
             silenceSinceCloseSamples = min(preRoll.capacity, silenceSinceCloseSamples + chunk.count)
         }
+        fedSamples += chunk.count
         lock.lock(); processedWindows += 1; lock.unlock()
         reportActivity(isSpeech)
     }
 
     private func drainSegments() {
-        while let segment = segmenter.popSegment() {
+        while let segment = segmenter.popTimedSegment() {
             silenceSinceCloseSamples = 0
-            var samples = segment
-            if let onset = onsetPreRoll {
+            var samples = segment.samples
+            if let start = segment.start, let onset = onsetSnapshot {
+                samples = AlignedPreRoll.prefix(onset.samples, snapshotEnd: onset.end, segmentStart: start,
+                                                observedSilenceSamples: onset.silence, capacity: preRollCapacity) + samples
+            } else if let onset = onsetPreRoll {
                 samples = onset + samples
-                onsetPreRoll = nil
             }
+            onsetPreRoll = nil
+            onsetSnapshot = nil
+            let started = DispatchTime.now().uptimeNanoseconds
             let text = decoder.decode(samples, sampleRate: sampleRate)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
+            let ms = (DispatchTime.now().uptimeNanoseconds - started) / 1_000_000
+            let audioMs = samples.count * 1000 / max(1, sampleRate)
+            AppLog.assistant.info("speech segment decoded engine=\(self.engineName, privacy: .public) decodeMs=\(ms) audioMs=\(audioMs) chars=\(text.count)")
             lock.lock(); processedWindows += 1; lock.unlock()
             guard !text.isEmpty, text != lastDecodedText else { continue }
             lastDecodedText = text

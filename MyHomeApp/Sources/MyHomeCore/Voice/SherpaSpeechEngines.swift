@@ -312,6 +312,14 @@ final class SherpaDecoder: OfflineSpeechDecoder {
 final class SileroSegmenter: SpeechSegmenting {
     private let vad: SherpaOnnxVoiceActivityDetectorWrapper
 
+    /// How far before the detection point sherpa-onnx starts a segment
+    /// (voice-activity-detector.cc: 2 windows + min speech), plus one window
+    /// of chunk slack — the pre-roll ring must reach past it.
+    static func lookbackSamples(_ profile: VADProfile) -> Int {
+        let minSpeech = Int(Double(profile.minSpeechSeconds) * Double(SpeechModelSpec.sampleRate))
+        return SpeechModelSpec.vadLookbackWindows * SpeechModelSpec.vadWindowSize + minSpeech
+    }
+
     init(vadPath: String, profile: VADProfile) {
         var config = sherpaOnnxVadModelConfig(
             sileroVad: sherpaOnnxSileroVadModelConfig(
@@ -344,6 +352,14 @@ final class SileroSegmenter: SpeechSegmenting {
     }
     var isSpeechDetected: Bool { vad.isSpeechDetected() }
     func flush() { vad.flush() }
+
+    func popTimedSegment() -> TimedSpeechSegment? {
+        guard !vad.isEmpty() else { return nil }
+        let front = vad.front()
+        let segment = TimedSpeechSegment(start: front.start, samples: front.samples)
+        vad.pop()
+        return segment
+    }
 
     func popSegment() -> [Float]? {
         guard !vad.isEmpty() else { return nil }
@@ -379,7 +395,10 @@ public enum SherpaTranscriberFactory {
         return SegmentingTranscriber(segmenter: segmenter, decoder: SherpaDecoder(recognizer),
                                      sampleRate: SpeechModelSpec.sampleRate,
                                      preRollSeconds: request.profile.preRollSeconds,
-                                     queue: cache.queue, onSegment: onSegment, onActivity: onActivity)
+                                     queue: cache.queue, onSegment: onSegment, onActivity: onActivity,
+                                     vadLookbackSamples: SileroSegmenter.lookbackSamples(request.profile),
+                                     ingestSliceSamples: SpeechModelSpec.vadWindowSize,
+                                     engineName: request.model.kind.rawValue)
     }
 }
 

@@ -13,7 +13,7 @@ public struct AssistantReply: Equatable {
     public let kind: Kind
     public let text: String
     public let result: CommandResult?
-    /// How the reply was produced: "grammar" (Level 1) or "model" (Level 2).
+    /// How the reply was produced: "grammar" (Level 1), "model" (Level 2) or "jev" (Jev decider).
     public let source: String
 
     public init(kind: Kind, text: String, result: CommandResult? = nil, source: String) {
@@ -28,10 +28,19 @@ public struct AssistantReply: Equatable {
 public final class AssistantCoordinator: ObservableObject {
     public static let grammarSource = "grammar"
     public static let modelSource = "model"
+    /// Replies produced by the Jev decider (a choice classifier).
+    public static let jevSource = "jev"
+    /// Lead-in when Jev could not settle a request and the user is asked.
+    public static let jevUnsureLead = "Jev wasn't sure"
+    /// Reply when a voice session ended with no recognised words.
+    public static let nothingHeardText = "I didn't hear anything."
 
     public let controller: DeviceController
     public let parser: VoiceCommandParser
     public var planner: NaturalLanguagePlanner?
+    /// Set when Settings → Assistant selects the Jev decider. It only ADVISES:
+    /// an accepted match is always confirmed with the user before it runs.
+    public var jevDecider: JevCommandDecider?
     public var timeouts: AssistantTimeouts
     private var activeTask: Task<AssistantReply, Never>?
 
@@ -96,6 +105,25 @@ public final class AssistantCoordinator: ObservableObject {
         return reply
     }
 
+    /// A voice session ended without any recognised words: say so (it is
+    /// not the same failure as words that match no command).
+    @discardableResult
+    public func noteNothingHeard() -> AssistantReply {
+        AppLog.assistant.info("voice session ended with an empty transcript")
+        let reply = AssistantReply(kind: .info, text: Self.nothingHeardText, source: Self.grammarSource)
+        replies.append(reply)
+        return reply
+    }
+
+    /// The "couldn't match" reply always shows the text it was given, so a
+    /// recogniser artefact is visible instead of a bare "didn't understand".
+    static func notUnderstoodText(_ utterance: String, origin: CommandOrigin, note: String) -> String {
+        let shown = utterance.trimmingCharacters(in: .whitespacesAndNewlines)
+        if TextNormalizer.rawTokens(shown).isEmpty { return nothingHeardText }
+        let lead = (origin == .voice || origin == .siri) ? "I heard" : "I read"
+        return "\(lead) \u{201C}\(shown)\u{201D} but couldn't match it to a command\(note)."
+    }
+
     public func clearHistory() {
         replies = []
     }
@@ -131,6 +159,9 @@ public final class AssistantCoordinator: ObservableObject {
 
     private func process(_ utterance: String, origin: CommandOrigin) async -> AssistantReply {
         let intent = parser.parse(utterance)
+        if origin == .voice {
+            AppLog.assistant.debug("voice utterance: \(utterance, privacy: .private) parsed=\(Self.intentName(intent), privacy: .public)")
+        }
         // An answer to "which one?": a bare name ("the desk one") keeps the
         // pending command; a full command names both the device and a new command.
         if let choice = pendingChoice {
@@ -164,6 +195,18 @@ public final class AssistantCoordinator: ObservableObject {
             guard let result = await Deadline.run(seconds: timeouts.command, { @MainActor in
                 await controller.perform(command, on: query, origin: origin)
             }) else { return timeoutReply() }
+            // The grammar understood the command but not the device: Jev picks
+            // the device (Stage A only), and the user confirms.
+            if let jevDecider, jevDecider.isAvailable {
+                switch result.disposition {
+                case .nothingToDo:
+                    return await decideWithJev(utterance, origin: origin, known: command, candidates: controller.summaries(), fallback: result)
+                case .ambiguous(let candidates):
+                    return await decideWithJev(utterance, origin: origin, known: command, candidates: candidates, fallback: result)
+                default:
+                    break
+                }
+            }
             if case .nothingToDo = result.disposition, let planner, planner.isAvailable {
                 // The grammar understood the shape but not the device: let the
                 // model try with the registry in front of it.
@@ -171,11 +214,18 @@ public final class AssistantCoordinator: ObservableObject {
             }
             return reply(for: result, source: Self.grammarSource)
         case .unknown:
+            if let jevDecider, jevDecider.isAvailable {
+                pending = []
+                pendingChoice = nil
+                return await decideWithJev(utterance, origin: origin, known: nil, candidates: controller.summaries(), fallback: nil)
+            }
             if let planner, planner.isAvailable {
                 return await planWithModel(utterance, origin: origin)
             }
-            let note = planner?.unavailableReason.map { " (\($0))" } ?? ""
-            return AssistantReply(kind: .error, text: "Sorry, I didn't understand that\(note).", source: Self.grammarSource)
+            let note = (planner?.unavailableReason ?? jevDecider?.unavailableReason).map { " (\($0))" } ?? ""
+            AppLog.assistant.info("utterance not understood origin=\(String(describing: origin), privacy: .public)")
+            return AssistantReply(kind: .error, text: Self.notUnderstoodText(utterance, origin: origin, note: note),
+                                  source: Self.grammarSource)
         }
     }
 
@@ -246,7 +296,8 @@ public final class AssistantCoordinator: ObservableObject {
 
     private func planWithModel(_ utterance: String, origin: CommandOrigin) async -> AssistantReply {
         guard let planner else {
-            return AssistantReply(kind: .error, text: "Sorry, I didn't understand that.", source: Self.grammarSource)
+            return AssistantReply(kind: .error, text: Self.notUnderstoodText(utterance, origin: origin, note: ""),
+                                  source: Self.grammarSource)
         }
         let plan: ProposedPlan
         let summaries = controller.summaries()
@@ -294,6 +345,97 @@ public final class AssistantCoordinator: ObservableObject {
         }
         let text = (plan.summary.isEmpty ? "" : plan.summary + " ") + "Plan: " + lines.joined(separator: "; ") + ". Go ahead?"
         return AssistantReply(kind: .needsConfirmation, text: text, source: Self.modelSource)
+    }
+
+    // MARK: - Jev decider
+
+    static func heardText(_ utterance: String, origin: CommandOrigin) -> String {
+        let lead = (origin == .voice || origin == .siri) ? "I heard" : "I read"
+        return "\(lead) \u{201C}\(utterance.trimmingCharacters(in: .whitespacesAndNewlines))\u{201D}"
+    }
+
+    /// Jev chooses (device, then action); the coordinator turns an accepted
+    /// choice into a PROPOSAL that waits for "yes" — exactly like a model plan.
+    /// Below gate, unmeasured or failed: fall back to the parser's answer and
+    /// ask the user, offering what Jev leaned to. Nothing runs on a guess.
+    private func decideWithJev(_ utterance: String, origin: CommandOrigin, known: DeviceCommand?,
+                               candidates: [DeviceSummary], fallback: CommandResult?) async -> AssistantReply {
+        guard let jevDecider else {
+            return AssistantReply(kind: .error, text: Self.notUnderstoodText(utterance, origin: origin, note: ""), source: Self.grammarSource)
+        }
+        let heard = Self.heardText(utterance, origin: origin)
+        let outcome = await Deadline.run(seconds: timeouts.planner) { @MainActor in
+            await jevDecider.decide(utterance, devices: candidates, known: known)
+        }
+        guard let outcome else {
+            if Task.isCancelled { return AssistantReply(kind: .info, text: "Cancelled.", source: Self.jevSource) }
+            return jevFallback(JevCommandDecider.Unsure(reason: "it took too long", devices: [], device: nil, actions: [], missingValue: nil),
+                               heard: heard, utterance: utterance, origin: origin, known: known, candidates: candidates, fallback: fallback)
+        }
+        switch outcome {
+        case .accepted(let summary, let command, let deviceStrength, let actionStrength):
+            guard let device = controller.device(id: summary.id) else {
+                return AssistantReply(kind: .error, text: "Jev named a device I don't know.", source: Self.jevSource)
+            }
+            // Always confirmed first, whatever DeviceController's count threshold says.
+            pendingChoice = nil
+            pending = [CommandRequest(resolution: .single(device), command: command, origin: .model, confirmed: false)]
+            let action = CommandPhrasing.action(command, target: CommandPhrasing.targetPhrase([summary], scope: nil))
+            let measured = [deviceStrength, actionStrength].compactMap { $0 }.min().map { " (\(JevCommandDecider.percent($0)) sure)" } ?? ""
+            return AssistantReply(kind: .needsConfirmation, text: "\(heard). Jev matched: \(action)\(measured). Go ahead?", source: Self.jevSource)
+        case .unsure(let unsure):
+            return jevFallback(unsure, heard: heard, utterance: utterance, origin: origin, known: known, candidates: candidates, fallback: fallback)
+        }
+    }
+
+    private func jevFallback(_ unsure: JevCommandDecider.Unsure, heard: String, utterance: String, origin: CommandOrigin,
+                             known: DeviceCommand?, candidates: [DeviceSummary], fallback: CommandResult?) -> AssistantReply {
+        AppLog.assistant.info("jev failed open: \(unsure.reason, privacy: .public)")
+        let lead = "\(Self.jevUnsureLead) (\(unsure.reason))"
+        // A device was settled but not the action / value: ask about the action.
+        if let device = unsure.device, known == nil {
+            if let action = unsure.missingValue {
+                return AssistantReply(kind: .ambiguous, text: "\(heard). \(lead) — to \(action.phrase) of \(device.name), say the value too (for example \u{201C}set \(device.name) to 50\u{201D}).",
+                                      source: Self.jevSource)
+            }
+            if !unsure.actions.isEmpty {
+                let options = CommandPhrasing.list(unsure.actions.map { "\($0.phrase) \(device.name)" }, conjunction: "or")
+                return AssistantReply(kind: .ambiguous, text: "\(heard). \(lead) — did you mean \(options)?", source: Self.jevSource)
+            }
+        }
+        // Devices Jev leaned to; for an ambiguous request, the parser's own candidates.
+        var suggestions = unsure.devices
+        if suggestions.isEmpty, let fallback, case .ambiguous(let options) = fallback.disposition { suggestions = options }
+        if let known, !suggestions.isEmpty {
+            if suggestions.count == 1, let device = controller.device(id: suggestions[0].id) {
+                // One suggestion: still a proposal that waits for "yes".
+                pending = [CommandRequest(resolution: .single(device), command: known, origin: .model, confirmed: false)]
+                let action = CommandPhrasing.action(known, target: suggestions[0].name)
+                return AssistantReply(kind: .needsConfirmation, text: "\(heard). \(lead) — did you mean: \(action)?", source: Self.jevSource)
+            }
+            // The user answers by name; the existing choice flow runs only what they pick.
+            pendingChoice = (known, suggestions)
+            let names = CommandPhrasing.list(suggestions.map(\.name), conjunction: "or")
+            return AssistantReply(kind: .ambiguous, text: "\(heard). \(lead) — did you mean \(names)?", source: Self.jevSource)
+        }
+        if !suggestions.isEmpty {
+            let names = CommandPhrasing.list(suggestions.map(\.name), conjunction: "or")
+            return AssistantReply(kind: .ambiguous, text: "\(heard). \(lead) — did you mean \(names)? Say the device and what to do.", source: Self.jevSource)
+        }
+        if let fallback {
+            return AssistantReply(kind: .error, text: "\(lead). \(fallback.spokenSummary)", result: fallback, source: Self.jevSource)
+        }
+        return AssistantReply(kind: .error, text: "\(Self.notUnderstoodText(utterance, origin: origin, note: "")) \(lead).", source: Self.jevSource)
+    }
+
+    private static func intentName(_ intent: ParsedIntent) -> String {
+        switch intent {
+        case .command: return "command"
+        case .status: return "status"
+        case .confirm: return "confirm"
+        case .cancel: return "cancel"
+        case .unknown: return "unknown"
+        }
     }
 
     static func message(for error: Error) -> String {
