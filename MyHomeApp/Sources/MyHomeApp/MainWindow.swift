@@ -201,6 +201,7 @@ struct DashboardView: View {
 
     var body: some View {
         HStack(spacing: 0) {
+        VStack(spacing: 0) {
             List(selection: Binding<DeviceGroup?>(
                 get: { selectedRoom == nil ? group : nil },
                 set: { newValue in
@@ -238,6 +239,10 @@ struct DashboardView: View {
             .frame(minWidth: 150, idealWidth: 175, maxWidth: 230)
             .fixedSize(horizontal: true, vertical: false)
             .navigationTitle("MyHome")
+            SidebarSettingsButton()
+        }
+        .frame(minWidth: 150, idealWidth: 175, maxWidth: 230)
+        .fixedSize(horizontal: true, vertical: false)
 
             Divider()
 
