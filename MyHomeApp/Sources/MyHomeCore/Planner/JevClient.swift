@@ -27,7 +27,7 @@ public protocol JevTransport: Sendable {
     func send(_ request: URLRequest) async throws -> (Data, URLResponse)
 }
 
-private final class JevNoRedirectDelegate: NSObject, URLSessionTaskDelegate {
+final class JevNoRedirectDelegate: NSObject, URLSessionTaskDelegate {
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
         completionHandler(nil)   // never forward the key to a redirect target
@@ -324,11 +324,24 @@ public struct JevClient: Sendable {
             }
         case .failure(let failure):
             if let resolved { AppLog.assistant.info("jev test failed: \(resolved.logSummary, privacy: .public)") }
+            var message = failure.message
+            var sent: String?
             if case .rejected = failure, let resolved, resolved.value != nil {
-                return "\(resolved.sentDescription), service rejected it: \(failure.message). \(resolved.shapeDescription(expecting: .openRouter))"
+                sent = resolved.sentDescription
+                message = "\(resolved.sentDescription), service rejected it: \(failure.message). \(resolved.shapeDescription(expecting: .openRouter))"
             }
-            return failure.message
+            // 401/403 from OpenRouter itself: ask it once what kind of key this is.
+            if case .rejected = failure, let key, !key.isEmpty, Self.isOpenRouterEndpoint(config.endpoint),
+               let verdict = await OpenRouterKeyInfo.probe(key: key, timeout: config.timeout, transport: transport) {
+                return OpenRouterKeyInfo.refine(message, verdict: verdict, sent: sent, service: "the Jev service")
+            }
+            return message
         }
+    }
+
+    static func isOpenRouterEndpoint(_ text: String) -> Bool {
+        guard let url = endpointURL(text) else { return false }
+        return OpenRouterKeyInfo.isOpenRouter(url)
     }
 
     static func isLocalEndpoint(_ text: String) -> Bool {

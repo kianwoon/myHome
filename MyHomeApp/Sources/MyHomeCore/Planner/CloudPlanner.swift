@@ -128,7 +128,17 @@ public final class CloudPlanner: NaturalLanguagePlanner {
             return "Connected: \(config.model) replied."
         } catch PlannerError.failed(let text) {
             AppLog.assistant.info("planner test failed: \(secret.logSummary, privacy: .public)")
-            return text.contains("rejected the API key") ? "\(secret.sentDescription), \(text). \(secret.shapeDescription(expecting: shape))" : text
+            guard text.contains("rejected the API key") else { return text }
+            let message = "\(secret.sentDescription), \(text). \(secret.shapeDescription(expecting: shape))"
+            // 401/403 from OpenRouter itself: ask it once what kind of key this is.
+            if let key, !key.isEmpty, config.provider != .anthropic, let url = try? Self.endpoint(for: config), OpenRouterKeyInfo.isOpenRouter(url) {
+                let probeSession = URLSession(configuration: session.configuration, delegate: JevNoRedirectDelegate(), delegateQueue: nil)
+                defer { probeSession.finishTasksAndInvalidate() }
+                if let verdict = await OpenRouterKeyInfo.probe(key: key, timeout: config.timeout, transport: URLSessionJevTransport(session: probeSession)) {
+                    return OpenRouterKeyInfo.refine(message, verdict: verdict, sent: secret.sentDescription, service: "the provider")
+                }
+            }
+            return message
         } catch {
             return Self.scrub(error.localizedDescription, key: key)
         }

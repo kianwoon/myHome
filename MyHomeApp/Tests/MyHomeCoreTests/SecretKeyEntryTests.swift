@@ -38,8 +38,12 @@ final class SecretKeyEntryTests: XCTestCase {
     private lazy var keyB = fake("BBBB")
     private let account = AppSettings.jevSecretAccount
 
-    private func makeModel(_ store: SecretStore) -> SecretKeyEntryModel {
-        SecretKeyEntryModel(account: account, secrets: store, environmentVariable: AppSettings.jevKeyEnvironmentVariable, environment: [:])
+    /// Isolated defaults per test so audit records never touch the real app domain.
+    private lazy var defaults = UserDefaults(suiteName: "keyentry-audit-\(UUID().uuidString)")!
+
+    private func makeModel(_ store: SecretStore, clock: @escaping () -> Date = Date.init) -> SecretKeyEntryModel {
+        SecretKeyEntryModel(account: account, secrets: store, environmentVariable: AppSettings.jevKeyEnvironmentVariable,
+                            environment: [:], defaults: defaults, clock: clock)
     }
 
     private func decider(_ store: SecretStore, _ capture: AuthCapture) -> JevCommandDecider {
@@ -206,4 +210,118 @@ final class SecretKeyEntryTests: XCTestCase {
         try keychain.delete(account: throwaway)
         XCTAssertNil(keychain.modificationDate(account: throwaway))
     }
+
+    // MARK: Clipboard flow and audit trail
+
+    /// Clipboard B is saved even when the field and the store both hold A.
+    func testClipboardSavesBDespiteStaleAInFieldAndStore() throws {
+        let store = RecordingSecretStore()
+        let model = makeModel(store)
+        model.fieldText = keyA
+        model.save()
+        model.fieldText = keyA   // stale typed text left in the field
+        let board = FakePasteboard(keyB)
+        model.loadFromClipboard(board)
+        XCTAssertEqual(board.reads, 1)
+        XCTAssertEqual(model.clipboardPreview, .init(length: 73, fingerprint: "…BBBB"))
+        XCTAssertEqual(model.clipboardPreviewLine, "Clipboard holds a key: 73 characters, ending …BBBB — Save this key?")
+        XCTAssertEqual(store.log, ["write \(account) …AAAA"], "preview saves nothing")
+        model.confirmClipboardSave()
+        XCTAssertEqual(try store.read(account: account), keyB)
+        XCTAssertNil(model.clipboardPreview)
+        XCTAssertEqual(model.fieldText, "")
+        XCTAssertEqual(model.lastAudit?.source, .clipboard)
+    }
+
+    /// Save writes only the value read at preview time, never a later clipboard.
+    func testConfirmNeverReReadsThePasteboard() throws {
+        let store = RecordingSecretStore()
+        let model = makeModel(store)
+        let board = FakePasteboard("  \(keyB)\n")
+        model.loadFromClipboard(board)
+        board.value = keyA
+        model.confirmClipboardSave()
+        XCTAssertEqual(board.reads, 1)
+        XCTAssertEqual(try store.read(account: account), keyB)
+        XCTAssertEqual(store.log, ["write \(account) …BBBB"])
+    }
+
+    func testClipboardCancelInvalidAndEmptyWriteNothing() {
+        let store = RecordingSecretStore()
+        let model = makeModel(store)
+        model.loadFromClipboard(FakePasteboard(keyB))
+        model.cancelClipboard()
+        model.confirmClipboardSave()
+        model.loadFromClipboard(FakePasteboard("\(keyA)\n\(keyB)"))
+        XCTAssertNil(model.clipboardPreview)
+        XCTAssertTrue(model.message.hasPrefix("Clipboard: "), model.message)
+        model.loadFromClipboard(FakePasteboard(nil))
+        XCTAssertNil(model.clipboardPreview)
+        XCTAssertTrue(model.message.contains("no text"), model.message)
+        model.confirmClipboardSave()
+        XCTAssertEqual(store.log, [])
+        XCTAssertNil(model.lastAudit)
+    }
+
+    /// Typed path saves exactly the typed text and audits it as typed.
+    func testTypedPathAuditFieldsAndLine() throws {
+        let store = RecordingSecretStore()
+        let fixed = Date(timeIntervalSince1970: 1_800_000_000)
+        let model = makeModel(store, clock: { fixed })
+        model.fieldText = keyB
+        model.save()
+        XCTAssertEqual(try store.read(account: account), keyB)
+        let audit = try XCTUnwrap(model.lastAudit)
+        XCTAssertEqual(audit, KeySaveAudit(source: .typed, length: 73, fingerprint: "…BBBB", date: fixed, saved: true,
+                                           status: "Key saved in Keychain (73 characters)."))
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        let line = model.auditLine(now: fixed, calendar: calendar, locale: Locale(identifier: "en_GB"))
+        XCTAssertEqual(line, "Last saved by typing at 08:00 (73 chars, ending …BBBB)")
+        XCTAssertFalse(line?.contains(keyB) ?? true)
+        // Persisted: a re-created model (view rebuilt / relaunch) shows the same record.
+        XCTAssertEqual(makeModel(store).lastAudit, audit)
+    }
+
+    func testClipboardAuditLineAndRefusedSaveIsAudited() {
+        let store = RecordingSecretStore()
+        let model = makeModel(store)
+        model.loadFromClipboard(FakePasteboard(keyB))
+        model.confirmClipboardSave()
+        XCTAssertTrue(model.auditLine()?.hasPrefix("Last saved from clipboard at ") ?? false)
+        XCTAssertTrue(model.auditLine()?.hasSuffix("(73 chars, ending …BBBB)") ?? false)
+        model.fieldText = "abc def"
+        model.save()
+        XCTAssertEqual(model.lastAudit?.saved, false)
+        XCTAssertTrue(model.auditLine()?.contains("NOT saved") ?? false)
+    }
+
+    /// Same key saved right after Remove warns (non-blocking); a different key does not.
+    func testSameKeyAfterRemoveWarns() throws {
+        let store = RecordingSecretStore()
+        let model = makeModel(store)
+        model.fieldText = keyA
+        model.save()
+        XCTAssertEqual(model.warning, "")
+        model.remove()
+        model.loadFromClipboard(FakePasteboard(keyA))
+        model.confirmClipboardSave()
+        XCTAssertEqual(try store.read(account: account), keyA, "warning does not block the save")
+        XCTAssertTrue(model.warning.hasPrefix("This is the same key as before"), model.warning)
+        model.remove()
+        model.loadFromClipboard(FakePasteboard(keyB))
+        model.confirmClipboardSave()
+        XCTAssertEqual(model.warning, "")
+        model.fieldText = keyB
+        model.save()
+        XCTAssertEqual(model.warning, "", "no Remove in between: no warning")
+    }
+}
+
+/// Injectable pasteboard that counts reads.
+private final class FakePasteboard: KeyPasteboard {
+    var value: String?
+    private(set) var reads = 0
+    init(_ value: String?) { self.value = value }
+    func string() -> String? { reads += 1; return value }
 }

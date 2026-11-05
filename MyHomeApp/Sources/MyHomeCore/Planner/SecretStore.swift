@@ -57,6 +57,8 @@ public final class KeychainSecretStore: SecretStore {
         let status = SecItemUpdate(query(account) as CFDictionary, [kSecValueData as String: data] as CFDictionary)
         if status == errSecSuccess { return }
         if status != errSecItemNotFound {
+            // Logged (status only) so a delete+add re-creation is explainable from `log show`.
+            KeyEntryLog.logger.info("keychain update account=\(account, privacy: .public) status=\(status, privacy: .public); replacing item")
             // Stale ACL from an earlier build or any other update failure: replace the item.
             let removed = SecItemDelete(query(account) as CFDictionary)
             guard removed == errSecSuccess || removed == errSecItemNotFound else { throw SecretStoreError.keychain(status) }
@@ -65,6 +67,7 @@ public final class KeychainSecretStore: SecretStore {
         item[kSecValueData as String] = data
         item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         let added = SecItemAdd(item as CFDictionary, nil)
+        KeyEntryLog.logger.info("keychain add account=\(account, privacy: .public) status=\(added, privacy: .public)")
         guard added == errSecSuccess else { throw SecretStoreError.keychain(added) }
     }
 

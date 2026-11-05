@@ -174,6 +174,28 @@ final class CloudPlannerTests: XCTestCase {
         XCTAssertFalse(bad.contains(secretKey))
     }
 
+    func testOpenRouterProvisioningKeyIsNamedOnTestConnection() async {
+        configure(.openAICompatible, key: secretKey, baseURL: "https://openrouter.ai/api/v1")
+        MockURLProtocol.handler = { request, _ in
+            if request.httpMethod == "GET" { return (200, Data(#"{"data":{"is_provisioning_key":true,"usage":0}}"#.utf8)) }
+            return (401, Data(#"{"error":{"message":"User not found.","code":401}}"#.utf8))
+        }
+        let text = await planner().testConnection()
+        XCTAssertTrue(text.contains("PROVISIONING key"), text)
+        XCTAssertFalse(text.contains(secretKey))
+        let gets = MockURLProtocol.seen.filter { $0.request.httpMethod == "GET" }
+        XCTAssertEqual(gets.count, 1)
+        XCTAssertEqual(gets.first?.request.url?.absoluteString, AppSettings.jevKeyInfoURL)
+    }
+
+    func testNonOpenRouterBaseURLMakesNoKeyInfoRequest() async {
+        configure(.openAICompatible, key: secretKey, baseURL: "https://llm.example.test/v1")
+        MockURLProtocol.handler = { _, _ in (401, Data()) }
+        let text = await planner().testConnection()
+        XCTAssertTrue(text.contains("rejected the API key"), text)
+        XCTAssertEqual(MockURLProtocol.seen.count, 1)
+    }
+
     func testFactorySelectsByProvider() {
         func made() -> NaturalLanguagePlanner? { PlannerFactory.makePlanner(controller: controller, defaults: defaults, secrets: secrets, session: session) }
         XCTAssertNil(made(), "default provider is none")

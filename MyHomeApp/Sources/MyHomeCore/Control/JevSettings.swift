@@ -18,6 +18,11 @@ public extension AppSettings {
     /// the endpoint is explicit, so only the model id goes on the wire.
     static let jevTransportPrefix = "openrouter/"
 
+    // allow-hardcode: the OpenRouter host; a 401/403 from it triggers the one key-info follow-up.
+    static let openRouterHost = "openrouter.ai"
+    // allow-hardcode: OpenRouter's key-info endpoint (same host as the decisions endpoint; https only).
+    static let jevKeyInfoURL = "https://openrouter.ai/api/v1/key"
+
     /// Accept a choice only when probabilities[choice] reaches this.
     static let jevThresholdKey = "jevThreshold"
     static let defaultJevThreshold = 0.7

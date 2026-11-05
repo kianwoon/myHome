@@ -271,6 +271,10 @@ Choices and why:
 * **Matter adapter.** Add a transport behind `DeviceStore` and teach `CapabilityMap` the
   cluster → `SemanticCapability` mapping; nothing above the controller changes.
 
+### Troubleshooting: OpenRouter "provisioning" keys vs API keys
+
+OpenRouter has two kinds of keys. A **provisioning key** (also called a management key) only creates and manages other keys; it passes a generic validity check but cannot make any request, so the decisions endpoint answers `HTTP 401 User not found.` When Test connection (Jev or the cloud planner) gets a 401/403 from `openrouter.ai`, MyHome makes one extra request to OpenRouter's key-info endpoint with the same key and says whether it is a provisioning key, a normal key the service still rejects, or invalid/deleted. If it says provisioning, create a normal key with **Create API Key** (not provisioning) and save that one. Nothing is sent to any other host, and the key is never logged.
+
 ## Known limits
 
 * Colour on Tuya bulbs is not offered (the dashboard never writes `colour_data`'s HSV
