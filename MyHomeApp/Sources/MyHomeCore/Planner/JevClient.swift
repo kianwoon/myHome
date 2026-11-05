@@ -67,8 +67,6 @@ public struct JevQuestion: Equatable, Sendable {
         self.instructions = instructions
         self.criteria = criteria
     }
-
-    var json: [String: Any] { ["type": "choice", "instructions": instructions, "criteria": criteria] }
 }
 
 /// Why a row cannot be used (TS `JevUnavailableReason`).
@@ -202,17 +200,39 @@ public struct JevClient: Sendable {
         guard let url = Self.endpointURL(config.endpoint) else { throw JevFailure.notConfigured("invalid Jev endpoint") }
         var request = URLRequest(url: url, timeoutInterval: config.timeout)
         request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "content-type")
-        request.setValue(AppSettings.jevReferer, forHTTPHeaderField: "http-referer")
-        request.setValue(AppSettings.jevAppTitle, forHTTPHeaderField: "x-title")
+        // Same header names, order and casing as opencode's jevAsk (client.ts).
         if let key, !key.isEmpty {
             // CR/LF or control characters in a header make the service see no Authorization at all.
             guard APIKeySanitizer.isHeaderSafe(key) else { throw JevFailure.notConfigured("the API key contains characters that cannot be sent in a header") }
-            request.setValue("Bearer \(key)", forHTTPHeaderField: "authorization")
+            request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         }
-        let body: [String: Any] = ["model": config.model, "state": state, "questions": questions.mapValues(\.json)]
-        request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(AppSettings.jevReferer, forHTTPHeaderField: "HTTP-Referer")
+        request.setValue(AppSettings.jevAppTitle, forHTTPHeaderField: "X-Title")
+        request.httpBody = try Self.wireBody(model: config.model, state: state, questions: questions)
         return request
+    }
+
+    /// The body exactly as opencode's `JSON.stringify({model, state, questions})`
+    /// writes it: insertion key order (model, state, questions; type,
+    /// instructions, criteria), no whitespace, and `/` NOT escaped (Foundation's
+    /// default writes `perplexity\/pplx-…`). Questions and criteria labels are
+    /// sorted so the bytes are deterministic.
+    static func wireBody(model: String, state: String, questions: [String: JevQuestion]) throws -> Data {
+        func str(_ text: String) throws -> String {
+            let data = try JSONSerialization.data(withJSONObject: text, options: [.fragmentsAllowed, .withoutEscapingSlashes])
+            return String(decoding: data, as: UTF8.self)
+        }
+        func object(_ pairs: [(String, String)]) throws -> String {
+            "{" + (try pairs.map { "\(try str($0.0)):\($0.1)" }).joined(separator: ",") + "}"
+        }
+        let rows = try questions.keys.sorted().map { id -> (String, String) in
+            let question = questions[id]!
+            let criteria = try object(question.criteria.keys.sorted().map { ($0, try str(question.criteria[$0]!)) })
+            return (id, try object([("type", try str("choice")), ("instructions", try str(question.instructions)), ("criteria", criteria)]))
+        }
+        let root = try object([("model", try str(model)), ("state", try str(state)), ("questions", try object(rows))])
+        return Data(root.utf8)
     }
 
     // MARK: Call
