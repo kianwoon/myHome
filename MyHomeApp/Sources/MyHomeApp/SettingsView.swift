@@ -4,7 +4,7 @@ import ServiceManagement
 import MyHomeCore
 
 /// Native Settings window (macOS Settings scene). Tabs: cloud
-/// credentials, control cadence, voice / speech / hotkey, AI planner,
+/// credentials, control cadence, voice / speech / hotkey, AI models,
 /// assistant safety, and general preferences.
 struct SettingsView: View {
     var body: some View {
@@ -19,8 +19,8 @@ struct SettingsView: View {
                 .tabItem { Label("Speech", systemImage: "mic") }
             HotkeySettingsView(services: AppServices.shared)
                 .tabItem { Label("Hotkey", systemImage: "command") }
-            PlannerSettingsView(services: AppServices.shared)
-                .tabItem { Label("AI Planner", systemImage: "sparkles") }
+            AIModelsSettingsView(services: AppServices.shared)
+                .tabItem { Label("AI Models", systemImage: "sparkles") }
             AssistantSettingsView(services: AppServices.shared)
                 .tabItem { Label("Assistant", systemImage: "checkmark.shield") }
             GeneralSettingsView()

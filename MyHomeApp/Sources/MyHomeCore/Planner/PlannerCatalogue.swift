@@ -1,10 +1,12 @@
-// Compact device catalogue for the on-device model. The model's context is
-// small (8,192 tokens shared by instructions, tool schemas, tool output and the
-// answer), so devices are shown as short lines — handle, name, room, kind,
-// capabilities — under a character budget, with the devices that best match
-// the request kept first. Handles ("d1") replace the long device ids; they map
-// back to real ids when the plan is converted. No state, no reachability: the
-// controller checks those, the model only chooses.
+// Compact device catalogue for the planner models. The on-device model's
+// context is small (8,192 tokens shared by instructions, tool schemas, tool
+// output and the answer), so devices are shown as short lines — handle, name,
+// room, kind, current state, capabilities — under a character budget, with
+// the devices that best match the request kept first. Handles ("d1") replace
+// the long device ids; they map back to real ids when the plan is converted.
+// The state column ("on 40%", "off", "offline", "?") lets the model reason
+// about a situation ("stuffy" + fan off → turn it on); the controller still
+// re-checks reachability and the user confirms every plan.
 import Foundation
 
 final class PlannerCatalogue: @unchecked Sendable {
@@ -63,8 +65,20 @@ final class PlannerCatalogue: @unchecked Sendable {
         var parts = [handle(for: device.id), device.name]
         if !device.room.isEmpty { parts.append(device.room) }
         parts.append(device.kind.rawValue)
+        parts.append(Self.state(of: device))
         parts.append(device.capabilities.map(\.rawValue).joined(separator: ","))
         return parts.joined(separator: "|")
+    }
+
+    /// Header naming the columns of `line(for:)` (room is omitted when empty).
+    static let columns = "handle|name|room|kind|state|can"
+
+    /// "on 40%", "off", "offline" or "?" (never read).
+    static func state(of device: DeviceSummary) -> String {
+        if device.reachability == .offline { return "offline" }
+        guard let on = device.isOn else { return "?" }
+        guard on else { return "off" }
+        return device.levelPercent.map { "on \($0)%" } ?? "on"
     }
 
     /// The prompt section: one line per kept device plus a pointer to the tools.

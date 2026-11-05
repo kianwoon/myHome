@@ -21,6 +21,16 @@ public extension AppSettings {
     static let defaultResolverMinCoverage = 0.5
     static let unitFractionRange = 0.0...1.0
 
+    /// State questions ("which lights are on?") name at most this many devices.
+    static let stateQueryListMaxKey = "stateQueryListMax"
+    static let defaultStateQueryListMax = 5
+    static let stateQueryListMaxRange = 1...50
+
+    static func stateQueryListMax(from defaults: UserDefaults = .standard) -> Int {
+        let stored = defaults.object(forKey: stateQueryListMaxKey) as? Int ?? defaultStateQueryListMax
+        return min(max(stored, stateQueryListMaxRange.lowerBound), stateQueryListMaxRange.upperBound)
+    }
+
     static func commandVerifyTimeout(from defaults: UserDefaults = .standard) -> TimeInterval {
         clamped(defaults.object(forKey: commandVerifyTimeoutKey) as? Double, defaultCommandVerifyTimeout, commandVerifyTimeoutRange)
     }
@@ -177,8 +187,8 @@ public extension AppSettings {
     /// Which model plans requests the rule parser cannot understand.
     enum PlannerProvider: String, CaseIterable, Identifiable, Sendable {
         case none, apple, anthropic, openAICompatible
-        /// Jev decider: a choice classifier (device, then action), not a planner.
-        case jev
+        // Jev is no longer a provider: see AppSettings.jevEnabledKey and
+        // migrateLegacyJevProvider (a stored "jev" decodes to nil → migrated).
         public var id: String { rawValue }
         /// Sends device/room names and the command to a remote host.
         public var isCloud: Bool { self == .anthropic || self == .openAICompatible }

@@ -7,7 +7,7 @@ import Foundation
 public extension AppSettings {
     // MARK: Jev decider
 
-    // allow-hardcode: the decisions endpoint default (jev.md §2; overridable in Settings → Assistant).
+    // allow-hardcode: the decisions endpoint default (jev.md §2; overridable in Settings → AI Models).
     static let defaultJevEndpoint = "https://openrouter.ai/api/alpha/decisions"
     static let jevEndpointKey = "jevEndpoint"
     /// Free-text wire model id; empty until the user chooses one.
@@ -55,6 +55,27 @@ public extension AppSettings {
     static let jevAppTitle = "MyHome"
     // allow-hardcode: OpenRouter attribution referer (opencode sends https://opencode.ai/).
     static let jevReferer = "https://myhome.app/"
+
+    /// Jev router & matcher on/off — independent of the Cloud LLM provider, so
+    /// both can be active together (parser → Jev → Cloud LLM).
+    static let jevEnabledKey = "jevEnabled"
+    static let defaultJevEnabled = false
+    /// The pre-split `plannerProvider` value that selected Jev (migrated once).
+    static let legacyJevProviderRawValue = "jev"
+
+    static func jevEnabled(from defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: jevEnabledKey) as? Bool ?? defaultJevEnabled
+    }
+
+    /// One-time, idempotent: a stored provider "jev" becomes jevEnabled=true
+    /// with provider none. Reads the RAW string (the enum no longer has jev).
+    @discardableResult
+    static func migrateLegacyJevProvider(_ defaults: UserDefaults = .standard) -> Bool {
+        guard defaults.string(forKey: plannerProviderKey) == legacyJevProviderRawValue else { return false }
+        defaults.set(true, forKey: jevEnabledKey)
+        defaults.set(PlannerProvider.none.rawValue, forKey: plannerProviderKey)
+        return true
+    }
 
     static func jevEndpoint(from defaults: UserDefaults = .standard) -> String {
         let stored = defaults.string(forKey: jevEndpointKey)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""

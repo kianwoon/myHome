@@ -7,6 +7,8 @@ import Foundation
 public enum ParsedIntent: Equatable {
     case command(DeviceQuery, DeviceCommand)
     case status(DeviceQuery)
+    /// A count/list/yes-no question over many devices ("how many lights are on").
+    case stateQuery(StateQuery)
     case confirm
     case cancel
     case unknown(String)
@@ -50,6 +52,14 @@ public struct CommandGrammar: Sendable {
     /// Spelled numbers at or below this stay words unless part of a longer
     /// run, so "the desk one" still names a device (see valueFromPhrase).
     public var spelledNumberWordMax: Int
+    /// Leads of a question over many devices → how to answer it.
+    public var stateQueryLeads: [String: StateQuery.Aggregation]
+    /// Words that mean "on" in a state question ("is the fan running").
+    public var runningWords: Set<String>
+    /// Nouns meaning "any kind of device" ("how many devices are on").
+    public var anyKindWords: Set<String>
+    /// Function words dropped from a state question's device phrase.
+    public var stateQueryFillers: Set<String>
 
     // allow-hardcode: this is the spoken-command grammar (verbs, particles,
     // colour names) — reviewed vocabulary, not a scoring oracle; it is
@@ -88,7 +98,13 @@ public struct CommandGrammar: Sendable {
                       "eighty": 80, "ninety": 90],
         speedNumberHomophones: ["do": 2, "too": 2, "tu": 2, "for": 4],
         numberScaleWords: ["hundred": 100],
-        spelledNumberWordMax: 10
+        spelledNumberWordMax: 10,
+        stateQueryLeads: ["how many": .count, "which": .list, "what": .list, "list": .list,
+                          "are any": .is, "is any": .is, "are there any": .is, "is there any": .is],
+        runningWords: ["running", "lit"],
+        anyKindWords: ["device", "thing", "appliance"],
+        stateQueryFillers: ["are", "is", "there", "do", "does", "i", "we", "have", "currently", "right", "now",
+                            "turned", "switched", "that", "still", "got", "left", "any"]
     )
 
     public init(fillerPrefix: [String], powerVerbs: Set<String>, onWords: Set<String>, offWords: Set<String>,
@@ -98,7 +114,9 @@ public struct CommandGrammar: Sendable {
                 confirmWords: Set<String>, cancelWords: Set<String>, temperaturePhrases: [String: Int],
                 colorNames: [String: RGB], bareNumberGearMax: Int,
                 numberWords: [String: Int] = [:], speedNumberHomophones: [String: Int] = [:],
-                numberScaleWords: [String: Int] = [:], spelledNumberWordMax: Int = 10) {
+                numberScaleWords: [String: Int] = [:], spelledNumberWordMax: Int = 10,
+                stateQueryLeads: [String: StateQuery.Aggregation] = [:], runningWords: Set<String> = [],
+                anyKindWords: Set<String> = [], stateQueryFillers: Set<String> = []) {
         self.fillerPrefix = fillerPrefix
         self.powerVerbs = powerVerbs
         self.onWords = onWords
@@ -124,6 +142,10 @@ public struct CommandGrammar: Sendable {
         self.speedNumberHomophones = speedNumberHomophones
         self.numberScaleWords = numberScaleWords
         self.spelledNumberWordMax = spelledNumberWordMax
+        self.stateQueryLeads = stateQueryLeads
+        self.runningWords = runningWords
+        self.anyKindWords = anyKindWords
+        self.stateQueryFillers = stateQueryFillers
     }
 }
 
@@ -149,8 +171,14 @@ public struct VoiceCommandParser {
         if !content.isEmpty, content.allSatisfy({ grammar.confirmWords.contains($0) }) { return .confirm }
         if !content.isEmpty, content.allSatisfy({ grammar.cancelWords.contains($0) }) { return .cancel }
 
+        // Before the status branch: "how many lights are on" is a question
+        // over a kind of device, not the status of one named device.
+        if let intent = parseStateQuery(tokens) { return intent }
+
         if grammar.statusLeads.contains(tokens[0]) {
-            let rest = Array(tokens.dropFirst()).filter { !grammar.onWords.contains($0) && !grammar.offWords.contains($0) && !grammar.statusLeads.contains($0) }
+            let rest = Array(tokens.dropFirst()).filter {
+                !grammar.onWords.contains($0) && !grammar.offWords.contains($0) && !grammar.statusLeads.contains($0) && !grammar.runningWords.contains($0)
+            }
             return .status(query(from: rest))
         }
 
@@ -171,6 +199,35 @@ public struct VoiceCommandParser {
             if let number = Int(tokens[index + 1]) { return number }
         }
         return tokens.compactMap { Int($0) }.last
+    }
+
+    // MARK: - State questions
+
+    /// "<lead> … <kind noun> … [on|off|running]": a count / list / yes-no
+    /// question over a kind of device. Needs a kind noun (or "devices"), and
+    /// an on/off word unless it counts ("how many lights are there").
+    private func parseStateQuery(_ tokens: [String]) -> ParsedIntent? {
+        let leads = grammar.stateQueryLeads.sorted { $0.key.count > $1.key.count }
+        for (lead, aggregation) in leads {
+            let words = lead.split(separator: " ").map(String.init)
+            guard tokens.count > words.count, Array(tokens.prefix(words.count)) == words else { continue }
+            let rest = Array(tokens.dropFirst(words.count))
+            let anyKind: (Int) -> Bool = { grammar.anyKindWords.contains(TextNormalizer.singular(rest[$0])) }
+            guard let kindIndex = rest.indices.first(where: { vocabulary.kind(for: rest[$0]) != nil || anyKind($0) }) else { return nil }
+            let kind = anyKind(kindIndex) ? nil : vocabulary.kind(for: rest[kindIndex])
+            let on = rest.contains { grammar.onWords.contains($0) || grammar.runningWords.contains($0) }
+            let off = rest.contains { grammar.offWords.contains($0) }
+            let state: StateQuery.State = on == off ? .any : (on ? .on : .off)
+            guard state != .any || aggregation == .count else { return nil }
+            let nameWords = rest.enumerated().filter { index, word in
+                index != kindIndex && !vocabulary.stopWords.contains(word) && !grammar.onWords.contains(word)
+                    && !grammar.offWords.contains(word) && !grammar.runningWords.contains(word)
+                    && !grammar.statusLeads.contains(word) && !grammar.stateQueryFillers.contains(word)
+            }.map(\.element)
+            let name = nameWords.joined(separator: " ")
+            return .stateQuery(StateQuery(kind: kind, state: state, aggregation: aggregation, name: name.isEmpty ? nil : name))
+        }
+        return nil
     }
 
     // MARK: - Recogniser artefacts

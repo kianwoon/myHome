@@ -1,5 +1,6 @@
-// Settings tabs behind AppSettings: Voice, Speech, Hotkey, AI Planner and
-// Assistant (safety). The tabs are assembled in SettingsView.
+// Settings tabs behind AppSettings: Voice, Speech, Hotkey and Assistant
+// (safety), plus the Cloud LLM fields used by the AI Models tab
+// (AIModelsSettingsView). The tabs are assembled in SettingsView.
 import MyHomeCore
 import SwiftUI
 
@@ -75,59 +76,6 @@ struct HotkeySettingsView: View {
         }
         .formStyle(.grouped)
         .padding(.top, 4)
-    }
-}
-
-/// AI Planner tab: provider picker; provider-specific fields only for the
-/// selected provider (cloud fields for Anthropic / OpenAI, Jev fields for Jev).
-struct PlannerSettingsView: View {
-    @AppStorage(AppSettings.plannerProviderKey) private var provider = AppSettings.defaultPlannerProvider
-
-    private let services: AppServices
-
-    init(services: AppServices) {
-        self.services = services
-    }
-
-    var body: some View {
-        Form {
-            Section {
-                Picker("Planner for free-form requests", selection: $provider) {
-                    Text("None (direct commands only)").tag(AppSettings.PlannerProvider.none)
-                    Text("Apple on-device").tag(AppSettings.PlannerProvider.apple)
-                    Text("Anthropic API").tag(AppSettings.PlannerProvider.anthropic)
-                    Text("OpenAI-compatible").tag(AppSettings.PlannerProvider.openAICompatible)
-                    Text("Jev decider (OpenRouter)").tag(AppSettings.PlannerProvider.jev)
-                }
-                // .id(provider): a fresh key model and field per provider/account.
-                if provider.isCloud { CloudPlannerFields(services: services, provider: provider).id(provider) }
-                if provider == .jev { JevSettingsFields(services: services) }
-            } header: {
-                Text("Natural language")
-            } footer: {
-                Text(plannerNote)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .formStyle(.grouped)
-        .padding(.top, 4)
-        .onChange(of: provider) { _ in services.reloadPlanner() }
-    }
-
-    private var plannerNote: String {
-        switch provider {
-        case .none:
-            return "Only direct commands (turn on / set to 50%) are understood; nothing is sent anywhere."
-        case .apple:
-            if let note = PlannerFactory.platformNote() { return note + " Direct commands work without it." }
-            if let reason = services.assistant.planner?.unavailableReason { return "Unavailable: \(reason)." }
-            return "Requests the grammar cannot parse are planned by the on-device model; the plan is confirmed before anything runs."
-        case .anthropic, .openAICompatible:
-            return "Privacy: when the grammar cannot parse a request, your command and your device names, room names, kinds and capabilities are sent to the provider above. Device ids, states and credentials are not. The key is kept in the macOS Keychain. Plans are always confirmed before anything runs."
-        case .jev:
-            return JevSettingsFields.privacyNote
-        }
     }
 }
 

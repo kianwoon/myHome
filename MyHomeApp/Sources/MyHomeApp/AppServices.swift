@@ -25,6 +25,9 @@ final class AppServices {
     private var outputCancellables = Set<AnyCancellable>()
 
     private init() {
+        // Before anything reads the provider: a pre-split "jev" provider
+        // becomes jevEnabled=true + provider none (idempotent).
+        AppSettings.migrateLegacyJevProvider()
         let store = DeviceStore()
         self.store = store
         controller = DeviceController(store: store)

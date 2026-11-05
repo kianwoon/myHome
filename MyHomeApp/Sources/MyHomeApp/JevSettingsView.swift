@@ -1,4 +1,4 @@
-// Settings → AI Planner → Jev decider fields: endpoint, model, key, gate,
+// Settings → AI Models → Jev router & matcher fields: endpoint, model, key, gate,
 // timeout and a live "Test connection". Defaults and ranges come from
 // JevSettings.swift; the key lives in the Keychain (never UserDefaults).
 import MyHomeCore
@@ -39,5 +39,5 @@ struct JevSettingsFields: View {
     }
 
     // allow-hardcode: UI copy.
-    static let privacyNote = "Privacy: when the grammar cannot settle a request, your command and your device names, room names, kinds and capabilities are sent to the Jev decisions endpoint above. Device ids, states and credentials are not. Jev only picks a device and an action; every match is confirmed before anything runs, and a failed or unsure answer asks you instead of guessing. The key is kept in the macOS Keychain (or read from OPENROUTER_API_KEY)."
+    static let privacyNote = "Privacy: when the grammar cannot settle a request, your command and your device names, room names, kinds and capabilities are sent to the Jev decisions endpoint above. Device ids, states and credentials are not. Jev only classifies (command / question / situation) and picks a device and an action; it never answers free text. Counts are computed on this Mac, every match is confirmed before anything runs, and a failed or unsure answer asks you instead of guessing. The key is kept in the macOS Keychain (or read from OPENROUTER_API_KEY)."
 }

@@ -38,10 +38,12 @@ public final class AssistantCoordinator: ObservableObject {
     public let controller: DeviceController
     public let parser: VoiceCommandParser
     public var planner: NaturalLanguagePlanner?
-    /// Set when Settings → Assistant selects the Jev decider. It only ADVISES:
-    /// an accepted match is always confirmed with the user before it runs.
+    /// Set when Settings → AI Models enables Jev (router & matcher). It only
+    /// ADVISES: an accepted match is always confirmed before it runs.
     public var jevDecider: JevCommandDecider?
     public var timeouts: AssistantTimeouts
+    /// State questions name at most this many devices (AppSettings.stateQueryListMax).
+    public var stateQueryListMax = AppSettings.stateQueryListMax()
     private var activeTask: Task<AssistantReply, Never>?
 
     @Published public private(set) var replies: [AssistantReply] = []
@@ -115,15 +117,6 @@ public final class AssistantCoordinator: ObservableObject {
         return reply
     }
 
-    /// The "couldn't match" reply always shows the text it was given, so a
-    /// recogniser artefact is visible instead of a bare "didn't understand".
-    static func notUnderstoodText(_ utterance: String, origin: CommandOrigin, note: String) -> String {
-        let shown = utterance.trimmingCharacters(in: .whitespacesAndNewlines)
-        if TextNormalizer.rawTokens(shown).isEmpty { return nothingHeardText }
-        let lead = (origin == .voice || origin == .siri) ? "I heard" : "I read"
-        return "\(lead) \u{201C}\(shown)\u{201D} but couldn't match it to a command\(note)."
-    }
-
     public func clearHistory() {
         replies = []
     }
@@ -187,6 +180,10 @@ public final class AssistantCoordinator: ObservableObject {
             return AssistantReply(kind: .info, text: "Nothing to cancel.", source: Self.grammarSource)
         case .status(let query):
             return statusReply(query)
+        case .stateQuery(let query):
+            // Counted from the registry by code: no model, no network.
+            return AssistantReply(kind: .status, text: DeviceQueryAnswerer.answer(query, devices: controller.summaries(), listMax: stateQueryListMax),
+                                  source: Self.grammarSource)
         case .command(let query, let command):
             // A new command supersedes anything still waiting for a yes.
             pending = []
@@ -217,7 +214,7 @@ public final class AssistantCoordinator: ObservableObject {
             if let jevDecider, jevDecider.isAvailable {
                 pending = []
                 pendingChoice = nil
-                return await decideWithJev(utterance, origin: origin, known: nil, candidates: controller.summaries(), fallback: nil)
+                return await routeWithJev(utterance, origin: origin, jev: jevDecider)
             }
             if let planner, planner.isAvailable {
                 return await planWithModel(utterance, origin: origin)
@@ -227,14 +224,6 @@ public final class AssistantCoordinator: ObservableObject {
             return AssistantReply(kind: .error, text: Self.notUnderstoodText(utterance, origin: origin, note: note),
                                   source: Self.grammarSource)
         }
-    }
-
-    /// Words that only point back at the question ("the desk ONE"), not at a device.
-    private static let answerFillerWords: Set<String> = ["one", "ones"]
-
-    private static func answerText(_ utterance: String) -> String {
-        let kept = TextNormalizer.rawTokens(utterance).filter { !answerFillerWords.contains($0) }
-        return kept.isEmpty ? utterance : kept.joined(separator: " ")
     }
 
     /// A short answer to an ambiguity question ("the desk one", "desk lamp"):
@@ -347,12 +336,42 @@ public final class AssistantCoordinator: ObservableObject {
         return AssistantReply(kind: .needsConfirmation, text: text, source: Self.modelSource)
     }
 
-    // MARK: - Jev decider
+    // MARK: - Jev router
 
-    static func heardText(_ utterance: String, origin: CommandOrigin) -> String {
-        let lead = (origin == .voice || origin == .siri) ? "I heard" : "I read"
-        return "\(lead) \u{201C}\(utterance.trimmingCharacters(in: .whitespacesAndNewlines))\u{201D}"
+    /// `.unknown` with Jev on: one route call, then
+    ///   command   → Jev matcher (device, action), confirmed before it runs;
+    ///   query     → DeviceQueryAnswerer (counts from code, never the model);
+    ///   inference → the Cloud LLM planner if available (plan confirmed), else
+    ///               a hint to configure one — nothing ever runs here;
+    ///   other     → the not-understood reply;
+    ///   unsure    → the planner if available, else the matcher (old path).
+    private func routeWithJev(_ utterance: String, origin: CommandOrigin, jev: JevCommandDecider) async -> AssistantReply {
+        let summaries = controller.summaries()
+        let outcome = await Deadline.run(seconds: timeouts.planner) { @MainActor in
+            await jev.route(utterance, devices: summaries)
+        }
+        if Task.isCancelled { return AssistantReply(kind: .info, text: "Cancelled.", source: Self.jevSource) }
+        let plannerReady = planner?.isAvailable == true
+        switch outcome ?? .unsure("it took too long") {
+        case .command:
+            return await decideWithJev(utterance, origin: origin, known: nil, candidates: summaries, fallback: nil)
+        case .query(let query, _):
+            return AssistantReply(kind: .status, text: DeviceQueryAnswerer.answer(query, devices: controller.summaries(), listMax: stateQueryListMax),
+                                  source: Self.jevSource)
+        case .inference:
+            if plannerReady { return await planWithModel(utterance, origin: origin) }
+            return AssistantReply(kind: .info, text: Self.inferenceNeedsPlannerText(utterance, origin: origin, reason: planner?.unavailableReason),
+                                  source: Self.jevSource)
+        case .other:
+            return AssistantReply(kind: .error, text: Self.notUnderstoodText(utterance, origin: origin, note: ""), source: Self.jevSource)
+        case .unsure(let reason):
+            AppLog.assistant.info("jev route unsure: \(reason, privacy: .public)")
+            if plannerReady { return await planWithModel(utterance, origin: origin) }
+            return await decideWithJev(utterance, origin: origin, known: nil, candidates: summaries, fallback: nil)
+        }
     }
+
+    // MARK: - Jev decider
 
     /// Jev chooses (device, then action); the coordinator turns an accepted
     /// choice into a PROPOSAL that waits for "yes" — exactly like a model plan.
@@ -428,21 +447,6 @@ public final class AssistantCoordinator: ObservableObject {
         return AssistantReply(kind: .error, text: "\(Self.notUnderstoodText(utterance, origin: origin, note: "")) \(lead).", source: Self.jevSource)
     }
 
-    private static func intentName(_ intent: ParsedIntent) -> String {
-        switch intent {
-        case .command: return "command"
-        case .status: return "status"
-        case .confirm: return "confirm"
-        case .cancel: return "cancel"
-        case .unknown: return "unknown"
-        }
-    }
-
-    static func message(for error: Error) -> String {
-        if case PlannerError.unavailable(let text) = error { return text }
-        if case PlannerError.failed(let text) = error { return text }
-        return error.localizedDescription
-    }
 }
 
 /// A planner error carried across the Deadline boundary (Error is not Sendable).

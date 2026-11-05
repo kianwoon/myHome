@@ -54,6 +54,17 @@ private final class FakeJev: @unchecked Sendable {
         return nil
     }
 
+    /// One envelope answering several questions: id → (choice, probability of the choice).
+    static func envelope(rows: [String: (String, Double)], model: String = "jev-1.13.0") -> Data {
+        var answers: [String: Any] = [:]
+        for (id, row) in rows { answers[id] = ["type": "choice", "choice": row.0, "probabilities": [row.0: row.1]] }
+        return try! JSONSerialization.data(withJSONObject: ["model": model, "answers": answers])
+    }
+
+    static func isRoute(_ body: [String: Any]) -> Bool {
+        (body["questions"] as? [String: Any])?[JevCommandDecider.routeQuestionID] != nil
+    }
+
     static func questionID(_ body: [String: Any]) -> String {
         (body["questions"] as? [String: Any])?.keys.first ?? ""
     }
@@ -263,7 +274,7 @@ final class JevCoordinatorTests: XCTestCase {
         store.applyStatus(lamp2.id, decoded: ["1": .bool(false), "2": .number(300)])
         controller = DeviceController(store: store, config: ControlConfig(verifyTimeout: 0.2, confirmationDeviceThreshold: 2))
         defaults = UserDefaults(suiteName: "JevCoordinatorTests-\(UUID())")!
-        defaults.set(AppSettings.PlannerProvider.jev.rawValue, forKey: AppSettings.plannerProviderKey)
+        defaults.set(true, forKey: AppSettings.jevEnabledKey)
         defaults.set("test/decider-0", forKey: AppSettings.jevModelKey)
         secrets = InMemorySecretStore()
         try? secrets.write("sk-or-v1-abcdefghijklmnop123456", account: AppSettings.jevSecretAccount)
@@ -273,8 +284,12 @@ final class JevCoordinatorTests: XCTestCase {
     }
 
     /// Answers each stage by naming the option whose description/label matches.
+    /// The route request (an unknown utterance) is answered "command".
     private func answer(device: String, _ deviceP: Double, action: String? = nil, _ actionP: Double = 0.9) {
         fake.handler = { body, _ in
+            if FakeJev.isRoute(body) {
+                return (200, FakeJev.envelope(rows: [JevCommandDecider.routeQuestionID: (JevCommandDecider.RouteLabel.command.rawValue, 0.9)]))
+            }
             let id = FakeJev.questionID(body)
             if id == JevCommandDecider.deviceQuestionID, let match = FakeJev.label(in: body, startingWith: device) {
                 return (200, FakeJev.envelope(id, choice: match.label, [match.label: deviceP]))
@@ -286,7 +301,7 @@ final class JevCoordinatorTests: XCTestCase {
         }
     }
 
-    func testFactoryMakesTheDeciderOnlyForJev() {
+    func testFactoryMakesTheDeciderOnlyWhenJevIsEnabled() {
         XCTAssertNotNil(assistant.jevDecider)
         XCTAssertNil(PlannerFactory.makePlanner(controller: controller, defaults: defaults, secrets: secrets))
         let other = UserDefaults(suiteName: "JevCoordinatorTests-\(UUID())")!
@@ -304,14 +319,14 @@ final class JevCoordinatorTests: XCTestCase {
         XCTAssertEqual(VoiceCommandParser().parse("it is way too stuffy in the study"), .unknown("it is way too stuffy in the study"))
         answer(device: "Study Fan", 0.92, action: JevCommandDecider.Action.powerOn.rawValue, 0.85)
         let ask = await assistant.handle("it is way too stuffy in the study", origin: .voice)
-        XCTAssertEqual(fake.requests.count, 2, "Stage A then Stage B")
+        XCTAssertEqual(fake.requests.count, 3, "route, then Stage A, then Stage B")
         XCTAssertEqual(ask.kind, .needsConfirmation)
         XCTAssertEqual(ask.source, AssistantCoordinator.jevSource)
         XCTAssertTrue(ask.text.hasPrefix("I heard \u{201C}it is way too stuffy in the study\u{201D}"), ask.text)
         XCTAssertTrue(ask.text.contains("Turn on Study Fan"), ask.text)
         XCTAssertEqual(store.power(for: fan), false, "nothing runs before the user agrees")
         // Stage B only offered actions the fan supports.
-        let stageB = (try? JSONSerialization.jsonObject(with: fake.requests[1].httpBody ?? Data())) as? [String: Any]
+        let stageB = (try? JSONSerialization.jsonObject(with: fake.requests[2].httpBody ?? Data())) as? [String: Any]
         let criteria = ((stageB?["questions"] as? [String: Any])?["action"] as? [String: Any])?["criteria"] as? [String: String]
         XCTAssertEqual(Set(criteria?.keys ?? [:].keys), ["power-on", "power-off", "set-level", "set-speed"])
         let done = await assistant.handle("yes", origin: .voice)
@@ -348,7 +363,7 @@ final class JevCoordinatorTests: XCTestCase {
         XCTAssertTrue(reply.text.contains("\(AssistantCoordinator.jevUnsureLead)"), reply.text)
         XCTAssertTrue(reply.text.contains("did you mean Desk Lamp"), reply.text)
         XCTAssertFalse(assistant.hasPendingConfirmation)
-        XCTAssertEqual(fake.requests.count, 1, "no Stage B after an unsure Stage A")
+        XCTAssertEqual(fake.requests.count, 2, "route + Stage A; no Stage B after an unsure Stage A")
         XCTAssertEqual(store.power(for: lamp), false)
         XCTAssertEqual(store.power(for: fan), false)
     }

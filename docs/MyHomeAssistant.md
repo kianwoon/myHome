@@ -61,7 +61,12 @@ A deterministic grammar (`CommandGrammar`, injectable for other languages) over 
 * modes / colour: `set X to sleep mode`, `set X mode to nature`, `make X red`, `set X to warm white`
 * covers: `open / close / stop X`
 * rooms: `turn off the lights in the master bedroom`
-* status: `is the study fan on`; confirmation: `yes` / `no`, `never mind`
+* status: `is the study fan on` / `is the study fan running`; confirmation: `yes` / `no`, `never mind`
+* state questions over many devices (`ParsedIntent.stateQuery`): `how many lights are on`,
+  `which fans are off`, `are any lamps on in the study`, `how many devices are on`,
+  `how many fans are there`. Answered by `Voice/DeviceQueryAnswerer.swift` from the registry —
+  counts always come from code; offline / never-read devices are excluded from on/off counts
+  and mentioned ("1 light is offline"); long lists are cut at `stateQueryListMax` (default 5).
 
 The parser never picks a device; `DeviceResolver` does, and asks when several match.
 
@@ -69,11 +74,31 @@ The parser never picks a device; `DeviceResolver` does, and asks when several ma
 
 Level 2 runs only when the Level-1 grammar does **not** understand an utterance (a command
 the grammar fully parses, including `to two` or a misheard `to do` after a speed noun, never
-reaches a model). Pick the provider in Settings → Assistant; the default is **None** (rule
-parser only, nothing is sent anywhere).
+reaches a model). Pick the **Cloud LLM** provider in Settings → **AI Models**; the default is
+**None** (rule parser only, nothing is sent anywhere). The Cloud LLM and Jev (below) are
+independent and can both be on.
+
+**Routing** of an utterance:
+
+1. **Rule parser** (always first, offline): direct commands, single-device status, and state
+   questions (`how many lights are on`). No network.
+2. **Jev router** (only if Jev is enabled and the parser returned `.unknown`): ONE decisions
+   request classifies it as `command` / `query` / `inference` / `other` (the `kind`, `state`
+   and `aggregation` questions ride in the same request and are read only for `query`).
+   * `command` → the Jev matcher (Stage A device, Stage B action) → confirmation.
+   * `query` → `DeviceQueryAnswerer` (Jev picks only the shape; counts come from code).
+   * `inference` (“the room is stuffy”) → the Cloud LLM, whose plan is confirmed; with no
+     Cloud LLM the reply says to configure one in Settings → AI Models and nothing runs.
+   * `other` → "couldn't match it to a command".
+   * route below gate / unmeasured / failed / timed out → Cloud LLM if available, else the
+     Jev matcher (the pre-router behaviour).
+3. **Cloud LLM** (when Jev is off): every `.unknown` utterance is planned as before.
+
+Migration: a stored `plannerProvider = "jev"` from earlier builds is converted once at launch
+(`AppSettings.migrateLegacyJevProvider`) to `jevEnabled = true` + provider `none`.
 
 * **Apple on-device** (`FoundationModelsPlanner`, macOS 26+, off by default): the model has
-  an 8,192-token window, so it sees only a compact catalogue (`handle|name|room|kind|caps`,
+  an 8,192-token window, so it sees only a compact catalogue (`handle|name|room|kind|state|can`,
   capped by `plannerCatalogueBudgetChars`, best name matches first) plus bounded
   `listDevices` / `findDevices` tools (`plannerToolOutputBudgetChars`). A fresh session is
   created per request; on a context-overflow the request is retried once with a much smaller
@@ -84,8 +109,11 @@ parser only, nothing is sent anywhere).
   a **Test connection** button. The key is stored in the macOS Keychain
   (`SecretStore`), sent only as a request header to the configured host, never logged and
   scrubbed from error text; HTTP error bodies are never quoted. **Privacy:** the command plus
-  device names, room names, kinds and capabilities are sent to the provider; device ids,
-  states and credentials are not. Defaults (endpoints, `anthropic-version`, budgets) live in
+  device names, room names, kinds, capabilities and the current state (`on 40%`, `off`,
+  `offline`, `?`) are sent to the provider so it can reason about a situation (stuffy + fan off
+  → turn the fan on and set a speed); device ids and credentials are not. The default
+  instructions tell the model to propose actions for a described condition, using current
+  state and only the listed handles. Defaults (endpoints, `anthropic-version`, budgets) live in
   `ControlSettings.swift`.
 
 **The model only proposes**: handles are mapped back to ids and validated against the
@@ -94,9 +122,10 @@ always shown and confirmed before anything runs. Planner and command awaits are 
 `plannerTimeoutSeconds` / `assistantCommandTimeoutSeconds`; on timeout the command bar shows a
 message, the spinner resets, and a Cancel button abandons a request in flight.
 
-### Jev decider — choice classifier (`MyHomeCore/Planner/JevClient.swift`, `JevCommandDecider.swift`, `Control/JevSettings.swift`, `MyHomeApp/JevSettingsView.swift`)
+### Jev router & matcher — choice classifier (`MyHomeCore/Planner/JevClient.swift`, `JevCommandDecider.swift`, `Control/JevSettings.swift`, `MyHomeApp/JevSettingsView.swift`)
 
-Provider **Jev decider (OpenRouter)** in Settings → Assistant. Jev is not a planner: it only
+Toggle **Use Jev to route and match requests** in Settings → AI Models → *Jev router &
+matcher* (setting `jevEnabled`, default off). Jev is not a planner: it only
 answers *choice* questions with a label and per-label probabilities (the opencode jev wire
 contract, `POST https://openrouter.ai/api/alpha/decisions`, body `{model, state, questions}`).
 The rule parser always runs first — a request it fully understands (`turn off the study fan`)
@@ -126,6 +155,10 @@ candidates), so the user is asked, never guessed for. Retries: network error, ti
 and 5xx only — 3 attempts, 200 ms then 600 ms back-off, each attempt bounded by the timeout
 (default 3 s). Worst case is about 10 s per stage, so a two-stage request is also bounded by
 `plannerTimeoutSeconds`.
+
+**What Jev cannot do.** It cannot answer free text, count, or invent an action: it only picks
+labels it was offered. Questions are answered by `DeviceQueryAnswerer`; situations
+("I'm cold") need a Cloud LLM.
 
 **Safety.** Jev only advises. An accepted match becomes a proposal that waits for "yes"
 (source `jev`, origin `.model`), exactly like a model-authored plan, even for a single

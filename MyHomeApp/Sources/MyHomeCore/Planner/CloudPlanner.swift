@@ -4,8 +4,8 @@
 // catalogue; the coordinator validates every handle, DeviceController applies
 // policy, and the user confirms before anything runs.
 //
-// Privacy: the request carries the command plus device and room NAMES, kinds
-// and capabilities (no ids, no state, no credentials). The API key lives in
+// Privacy: the request carries the command plus device and room NAMES, kinds,
+// capabilities and current on/off state + level (no ids, no credentials). The API key lives in
 // the Keychain, is sent only to the configured host as a header, and is
 // scrubbed from every error string. Plain http is allowed for localhost only.
 import Foundation
@@ -51,6 +51,7 @@ public final class CloudPlanner: NaturalLanguagePlanner {
     Turn a home-control request into device actions. Use only device handles (like d3) from the list.
     If the request is ambiguous, impossible, or names nothing in the list, return no actions and ask a short question in clarification.
     Levels are percents 0-100; fan speeds are gear numbers. Do not add actions that were not asked for.
+    If the user describes a condition rather than a command (for example "the room is stuffy", "it's too dark"), propose the device actions that address it (stuffy: turn on a fan and set a sensible speed), using each device's current state and only the handles listed.
     """
 
     private let controller: DeviceController
@@ -101,7 +102,7 @@ public final class CloudPlanner: NaturalLanguagePlanner {
         if let problem = Self.problem(with: config, key: key) { throw PlannerError.unavailable(problem) }
         let catalogue = PlannerCatalogue(devices: devices, utterance: utterance, budget: config.catalogueBudget,
                                          maxDevices: config.maxDevices, toolOutputBudget: config.toolOutputBudget)
-        let user = "Devices (handle|name|room|kind|can):\n\(catalogue.render())\n\nRequest: \(utterance)"
+        let user = "Devices (\(PlannerCatalogue.columns)):\n\(catalogue.render())\n\nRequest: \(utterance)"
         let text = try await Self.complete(config: config, key: key, system: Self.systemPrompt(config.instructions), user: user, session: session)
         let payload = try Self.decodePlan(text)
         return PlanConverter.convert(payload, resolveDevice: catalogue.id(forHandle:))

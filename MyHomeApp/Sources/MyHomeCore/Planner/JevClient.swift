@@ -182,10 +182,10 @@ public struct JevClient: Sendable {
 
     /// Why no call can be made (nil when ready).
     public static func problem(with config: Config, key: String?) -> String? {
-        if config.model.isEmpty { return "choose a Jev model in Settings → Assistant" }
+        if config.model.isEmpty { return "choose a Jev model in Settings → AI Models" }
         guard let url = endpointURL(config.endpoint) else { return "the Jev endpoint must be https (http is only allowed for localhost)" }
         let local = AppSettings.plainHTTPHosts.contains(url.host?.lowercased() ?? "")
-        if !local, (key ?? "").isEmpty { return "add a Jev API key in Settings → Assistant" }
+        if !local, (key ?? "").isEmpty { return "add a Jev API key in Settings → AI Models" }
         return nil
     }
 

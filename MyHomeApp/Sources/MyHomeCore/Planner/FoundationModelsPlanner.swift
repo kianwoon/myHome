@@ -26,16 +26,14 @@ public enum PlannerFactory {
             return nil
         case .anthropic, .openAICompatible:
             return CloudPlanner(controller: controller, defaults: defaults, secrets: secrets, session: session)
-        case .jev:
-            return nil   // Jev is a classifier, not a planner: see makeJevDecider
         }
     }
 
-    /// The Jev decider when it is the chosen provider, else nil.
+    /// The Jev router & matcher when enabled (independent of the planner provider), else nil.
     @MainActor
     public static func makeJevDecider(defaults: UserDefaults = .standard, secrets: SecretStore = KeychainSecretStore(),
                                       transport: JevTransport = URLSessionJevTransport()) -> JevCommandDecider? {
-        guard AppSettings.plannerProvider(from: defaults) == .jev else { return nil }
+        guard AppSettings.jevEnabled(from: defaults) else { return nil }
         return JevCommandDecider(defaults: defaults, secrets: secrets, transport: transport)
     }
 
@@ -86,7 +84,7 @@ struct PlannedResponse {
 @available(macOS 26, *)
 struct ListDevicesTool: Tool {
     let name = "listDevices"
-    let description = "Lists devices (handle|name|room|kind|capabilities), optionally filtered."
+    let description = "Lists devices (handle|name|room|kind|state|capabilities), optionally filtered."
     let catalogue: PlannerCatalogue
     let provider: @Sendable () async -> [DeviceSummary]
 
@@ -203,7 +201,7 @@ public final class FoundationModelsPlanner: NaturalLanguagePlanner {
         ]
         let instructions = AppSettings.plannerInstructions(from: defaults, fallback: Self.defaultInstructions)
         let session = LanguageModelSession(tools: tools, instructions: instructions)
-        let prompt = "Devices (handle|name|room|kind|can):\n\(catalogue.render())\n\nRequest: \(utterance)"
+        let prompt = "Devices (\(PlannerCatalogue.columns)):\n\(catalogue.render())\n\nRequest: \(utterance)"
         let response = try await session.respond(to: prompt, generating: PlannedResponse.self)
         var plan = Self.convert(response.content)
         plan.steps = plan.steps.map { ProposedStep(deviceIDs: $0.deviceIDs.map(catalogue.id(forHandle:)), command: $0.command) }

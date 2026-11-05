@@ -228,6 +228,32 @@ final class CloudPlannerTests: XCTestCase {
         XCTAssertFalse(defaults.dictionaryRepresentation().values.contains { "\($0)".contains(secretKey) })
     }
 
+    func testPromptCarriesCurrentStateAndTheConditionGuidance() async throws {
+        configure(.anthropic, key: secretKey)
+        MockURLProtocol.handler = { _, _ in (200, self.anthropicBody(self.planJSON)) }
+        _ = try await planner().plan("the study is stuffy", devices: controller.summaries())
+        let body = try XCTUnwrap(MockURLProtocol.seen.last?.body)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let user = (((json["messages"] as? [[String: Any]])?.first)?["content"] as? String) ?? ""
+        XCTAssertTrue(user.contains("(\(PlannerCatalogue.columns))"), user)
+        XCTAssertTrue(user.contains("|fan|off|"), "the fan's current state is in the catalogue line: \(user)")
+        let system = "\(json["system"] ?? "")"
+        XCTAssertTrue(system.contains("describes a condition rather than a command"), system)
+        XCTAssertTrue(CloudPlanner.defaultInstructions.contains("current state"))
+    }
+
+    func testCatalogueStateColumn() {
+        func summary(_ on: Bool?, level: Int? = nil, reach: DeviceSummary.ReachabilitySummary = .wifi) -> DeviceSummary {
+            DeviceSummary(id: "x", name: "X", room: "", group: nil, kind: .light, capabilities: [.power], reachability: reach,
+                          isControllable: true, isOn: on, levelPercent: level)
+        }
+        XCTAssertEqual(PlannerCatalogue.state(of: summary(true, level: 40)), "on 40%")
+        XCTAssertEqual(PlannerCatalogue.state(of: summary(true)), "on")
+        XCTAssertEqual(PlannerCatalogue.state(of: summary(false, level: 40)), "off")
+        XCTAssertEqual(PlannerCatalogue.state(of: summary(nil)), "?")
+        XCTAssertEqual(PlannerCatalogue.state(of: summary(true, reach: .offline)), "offline")
+    }
+
     func testScrubRemovesKey() {
         XCTAssertEqual(CloudPlanner.scrub("bad \(secretKey) here", key: secretKey), "bad ••• here")
     }
