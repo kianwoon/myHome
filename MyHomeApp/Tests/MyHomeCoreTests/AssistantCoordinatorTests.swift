@@ -17,10 +17,12 @@ private final class ScriptedPlanner: NaturalLanguagePlanner {
     var error: PlannerError?
     var asked: [String] = []
     var seenDevices = 0
+    var hangs = false
 
     func plan(_ utterance: String, devices: [DeviceSummary]) async throws -> ProposedPlan {
         asked.append(utterance)
         seenDevices = devices.count
+        if hangs { while true { try? await Task.sleep(nanoseconds: 3_600_000_000_000) } }
         if let error { throw error }
         return plan
     }
@@ -176,13 +178,61 @@ final class AssistantCoordinatorTests: XCTestCase {
         planner.error = .failed("context too long")
         let reply = await assistant.handle("make it cosy", origin: .text)
         XCTAssertEqual(reply.kind, .error)
-        XCTAssertEqual(reply.text, "The on-device model couldn't plan that: context too long.")
+        XCTAssertEqual(reply.text, "The planner couldn't plan that: context too long.")
+    }
+
+    func testFullyUnderstoodSpeedCommandsNeverReachTheModel() async {
+        for phrase in ["set the study fan speed to 2", "set the study fan speed to two", "change the study fan speed to do"] {
+            let reply = await assistant.handle(phrase, origin: .voice)
+            XCTAssertEqual(reply.source, AssistantCoordinator.grammarSource, phrase)
+            XCTAssertEqual(reply.kind, .executed, phrase)
+        }
+        XCTAssertTrue(planner.asked.isEmpty, "the rule parser handled everything; the LLM is only for what it cannot parse")
+    }
+
+    func testHangingPlannerTimesOutAndSpinnerResets() async {
+        planner.hangs = true
+        assistant.timeouts = AssistantTimeouts(planner: 0.2, command: 1)
+        let reply = await assistant.handle("make it cosy in the study", origin: .voice)
+        XCTAssertEqual(reply.kind, .error)
+        XCTAssertTrue(reply.text.contains("took too long"), reply.text)
+        XCTAssertFalse(assistant.isBusy)
+    }
+
+    func testCancelAbandonsAHangingPlanner() async {
+        planner.hangs = true
+        assistant.timeouts = AssistantTimeouts(planner: 30, command: 30)
+        let pending = Task { await assistant.handle("make it cosy in the study", origin: .voice) }
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertTrue(assistant.isBusy)
+        assistant.cancelActive()
+        let reply = await pending.value
+        XCTAssertEqual(reply.text, "Cancelled.")
+        XCTAssertFalse(assistant.isBusy)
+    }
+
+    func testOverBudgetCatalogueIsTrimmedToTheBestNameMatches() {
+        let fillers = (0..<80).map { i in
+            ControlFixtures.device("plug-\(i)", name: "Plug Number \(i)", category: "dj", room: "Hall", spec: ControlFixtures.lightSpec)
+        }
+        store.setRosterForTest([fan, lamp, lamp2] + fillers)
+        let budget = 400
+        let catalogue = PlannerCatalogue(devices: controller.summaries(), utterance: "study fan speed", budget: budget, maxDevices: 40, toolOutputBudget: 300)
+        let text = catalogue.render()
+        XCTAssertLessThanOrEqual(catalogue.shown.count, 40)
+        XCTAssertGreaterThan(catalogue.omitted, 0)
+        XCTAssertTrue(catalogue.shown.contains { $0.id == fan.id }, "the named device survives trimming")
+        XCTAssertLessThanOrEqual(catalogue.shown.map { catalogue.line(for: $0).count + 1 }.reduce(0, +), budget)
+        XCTAssertTrue(text.contains("findDevices"))
+        XCTAssertFalse(text.contains(fan.id), "long ids are replaced by short handles")
+        XCTAssertEqual(catalogue.id(forHandle: catalogue.handle(for: fan.id)), fan.id)
+        XCTAssertLessThanOrEqual(catalogue.render(controller.summaries()).count, 300 + 60)
     }
 
     func testPlannerFactoryIsGatedNotCrashing() {
         // On this build host the factory may or may not return a planner;
         // either way it must not throw and the note must agree with it.
         let planner = PlannerFactory.makePlanner(controller: controller, defaults: UserDefaults(suiteName: "PlannerFactory-\(UUID())")!)
-        XCTAssertEqual(planner == nil, PlannerFactory.platformNote() != nil)
+        XCTAssertNil(planner, "no model is contacted unless the user picks a provider")
     }
 }

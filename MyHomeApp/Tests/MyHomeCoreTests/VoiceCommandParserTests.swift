@@ -11,6 +11,17 @@ final class VoiceCommandParserTests: XCTestCase {
         return nil
     }
 
+    func testSpelledAndMisheardNumbers() {
+        let parser = VoiceCommandParser()
+        for phrase in ["set the study fan speed to 2", "set the study fan speed to two", "change the study fan speed to do",
+                       "set the study fan speed to too"] {
+            guard case .command(let query, .fanSpeed(2)) = parser.parse(phrase) else { return XCTFail(phrase) }
+            XCTAssertEqual(query.text, "study fan", phrase)
+        }
+        // A sound-alike is only trusted as a speed value, never as a mode or name.
+        if case .command(_, .fanSpeed) = parser.parse("set the study fan to do") { XCTFail("homophone leaked outside speed") }
+    }
+
     func testPowerPhrasings() {
         XCTAssertEqual(command("turn off the bedroom lights")?.1, .power(false))
         XCTAssertEqual(command("turn off the bedroom lights")?.0.text, "bedroom lights")

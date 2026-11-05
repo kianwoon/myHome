@@ -46,12 +46,17 @@ public extension AppSettings {
     static let defaultSpeechPreferOnDevice = true
     /// Silence after the last partial result that ends an utterance.
     static let speechSilenceTimeoutKey = "speechSilenceTimeoutSeconds"
-    static let defaultSpeechSilenceTimeout: TimeInterval = 1.5
+    static let defaultSpeechSilenceTimeout: TimeInterval = 2.5
     static let speechSilenceTimeoutRange: ClosedRange<TimeInterval> = 0.5...10
     /// Hard cap on one listening session.
     static let speechMaxUtteranceKey = "speechMaxUtteranceSeconds"
     static let defaultSpeechMaxUtterance: TimeInterval = 15
     static let speechMaxUtteranceRange: ClosedRange<TimeInterval> = 3...60
+    /// After the audio ends, how long to wait for the recogniser's FINAL (often
+    /// corrected) transcript before delivering the latest partial.
+    static let speechFinalizeGraceKey = "speechFinalizeGraceSeconds"
+    static let defaultSpeechFinalizeGrace: TimeInterval = 1.5
+    static let speechFinalizeGraceRange: ClosedRange<TimeInterval> = 0.2...5
     static let spokenRepliesKey = "spokenRepliesEnabled"
     static let defaultSpokenReplies = true
 
@@ -70,6 +75,10 @@ public extension AppSettings {
         clamped(defaults.object(forKey: speechSilenceTimeoutKey) as? Double, defaultSpeechSilenceTimeout, speechSilenceTimeoutRange)
     }
 
+    static func speechFinalizeGrace(from defaults: UserDefaults = .standard) -> TimeInterval {
+        clamped(defaults.object(forKey: speechFinalizeGraceKey) as? Double, defaultSpeechFinalizeGrace, speechFinalizeGraceRange)
+    }
+
     static func speechMaxUtterance(from defaults: UserDefaults = .standard) -> TimeInterval {
         clamped(defaults.object(forKey: speechMaxUtteranceKey) as? Double, defaultSpeechMaxUtterance, speechMaxUtteranceRange)
     }
@@ -80,17 +89,124 @@ public extension AppSettings {
 
     // MARK: Planner (Apple Foundation Models)
 
-    static let plannerEnabledKey = "plannerEnabled"
-    static let defaultPlannerEnabled = true
     /// Override for the model instructions; empty = the bundled default.
     static let plannerInstructionsKey = "plannerInstructions"
     /// Upper bound on devices listed in the model's context per request.
     static let plannerMaxDevicesKey = "plannerMaxDevices"
-    static let defaultPlannerMaxDevices = 60
+    static let defaultPlannerMaxDevices = 40
     static let plannerMaxDevicesRange = 1...500
 
-    static func plannerEnabled(from defaults: UserDefaults = .standard) -> Bool {
-        defaults.object(forKey: plannerEnabledKey) as? Bool ?? defaultPlannerEnabled
+    /// Character budget for the device catalogue sent in the prompt (the on-device
+    /// model has an 8,192-token window shared with instructions, tool schemas,
+    /// tool output and the answer, so the catalogue must stay small).
+    static let plannerCatalogueBudgetKey = "plannerCatalogueBudgetChars"
+    static let defaultPlannerCatalogueBudget = 2000
+    static let plannerCatalogueBudgetRange = 200...12000
+    /// Cap on one tool call's output, in characters.
+    static let plannerToolOutputBudgetKey = "plannerToolOutputBudgetChars"
+    static let defaultPlannerToolOutputBudget = 1200
+    static let plannerToolOutputBudgetRange = 200...6000
+    /// After a context-overflow the catalogue budget is divided by this for the one retry.
+    static let plannerRetryShrinkKey = "plannerRetryShrinkDivisor"
+    static let defaultPlannerRetryShrink = 4
+    static let plannerRetryShrinkRange = 2...20
+    /// Longest the planner may think before the Level-1 result / a message is used.
+    static let plannerTimeoutKey = "plannerTimeoutSeconds"
+    static let defaultPlannerTimeout: TimeInterval = 20
+    static let plannerTimeoutRange: ClosedRange<TimeInterval> = 2...120
+    /// Longest one command (execute + verify) may block the command bar.
+    static let assistantCommandTimeoutKey = "assistantCommandTimeoutSeconds"
+    static let defaultAssistantCommandTimeout: TimeInterval = 15
+    static let assistantCommandTimeoutRange: ClosedRange<TimeInterval> = 2...120
+
+    static func plannerCatalogueBudget(from defaults: UserDefaults = .standard) -> Int {
+        clampedInt(defaults.object(forKey: plannerCatalogueBudgetKey) as? Int, defaultPlannerCatalogueBudget, plannerCatalogueBudgetRange)
+    }
+
+    static func plannerToolOutputBudget(from defaults: UserDefaults = .standard) -> Int {
+        clampedInt(defaults.object(forKey: plannerToolOutputBudgetKey) as? Int, defaultPlannerToolOutputBudget, plannerToolOutputBudgetRange)
+    }
+
+    static func plannerRetryShrink(from defaults: UserDefaults = .standard) -> Int {
+        clampedInt(defaults.object(forKey: plannerRetryShrinkKey) as? Int, defaultPlannerRetryShrink, plannerRetryShrinkRange)
+    }
+
+    static func plannerTimeout(from defaults: UserDefaults = .standard) -> TimeInterval {
+        clamped(defaults.object(forKey: plannerTimeoutKey) as? Double, defaultPlannerTimeout, plannerTimeoutRange)
+    }
+
+    static func assistantCommandTimeout(from defaults: UserDefaults = .standard) -> TimeInterval {
+        clamped(defaults.object(forKey: assistantCommandTimeoutKey) as? Double, defaultAssistantCommandTimeout, assistantCommandTimeoutRange)
+    }
+
+    private static func clampedInt(_ stored: Int?, _ fallback: Int, _ range: ClosedRange<Int>) -> Int {
+        min(max(stored ?? fallback, range.lowerBound), range.upperBound)
+    }
+
+    // MARK: Planner provider (Level 2)
+
+    /// Which model plans requests the rule parser cannot understand.
+    enum PlannerProvider: String, CaseIterable, Identifiable, Sendable {
+        case none, apple, anthropic, openAICompatible
+        public var id: String { rawValue }
+        /// Sends device/room names and the command to a remote host.
+        public var isCloud: Bool { self == .anthropic || self == .openAICompatible }
+    }
+
+    static let plannerProviderKey = "plannerProvider"
+    /// Off by default: the rule parser handles direct commands; no model is contacted.
+    static let defaultPlannerProvider = PlannerProvider.none
+
+    static let anthropicBaseURLKey = "plannerAnthropicBaseURL"
+    static let defaultAnthropicBaseURL = "https://api.anthropic.com"
+    static let anthropicMessagesPath = "/v1/messages"
+    static let anthropicAPIVersionKey = "plannerAnthropicAPIVersion"
+    static let defaultAnthropicAPIVersion = "2023-06-01"
+    static let openAIBaseURLKey = "plannerOpenAIBaseURL"
+    static let defaultOpenAIBaseURL = "https://api.openai.com/v1"
+    static let openAIChatPath = "/chat/completions"
+    /// Free-text model name per provider; empty until the user chooses one.
+    static let anthropicModelKey = "plannerAnthropicModel"
+    static let openAIModelKey = "plannerOpenAIModel"
+    static let anthropicModelPlaceholder = "model name, e.g. claude-sonnet-4-5"
+    static let openAIModelPlaceholder = "model name, e.g. gpt-4o-mini or a local model"
+    /// Cap on the reply length requested from the cloud model.
+    static let plannerMaxTokensKey = "plannerMaxTokens"
+    static let defaultPlannerMaxTokens = 1024
+    static let plannerMaxTokensRange = 64...8192
+    /// A cloud model has room for far more catalogue than the on-device one.
+    static let cloudCatalogueBudgetKey = "plannerCloudCatalogueBudgetChars"
+    static let defaultCloudCatalogueBudget = 8000
+    static let cloudCatalogueBudgetRange = 500...60000
+    /// Hosts that may be reached over plain http (local model servers).
+    static let plainHTTPHosts: Set<String> = ["localhost", "127.0.0.1", "::1", "[::1]"]
+
+    static func plannerProvider(from defaults: UserDefaults = .standard) -> PlannerProvider {
+        defaults.string(forKey: plannerProviderKey).flatMap(PlannerProvider.init(rawValue:)) ?? defaultPlannerProvider
+    }
+
+    static func plannerBaseURL(for provider: PlannerProvider, from defaults: UserDefaults = .standard) -> String {
+        let (key, fallback) = provider == .anthropic ? (anthropicBaseURLKey, defaultAnthropicBaseURL) : (openAIBaseURLKey, defaultOpenAIBaseURL)
+        let stored = defaults.string(forKey: key)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return stored.isEmpty ? fallback : stored
+    }
+
+    static func plannerModel(for provider: PlannerProvider, from defaults: UserDefaults = .standard) -> String {
+        let key = provider == .anthropic ? anthropicModelKey : openAIModelKey
+        return defaults.string(forKey: key)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    static func anthropicAPIVersion(from defaults: UserDefaults = .standard) -> String {
+        let stored = defaults.string(forKey: anthropicAPIVersionKey)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return stored.isEmpty ? defaultAnthropicAPIVersion : stored
+    }
+
+    static func plannerMaxTokens(from defaults: UserDefaults = .standard) -> Int {
+        clampedInt(defaults.object(forKey: plannerMaxTokensKey) as? Int, defaultPlannerMaxTokens, plannerMaxTokensRange)
+    }
+
+    static func cloudCatalogueBudget(from defaults: UserDefaults = .standard) -> Int {
+        clampedInt(defaults.object(forKey: cloudCatalogueBudgetKey) as? Int, defaultCloudCatalogueBudget, cloudCatalogueBudgetRange)
     }
 
     static func plannerInstructions(from defaults: UserDefaults = .standard, fallback: String) -> String {
@@ -109,6 +225,20 @@ public extension AppSettings {
 }
 
 /// Runtime knobs for DeviceController, snapshotted from AppSettings.
+public struct AssistantTimeouts: Equatable, Sendable {
+    public var planner: TimeInterval
+    public var command: TimeInterval
+
+    public init(planner: TimeInterval = AppSettings.defaultPlannerTimeout, command: TimeInterval = AppSettings.defaultAssistantCommandTimeout) {
+        self.planner = planner
+        self.command = command
+    }
+
+    public static func fromDefaults(_ defaults: UserDefaults = .standard) -> AssistantTimeouts {
+        AssistantTimeouts(planner: AppSettings.plannerTimeout(from: defaults), command: AppSettings.assistantCommandTimeout(from: defaults))
+    }
+}
+
 public struct ControlConfig: Equatable, Sendable {
     public var verifyTimeout: TimeInterval
     public var confirmationDeviceThreshold: Int

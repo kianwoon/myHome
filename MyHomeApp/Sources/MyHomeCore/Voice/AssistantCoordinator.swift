@@ -32,6 +32,8 @@ public final class AssistantCoordinator: ObservableObject {
     public let controller: DeviceController
     public let parser: VoiceCommandParser
     public var planner: NaturalLanguagePlanner?
+    public var timeouts: AssistantTimeouts
+    private var activeTask: Task<AssistantReply, Never>?
 
     @Published public private(set) var replies: [AssistantReply] = []
     @Published public private(set) var isBusy = false
@@ -40,7 +42,9 @@ public final class AssistantCoordinator: ObservableObject {
     /// Devices the user must pick between after an ambiguous request.
     @Published public private(set) var pendingChoice: (command: DeviceCommand, candidates: [DeviceSummary])?
 
-    public init(controller: DeviceController, parser: VoiceCommandParser = VoiceCommandParser(), planner: NaturalLanguagePlanner? = nil) {
+    public init(controller: DeviceController, parser: VoiceCommandParser = VoiceCommandParser(), planner: NaturalLanguagePlanner? = nil,
+                timeouts: AssistantTimeouts = AssistantTimeouts()) {
+        self.timeouts = timeouts
         self.controller = controller
         self.parser = parser
         self.planner = planner
@@ -54,10 +58,18 @@ public final class AssistantCoordinator: ObservableObject {
     @discardableResult
     public func handle(_ utterance: String, origin: CommandOrigin) async -> AssistantReply {
         isBusy = true
-        defer { isBusy = false }
-        let reply = await process(utterance, origin: origin)
+        defer { isBusy = false; activeTask = nil }
+        let task = Task { await process(utterance, origin: origin) }
+        activeTask = task
+        let reply = await task.value
         replies.append(reply)
         return reply
+    }
+
+    /// Abandons the request in flight (the command bar's Cancel). The device
+    /// write itself may still complete; only the wait is dropped.
+    public func cancelActive() {
+        activeTask?.cancel()
     }
 
     /// Runs every pending request (the user said yes).
@@ -97,7 +109,8 @@ public final class AssistantCoordinator: ObservableObject {
         var results: [CommandResult] = []
         for var request in requests {
             request.confirmed = true   // the user just said yes
-            results.append(await controller.perform(request))
+            guard let result = await boundedPerform(request) else { return timeoutReply() }
+            results.append(result)
         }
         let text = results.map(\.spokenSummary).joined(separator: " ")
         return AssistantReply(kind: .executed, text: text, result: results.last, source: Self.grammarSource)
@@ -112,7 +125,8 @@ public final class AssistantCoordinator: ObservableObject {
     private func runChoice(_ command: DeviceCommand, device: Device, origin: CommandOrigin) async -> AssistantReply {
         pendingChoice = nil
         let request = CommandRequest(resolution: .single(device), command: command, origin: origin, confirmed: true)
-        return reply(for: await controller.perform(request), source: Self.grammarSource)
+        guard let result = await boundedPerform(request) else { return timeoutReply() }
+        return reply(for: result, source: Self.grammarSource)
     }
 
     private func process(_ utterance: String, origin: CommandOrigin) async -> AssistantReply {
@@ -146,7 +160,10 @@ public final class AssistantCoordinator: ObservableObject {
             // A new command supersedes anything still waiting for a yes.
             pending = []
             pendingChoice = nil
-            let result = await controller.perform(command, on: query, origin: origin)
+            let controller = self.controller
+            guard let result = await Deadline.run(seconds: timeouts.command, { @MainActor in
+                await controller.perform(command, on: query, origin: origin)
+            }) else { return timeoutReply() }
             if case .nothingToDo = result.disposition, let planner, planner.isAvailable {
                 // The grammar understood the shape but not the device: let the
                 // model try with the registry in front of it.
@@ -217,16 +234,37 @@ public final class AssistantCoordinator: ObservableObject {
 
     // MARK: - Level 2
 
+    private func boundedPerform(_ request: CommandRequest) async -> CommandResult? {
+        let controller = self.controller
+        return await Deadline.run(seconds: timeouts.command) { @MainActor in await controller.perform(request) }
+    }
+
+    private func timeoutReply() -> AssistantReply {
+        let text = Task.isCancelled ? "Cancelled." : "That took too long; the device may still apply it."
+        return AssistantReply(kind: Task.isCancelled ? .info : .error, text: text, source: Self.grammarSource)
+    }
+
     private func planWithModel(_ utterance: String, origin: CommandOrigin) async -> AssistantReply {
         guard let planner else {
             return AssistantReply(kind: .error, text: "Sorry, I didn't understand that.", source: Self.grammarSource)
         }
         let plan: ProposedPlan
-        do {
-            plan = try await planner.plan(utterance, devices: controller.summaries())
-        } catch {
-            AppLog.assistant.error("planner failed: \(String(describing: error))")
-            return AssistantReply(kind: .error, text: "The on-device model couldn't plan that: \(Self.message(for: error)).", source: Self.modelSource)
+        let summaries = controller.summaries()
+        let outcome = await Deadline.run(seconds: timeouts.planner) { @MainActor () -> Result<ProposedPlan, PlannerFailure> in
+            do { return .success(try await planner.plan(utterance, devices: summaries)) }
+            catch { return .failure(PlannerFailure(error)) }
+        }
+        guard let outcome else {
+            AppLog.assistant.error("planner timed out or was cancelled")
+            let text = Task.isCancelled ? "Cancelled." : "The planner took too long to plan that. Try rephrasing the request."
+            return AssistantReply(kind: Task.isCancelled ? .info : .error, text: text, source: Self.modelSource)
+        }
+        switch outcome {
+        case .success(let proposed):
+            plan = proposed
+        case .failure(let failure):
+            AppLog.assistant.error("planner failed: \(String(describing: failure.error))")
+            return AssistantReply(kind: .error, text: "The planner couldn't plan that: \(Self.message(for: failure.error)).", source: Self.modelSource)
         }
         if let question = plan.clarification, plan.steps.isEmpty {
             return AssistantReply(kind: .ambiguous, text: question, source: Self.modelSource)
@@ -263,4 +301,11 @@ public final class AssistantCoordinator: ObservableObject {
         if case PlannerError.failed(let text) = error { return text }
         return error.localizedDescription
     }
+}
+
+/// A planner error carried across the Deadline boundary (Error is not Sendable).
+struct PlannerFailure: Error, @unchecked Sendable {
+    let error: Error
+    init(_ error: Error) { self.error = error }
+    var localizedDescription: String { error.localizedDescription }
 }

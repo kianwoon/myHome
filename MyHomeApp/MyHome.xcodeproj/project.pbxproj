@@ -21,6 +21,7 @@
 		E35660965C5E27E41E509392 /* MyHomeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 025EB1036E4D31BAC39CC68D /* MyHomeApp.swift */; };
 		E4D6E9F51A7F3A05F7D211E3 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEC2FF8663C0FA7C9EFBC95F /* SettingsView.swift */; };
 		F317B7D65C3E75768462303A /* DeviceEntity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D7042748DAC7386EE28CB1C /* DeviceEntity.swift */; };
+		F4F85783C9717DEEC072F30A /* SpeechEngineSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1E72525B7B501D3D2AC0806 /* SpeechEngineSettingsView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -39,6 +40,7 @@
 		E6F42298384742B657F3B1FC /* ScheduleSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScheduleSection.swift; sourceTree = "<group>"; };
 		EA216D0C142E0CFF19B47BC6 /* MenuContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuContentView.swift; sourceTree = "<group>"; };
 		EC116BFBB8AB47D767CE420A /* AssistantSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantSettingsView.swift; sourceTree = "<group>"; };
+		F1E72525B7B501D3D2AC0806 /* SpeechEngineSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechEngineSettingsView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -93,6 +95,7 @@
 				E6F42298384742B657F3B1FC /* ScheduleSection.swift */,
 				AEC2FF8663C0FA7C9EFBC95F /* SettingsView.swift */,
 				81FE9F3B979384342150D39A /* SpecControls.swift */,
+				F1E72525B7B501D3D2AC0806 /* SpeechEngineSettingsView.swift */,
 			);
 			path = MyHomeApp;
 			sourceTree = "<group>";
@@ -191,6 +194,7 @@
 				C3E075CE935FAC31A677C906 /* ScheduleSection.swift in Sources */,
 				E4D6E9F51A7F3A05F7D211E3 /* SettingsView.swift in Sources */,
 				9F1510C90D309A19D82A7540 /* SpecControls.swift in Sources */,
+				F4F85783C9717DEEC072F30A /* SpeechEngineSettingsView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

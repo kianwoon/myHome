@@ -33,6 +33,9 @@ struct CommandBarView: View {
                     .disabled(assistant.isBusy)
                 if assistant.isBusy {
                     ProgressView().controlSize(.small)
+                    Button("Cancel") { assistant.cancelActive() }
+                        .controlSize(.small)
+                        .keyboardShortcut(.cancelAction)
                 }
                 Button(action: toggleMicrophone) {
                     Image(systemName: speech.isListening ? "mic.fill" : "mic")
@@ -46,6 +49,11 @@ struct CommandBarView: View {
             }
             if case .unavailable(let reason) = speech.status {
                 Text(reason)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if case .loadingModel(let engine) = speech.status {
+                Text("Loading the \(engine) speech model…")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -71,8 +79,8 @@ struct CommandBarView: View {
     private var microphoneHelp: String {
         if !speech.isSupported {
             return SpeechCommandRecognizer.usageDescriptionsPresent(in: .main)
-                ? "Speech recognition is unavailable for the selected language."
-                : "Voice input needs the Xcode-built app (microphone and speech usage descriptions)."
+                ? "No offline speech model is installed — see Settings → Assistant → Speech engine."
+                : "Voice input needs the Xcode-built app (microphone usage description)."
         }
         return speech.isListening ? "Stop listening (⇧⌘M)" : "Speak a command (⇧⌘M)"
     }

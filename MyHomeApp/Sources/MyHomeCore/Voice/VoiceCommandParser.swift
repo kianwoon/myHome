@@ -39,6 +39,12 @@ public struct CommandGrammar: Sendable {
     public var colorNames: [String: RGB]
     /// A bare number up to this is a fan gear; above it, a percent.
     public var bareNumberGearMax: Int
+    /// Spelled-out numbers ("two" → 2), valid anywhere a digit is.
+    public var numberWords: [String: Int]
+    /// Sound-alikes the recogniser produces for a number ("to 2" → "to do").
+    /// Only trusted for the value of a speed/gear setting, where a word that is
+    /// not a number cannot otherwise be a value.
+    public var speedNumberHomophones: [String: Int]
 
     // allow-hardcode: this is the spoken-command grammar (verbs, particles,
     // colour names) — reviewed vocabulary, not a scoring oracle; it is
@@ -69,7 +75,10 @@ public struct CommandGrammar: Sendable {
                      "orange": RGB(red: 255, green: 128, blue: 0), "purple": RGB(red: 128, green: 0, blue: 255),
                      "pink": RGB(red: 255, green: 105, blue: 180), "cyan": RGB(red: 0, green: 255, blue: 255),
                      "white": RGB(red: 255, green: 255, blue: 255), "magenta": RGB(red: 255, green: 0, blue: 255)],
-        bareNumberGearMax: DeviceState.numericFanSpeedMax
+        bareNumberGearMax: DeviceState.numericFanSpeedMax,
+        numberWords: ["zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8,
+                      "nine": 9, "ten": 10],
+        speedNumberHomophones: ["do": 2, "too": 2, "tu": 2, "for": 4]
     )
 
     public init(fillerPrefix: [String], powerVerbs: Set<String>, onWords: Set<String>, offWords: Set<String>,
@@ -77,7 +86,8 @@ public struct CommandGrammar: Sendable {
                 levelVerbs: Set<String>, levelNouns: Set<String>, speedNouns: Set<String>, modeNouns: Set<String>,
                 percentWords: Set<String>, toWords: Set<String>, roomPrepositions: Set<String>, statusLeads: Set<String>,
                 confirmWords: Set<String>, cancelWords: Set<String>, temperaturePhrases: [String: Int],
-                colorNames: [String: RGB], bareNumberGearMax: Int) {
+                colorNames: [String: RGB], bareNumberGearMax: Int,
+                numberWords: [String: Int] = [:], speedNumberHomophones: [String: Int] = [:]) {
         self.fillerPrefix = fillerPrefix
         self.powerVerbs = powerVerbs
         self.onWords = onWords
@@ -99,6 +109,8 @@ public struct CommandGrammar: Sendable {
         self.temperaturePhrases = temperaturePhrases
         self.colorNames = colorNames
         self.bareNumberGearMax = bareNumberGearMax
+        self.numberWords = numberWords
+        self.speedNumberHomophones = speedNumberHomophones
     }
 }
 
@@ -208,9 +220,9 @@ public struct VoiceCommandParser {
         if let temperature = temperaturePhrase(in: phrase) { return .colorTemperature(temperature) }
         if let mode = modeValue(tokens, hints: hints) { return .mode(mode) }
         if let color = tokens.lazy.compactMap({ grammar.colorNames[$0] }).first { return .color(color) }
-        guard let numberIndex = tokens.firstIndex(where: { Int($0) != nil }), let number = Int(tokens[numberIndex]) else { return nil }
-        let isPercent = tokens.contains { grammar.percentWords.contains($0) }
         let speedHint = hints.contains { grammar.speedNouns.contains($0) } || tokens.contains { grammar.speedNouns.contains($0) }
+        guard let number = numberValue(in: tokens, allowHomophones: speedHint) else { return nil }
+        let isPercent = tokens.contains { grammar.percentWords.contains($0) }
         let levelHint = levelVerb || hints.contains { grammar.levelNouns.contains($0) }
         if isPercent { return .level(number) }
         if speedHint { return .fanSpeed(number) }
@@ -229,7 +241,10 @@ public struct VoiceCommandParser {
         if let colorToken = tokens.last, let color = grammar.colorNames[colorToken] {
             return (.color(color), [colorToken])
         }
-        if let numberIndex = tokens.firstIndex(where: { Int($0) != nil }) {
+        // A spelled-out number only counts when a setting noun introduced it
+        // ("fan speed three"); "the desk one" names a device, not a value.
+        let spelledOK = !hints.isEmpty
+        if let numberIndex = tokens.firstIndex(where: { Int($0) != nil || (spelledOK && grammar.numberWords[$0] != nil) }) {
             var consumed: Set<String> = [tokens[numberIndex]]
             let following = tokens.indices.contains(numberIndex + 1) ? tokens[numberIndex + 1] : ""
             if grammar.percentWords.contains(following) { consumed.insert(following) }
@@ -242,6 +257,20 @@ public struct VoiceCommandParser {
         if let mode = modeValue(tokens, hints: hints) {
             return (.mode(mode), [mode])
         }
+        return nil
+    }
+
+    /// A digit string or a spelled-out number.
+    private func number(from token: String) -> Int? {
+        Int(token) ?? grammar.numberWords[token]
+    }
+
+    /// The value of a setting: the first number, else (speed settings only,
+    /// where the value is a lone word) a recogniser sound-alike of one.
+    private func numberValue(in tokens: [String], allowHomophones: Bool) -> Int? {
+        if let found = tokens.lazy.compactMap({ number(from: $0) }).first { return found }
+        let words = tokens.filter { !vocabulary.stopWords.contains($0) && !grammar.percentWords.contains($0) }
+        if allowHomophones, words.count == 1 { return grammar.speedNumberHomophones[words[0]] }
         return nil
     }
 
@@ -262,7 +291,7 @@ public struct VoiceCommandParser {
             if tokens.indices.contains(index + 1) { return tokens[index + 1] }
             return nil
         }
-        if hints.contains(where: { grammar.modeNouns.contains($0) }), tokens.count == 1, Int(tokens[0]) == nil {
+        if hints.contains(where: { grammar.modeNouns.contains($0) }), tokens.count == 1, number(from: tokens[0]) == nil {
             return tokens[0]
         }
         return nil

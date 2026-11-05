@@ -65,25 +65,85 @@ A deterministic grammar (`CommandGrammar`, injectable for other languages) over 
 
 The parser never picks a device; `DeviceResolver` does, and asks when several match.
 
-### Level 2 — Apple Foundation Models (`MyHomeCore/Planner/`)
+### Level 2 — optional model planner (`MyHomeCore/Planner/`)
 
-`FoundationModelsPlanner` is used only when the Level-1 grammar does not understand the
-utterance (or names no known device) and only when `#available(macOS 26, *)` and
-`SystemLanguageModel.default.availability == .available`; otherwise the app degrades to
-Level 1 with a visible reason (Settings → Assistant). The model sees the registry (ids,
-names, rooms, capabilities, state) through `listDevices` / `findDevices` tools and returns
-a `@Generable` structured plan. **The model only proposes**: every id is validated against
-the registry, every step goes through `DeviceController` policy, and a model-authored plan
-is always shown and confirmed before anything runs. Instructions come from
-`AppSettings.plannerInstructions` (override) with a reviewed default.
+Level 2 runs only when the Level-1 grammar does **not** understand an utterance (a command
+the grammar fully parses, including `to two` or a misheard `to do` after a speed noun, never
+reaches a model). Pick the provider in Settings → Assistant; the default is **None** (rule
+parser only, nothing is sent anywhere).
+
+* **Apple on-device** (`FoundationModelsPlanner`, macOS 26+, off by default): the model has
+  an 8,192-token window, so it sees only a compact catalogue (`handle|name|room|kind|caps`,
+  capped by `plannerCatalogueBudgetChars`, best name matches first) plus bounded
+  `listDevices` / `findDevices` tools (`plannerToolOutputBudgetChars`). A fresh session is
+  created per request; on a context-overflow the request is retried once with a much smaller
+  catalogue.
+* **Anthropic API** and **OpenAI-compatible** (`CloudPlanner`, URLSession, no dependencies):
+  one JSON-plan request per utterance. Settings: base URL (editable, so local servers work;
+  plain `http` only for localhost), free-text model name, API key, timeout, max tokens, and
+  a **Test connection** button. The key is stored in the macOS Keychain
+  (`SecretStore`), sent only as a request header to the configured host, never logged and
+  scrubbed from error text; HTTP error bodies are never quoted. **Privacy:** the command plus
+  device names, room names, kinds and capabilities are sent to the provider; device ids,
+  states and credentials are not. Defaults (endpoints, `anthropic-version`, budgets) live in
+  `ControlSettings.swift`.
+
+**The model only proposes**: handles are mapped back to ids and validated against the
+registry, every step goes through `DeviceController` policy, and a model-authored plan is
+always shown and confirmed before anything runs. Planner and command awaits are bounded by
+`plannerTimeoutSeconds` / `assistantCommandTimeoutSeconds`; on timeout the command bar shows a
+message, the spinner resets, and a Cancel button abandons a request in flight.
 
 ### Speech (`MyHomeCore/Voice/SpeechCommandRecognizer.swift`, `SpeechResponder.swift`)
 
-Push-to-talk capture with `SFSpeechRecognizer` + `AVAudioEngine` (on-device recognition when
-the locale supports it and `speechPreferOnDevice` is set), silence / max-utterance timers,
-and `AVSpeechSynthesizer` replies. Permission requests are gated on the bundle carrying
-`NSMicrophoneUsageDescription` and `NSSpeechRecognitionUsageDescription`; a process
-without them (`swift run`) gets a clear message instead of a crash and keeps typed commands.
+Speech-to-text runs **offline on this Mac** with the same engine stack as the Pop app;
+Apple's `SFSpeechRecognizer` is no longer used (the Speech framework is not linked).
+
+* **Engines** (`SherpaSpeechEngines.swift`, sherpa-onnx 1.13.8): **Qwen3-ASR-0.6B INT8** is
+  the primary engine (Pop's pinned, tested ring) and **SenseVoice INT8** the fallback
+  (language pinned from the voice locale, inverse text normalisation on). Pop's whisper.cpp
+  ring is not ported: in Pop it is a Chinese-only tail ring. Order and fallback live in
+  `SpeechEngineChain` (`SpeechEngine.swift`): membership = enabled AND installed, an
+  optional pin (`speechPreferredEngine`), the last engine that produced text leads, and an
+  engine that loads but stays silent is marked dead for the process and sorts last.
+* **Models** are looked up in `~/Library/Application Support/MyHome/speech/{qwenasr,sensevoice}`
+  first, then (read-only, `speechUsePopModels`) in Pop's
+  `~/Library/Application Support/Pop/{qwenasr,sensevoice}`. A usability gate (size floors,
+  ONNX header byte, tokenizer tables) runs before any recognizer is built, because
+  sherpa-onnx aborts on a bad asset. With no usable model the mic button is disabled and
+  Settings → Assistant → Speech engine offers **Install** (~1 GB download from the sherpa-onnx
+  release page into MyHome's own folder; Pop's folder is never written).
+* **Capture and endpointing**: `AVAudioEngine` tap → 16 kHz mono (`PCMFeeder`) → Silero VAD
+  with Pop's dictation profile (threshold 0.5, 0.35 s min silence, 0.25 s min speech, 10 s
+  max segment, 500 ms pre-roll clamped to observed silence) → one offline decode per segment
+  (`SegmentingTranscriber`). `UtteranceEndpointer` ends a push-to-talk command once a
+  segment was transcribed and no new speech starts within `speechEndpointHangoverSeconds`
+  (0.6 s); it also stops a session where nothing is said (`speechNoSpeechTimeoutSeconds`)
+  and caps one at `speechMaxUtteranceSeconds`. Pressing the mic again stops capture and
+  decodes what is buffered (bounded by `speechFlushTimeoutSeconds`).
+* **Bounded waits**: microphone permission uses `AVAudioApplication` (macOS 14+,
+  `AVCaptureDevice` on 13) under Pop's 10 s handshake watchdog; recognizer construction is
+  off the main thread under `speechModelLoadTimeoutSeconds` (45 s) and falls to the next
+  engine on failure; a 5 s liveness probe restarts the session on the next engine when an
+  engine processed nothing while audible audio flowed.
+* **Vocabulary bias**: device and room names are passed to Qwen3-ASR as comma-separated
+  hotwords (`speechHotwordBias`, at most 64). SenseVoice has no hotword input. Spelled-out
+  numbers and the "speed to do / too" homophones are normalised in `VoiceCommandParser`.
+* Every default and range is in `Voice/SpeechSettings.swift`. Offline tests cover the VAD
+  segmenting/pre-roll state machine (energy-segmenter stand-in with synthetic tones), the
+  endpointer, the engine chain and liveness verdict, config clamping and the install gate;
+  `SpeechModelInferenceTests` transcribe a `say`-rendered command with the real models and
+  are skipped when no model is installed.
+
+Replies use `AVSpeechSynthesizer`. Permission requests are gated on the bundle carrying
+`NSMicrophoneUsageDescription`; a process without it (`swift run`) gets a clear message
+instead of a crash and keeps typed commands.
+
+**Xcode build note:** the onnxruntime XCFramework contains framework symlinks that Xcode's
+package extractor rejects when `SourcePackages` sits under `/tmp` (a symlink to
+`/private/tmp`). Use a derived-data path outside `/tmp`, pass
+`-clonedSourcePackagesDirPath <path outside /tmp>`, or make `<derivedData>/SourcePackages` a
+symlink to such a path.
 
 ### Siri / Shortcuts (`MyHomeApp/Intents/`)
 
@@ -98,7 +158,8 @@ phrases. The intents run in-process and reach the app's single `DeviceStore` thr
 * **Command bar** (bottom of the dashboard): type a command and press Return, or press the
   microphone (⇧⌘M) and speak. Replies show up inline with **Yes / No** for multi-device plans
   and one button per candidate when a request was ambiguous.
-* **Settings → Assistant**: spoken replies, on-device recognition, voice language, the
+* **Settings → Assistant**: spoken replies, voice language, the speech engine (engine choice,
+  model install state, listening/VAD knobs), the
   on-device planner switch, the confirmation threshold and the verification timeout.
 * **Siri / Shortcuts** (Xcode-built app only): "Control my home with MyHome", "Set *device*
   power with MyHome", "Set *device* level with MyHome". Shortcuts also lists the three actions.
@@ -147,6 +208,6 @@ Choices and why:
 
 * Colour on Tuya bulbs is not offered (the dashboard never writes `colour_data`'s HSV
   encoding); colour is Briturn-only until a verified encoder exists.
-* Numbers must be digits ("50", "50%"); number words are not parsed.
+* Numbers may be digits or spelled out up to ten ("two"); a misheard "to do" / "to too" is read as 2 only as the value of a speed setting.
 * Siri / Shortcuts discovery was verified by building the bundle and inspecting
   `Metadata.appintents` (three intents, entity query, enum), not by invoking Siri on a device.
