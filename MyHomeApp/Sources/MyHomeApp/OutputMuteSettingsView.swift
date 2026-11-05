@@ -1,4 +1,4 @@
-// Settings → Assistant → "While listening": mute / duck / leave the speakers.
+// Settings → Hotkey → "While listening": mute / duck / leave the speakers.
 import MyHomeCore
 import SwiftUI
 

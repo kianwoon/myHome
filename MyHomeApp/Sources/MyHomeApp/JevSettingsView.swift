@@ -1,4 +1,4 @@
-// Settings → Assistant → Jev decider fields: endpoint, model, key, gate,
+// Settings → AI Planner → Jev decider fields: endpoint, model, key, gate,
 // timeout and a live "Test connection". Defaults and ranges come from
 // JevSettings.swift; the key lives in the Keychain (never UserDefaults).
 import MyHomeCore
@@ -38,7 +38,7 @@ struct JevSettingsFields: View {
     }
 
     private var keyIsSaved: Bool {
-        ((try? services.secrets.read(account: AppSettings.jevSecretAccount)) ?? nil)?.isEmpty == false
+        ResolvedSecret.resolve(secrets: services.secrets, account: AppSettings.jevSecretAccount).source == .keychain
     }
 
     private var keyPrompt: String {
@@ -48,13 +48,8 @@ struct JevSettingsFields: View {
     }
 
     private func saveKey() {
-        do {
-            try services.secrets.write(apiKey.trimmingCharacters(in: .whitespacesAndNewlines), account: AppSettings.jevSecretAccount)
-            apiKey = ""
-            keyStatus = "Key saved in Keychain."
-        } catch {
-            keyStatus = error.localizedDescription
-        }
+        keyStatus = saveSecretVerified(apiKey, account: AppSettings.jevSecretAccount, in: services.secrets)
+        if keyStatus.hasPrefix("Key saved") { apiKey = "" }
     }
 
     private func removeKey() {
@@ -67,7 +62,10 @@ struct JevSettingsFields: View {
     }
 
     private func testConnection() async {
-        if !apiKey.isEmpty { saveKey() }
+        if !apiKey.isEmpty {
+            saveKey()
+            if !keyStatus.hasPrefix("Key saved") { testResult = keyStatus; return }   // refused: do not test the old key
+        }
         testing = true
         defer { testing = false }
         testResult = await JevCommandDecider(secrets: services.secrets).testConnection()

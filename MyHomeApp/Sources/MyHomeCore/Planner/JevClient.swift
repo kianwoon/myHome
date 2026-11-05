@@ -96,6 +96,8 @@ public enum JevFailure: Error, Equatable, Sendable {
     case notConfigured(String)
     case network(String)
     case http(Int)
+    /// 401/403: the server's own short `error.message` (key-scrubbed, capped), if it sent one.
+    case rejected(Int, String?)
     case notDecision
     case unreadable
     case cancelled
@@ -105,6 +107,9 @@ public enum JevFailure: Error, Equatable, Sendable {
         case .notConfigured(let text): return text
         case .network(let text): return text
         case .http(let code): return JevClient.statusMessage(code)
+        case .rejected(let code, let server):
+            guard let server, !server.isEmpty else { return JevClient.statusMessage(code) }
+            return JevClient.statusMessage(code) + ": \(server)"
         case .notDecision: return "the reply was not a decision response (no model echo)"
         case .unreadable: return "the decision reply could not be read"
         case .cancelled: return "cancelled"
@@ -152,21 +157,29 @@ public struct JevClient: Sendable {
     public let config: Config
     private let key: String?
     private let transport: JevTransport
+    /// How the key was resolved (diagnostics only; nil when the caller passed a bare key).
+    private let resolved: ResolvedSecret?
 
-    public init(config: Config, key: String?, transport: JevTransport) {
+    public init(config: Config, key: String?, transport: JevTransport, resolved: ResolvedSecret? = nil) {
         self.config = config
         self.key = key
         self.transport = transport
+        self.resolved = resolved
+    }
+
+    public init(config: Config, secret: ResolvedSecret, transport: JevTransport) {
+        self.init(config: config, key: secret.value, transport: transport, resolved: secret)
     }
 
     /// Keychain first, then the environment fallback (never another app's files).
     public static func resolveKey(secrets: SecretStore, environment: [String: String]) -> String? {
-        if let stored = (try? secrets.read(account: AppSettings.jevSecretAccount)) ?? nil,
-           !stored.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return stored.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        let env = environment[AppSettings.jevKeyEnvironmentVariable]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return env.isEmpty ? nil : env
+        resolveSecret(secrets: secrets, environment: environment).value
+    }
+
+    /// Same resolution, keeping source/length/Keychain status for diagnostics.
+    public static func resolveSecret(secrets: SecretStore, environment: [String: String]) -> ResolvedSecret {
+        ResolvedSecret.resolve(secrets: secrets, account: AppSettings.jevSecretAccount,
+                               environmentValue: environment[AppSettings.jevKeyEnvironmentVariable])
     }
 
     /// Why no call can be made (nil when ready).
@@ -190,8 +203,13 @@ public struct JevClient: Sendable {
         var request = URLRequest(url: url, timeoutInterval: config.timeout)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "content-type")
+        request.setValue(AppSettings.jevReferer, forHTTPHeaderField: "http-referer")
         request.setValue(AppSettings.jevAppTitle, forHTTPHeaderField: "x-title")
-        if let key, !key.isEmpty { request.setValue("Bearer \(key)", forHTTPHeaderField: "authorization") }
+        if let key, !key.isEmpty {
+            // CR/LF or control characters in a header make the service see no Authorization at all.
+            guard APIKeySanitizer.isHeaderSafe(key) else { throw JevFailure.notConfigured("the API key contains characters that cannot be sent in a header") }
+            request.setValue("Bearer \(key)", forHTTPHeaderField: "authorization")
+        }
         let body: [String: Any] = ["model": config.model, "state": state, "questions": questions.mapValues(\.json)]
         request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
         return request
@@ -207,9 +225,13 @@ public struct JevClient: Sendable {
 
     /// One decisions call with bounded retry. Fails open: `.failure` never authorizes anything.
     public func ask(state: String, questions: [String: JevQuestion]) async -> Result<JevAnswers, JevFailure> {
+        // A saved-but-malformed key is reported precisely and nothing is sent.
+        if resolved?.invalid != nil, let message = resolved?.missingMessage { return .failure(.notConfigured(message)) }
         if let problem = Self.problem(with: config, key: key) { return .failure(.notConfigured(problem)) }
         let request: URLRequest
-        do { request = try buildRequest(state: state, questions: questions) } catch { return .failure(.notConfigured("the Jev request could not be built")) }
+        do { request = try buildRequest(state: state, questions: questions) }
+        catch let failure as JevFailure { return .failure(failure) }
+        catch { return .failure(.notConfigured("the Jev request could not be built")) }
         var last: JevFailure = .network("the Jev service did not answer")
         let transport = self.transport
         for attempt in 0..<config.maxAttempts {
@@ -245,6 +267,11 @@ public struct JevClient: Sendable {
                     continue
                 }
                 // Any other status is the endpoint's real answer: no retry, body never quoted.
+                if status == 401 || status == 403 {
+                    let server = Self.serverMessage(in: data, scrubbing: key)
+                    AppLog.assistant.info("jev rejected: HTTP \(status, privacy: .public) \(self.resolved?.logSummary ?? "key=unknown", privacy: .public)")
+                    return .failure(.rejected(status, server))
+                }
                 guard (200..<300).contains(status) else { return .failure(.http(status)) }
                 return Self.parseEnvelope(data)
             }
@@ -252,8 +279,22 @@ public struct JevClient: Sendable {
         return .failure(last)
     }
 
+    /// The server's short `{"error":{"message":…}}` text, with the key scrubbed. Anything else is not quoted.
+    static func serverMessage(in data: Data, scrubbing key: String?) -> String? {
+        guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let error = root["error"] as? [String: Any], var text = error["message"] as? String else { return nil }
+        text = String(text.unicodeScalars.filter { $0.value >= 0x20 && $0.value != 0x7F }.map(Character.init))
+        if let key, !key.isEmpty { text = text.replacingOccurrences(of: key, with: "[key]") }
+        text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : String(text.prefix(AppSettings.jevServerMessageMax))
+    }
+
     /// Proves endpoint, key and model together with a minimal two-option choice.
     public func testConnection() async -> String {
+        if let resolved, let missing = resolved.missingMessage, resolved.invalid != nil || !Self.isLocalEndpoint(config.endpoint) {
+            AppLog.assistant.info("jev test: no key \(resolved.logSummary, privacy: .public)")
+            return resolved.invalid == nil ? missing : "\(missing). \(resolved.shapeDescription(expecting: .openRouter))"
+        }
         let question = JevQuestion(instructions: Self.pingInstructions, criteria: Self.pingCriteria)
         switch await ask(state: Self.pingState, questions: [Self.pingID: question]) {
         case .success(let answers):
@@ -262,8 +303,17 @@ public struct JevClient: Sendable {
             default: return "Connected to \(answers.model), but its answer had no measured choice."
             }
         case .failure(let failure):
+            if let resolved { AppLog.assistant.info("jev test failed: \(resolved.logSummary, privacy: .public)") }
+            if case .rejected = failure, let resolved, resolved.value != nil {
+                return "\(resolved.sentDescription), service rejected it: \(failure.message). \(resolved.shapeDescription(expecting: .openRouter))"
+            }
             return failure.message
         }
+    }
+
+    static func isLocalEndpoint(_ text: String) -> Bool {
+        guard let url = endpointURL(text) else { return false }
+        return AppSettings.plainHTTPHosts.contains(url.host?.lowercased() ?? "")
     }
 
     // allow-hardcode: the connectivity probe question (two options = the contract minimum).

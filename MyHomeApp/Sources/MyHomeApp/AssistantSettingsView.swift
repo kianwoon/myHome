@@ -1,24 +1,12 @@
-// Settings → Assistant: the voice / planner knobs behind AppSettings.
+// Settings tabs behind AppSettings: Voice, Speech, Hotkey, AI Planner and
+// Assistant (safety). The tabs are assembled in SettingsView.
 import MyHomeCore
 import SwiftUI
 
-struct AssistantSettingsView: View {
+/// Voice tab: spoken replies, voice language and the listening (VAD) knobs.
+struct VoiceSettingsView: View {
     @AppStorage(AppSettings.spokenRepliesKey) private var spokenReplies = AppSettings.defaultSpokenReplies
     @AppStorage(AppSettings.voiceLocaleKey) private var voiceLocale = ""
-    @AppStorage(AppSettings.plannerProviderKey) private var provider = AppSettings.defaultPlannerProvider
-    @AppStorage(AppSettings.anthropicBaseURLKey) private var anthropicURL = ""
-    @AppStorage(AppSettings.openAIBaseURLKey) private var openAIURL = ""
-    @AppStorage(AppSettings.anthropicModelKey) private var anthropicModel = ""
-    @AppStorage(AppSettings.openAIModelKey) private var openAIModel = ""
-    @AppStorage(AppSettings.plannerTimeoutKey) private var plannerTimeout = AppSettings.defaultPlannerTimeout
-    @AppStorage(AppSettings.plannerMaxTokensKey) private var maxTokens = AppSettings.defaultPlannerMaxTokens
-    @AppStorage(AppSettings.assistantCommandTimeoutKey) private var commandTimeout = AppSettings.defaultAssistantCommandTimeout
-    @State private var apiKey = ""
-    @State private var keyStatus = ""
-    @State private var testResult = ""
-    @State private var testing = false
-    @AppStorage(AppSettings.confirmDeviceCountKey) private var confirmCount = AppSettings.defaultConfirmDeviceCount
-    @AppStorage(AppSettings.commandVerifyTimeoutKey) private var verifyTimeout = AppSettings.defaultCommandVerifyTimeout
 
     private let services: AppServices
 
@@ -39,12 +27,80 @@ struct AssistantSettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            SpeechListeningSettingsSection()
+        }
+        .formStyle(.grouped)
+        .padding(.top, 4)
+    }
+
+    private var voiceNote: String {
+        if !SpeechCommandRecognizer.usageDescriptionsPresent(in: .main) {
+            return "Voice input needs the Xcode-built app bundle (microphone usage description). Typed commands work everywhere."
+        }
+        return services.speech.isSupported
+            ? "Push to talk from the command bar (⇧⌘M). Recognition runs offline on this Mac."
+            : "No offline speech model is ready — install one on the Speech tab."
+    }
+}
+
+/// Speech tab: engine choice and offline model install state.
+struct SpeechSettingsView: View {
+    private let services: AppServices
+
+    init(services: AppServices) {
+        self.services = services
+    }
+
+    var body: some View {
+        Form {
             SpeechEngineSettingsSection(speech: services.speech)
+        }
+        .formStyle(.grouped)
+        .padding(.top, 4)
+    }
+}
 
+/// Hotkey tab: hold-to-talk shortcut and the while-listening output mute.
+struct HotkeySettingsView: View {
+    private let services: AppServices
+
+    init(services: AppServices) {
+        self.services = services
+    }
+
+    var body: some View {
+        Form {
             HotkeySettingsSection(hotkey: services.hotkey)
-
             OutputMuteSettingsSection(gate: services.outputGate)
+        }
+        .formStyle(.grouped)
+        .padding(.top, 4)
+    }
+}
 
+/// AI Planner tab: provider picker; provider-specific fields only for the
+/// selected provider (cloud fields for Anthropic / OpenAI, Jev fields for Jev).
+struct PlannerSettingsView: View {
+    @AppStorage(AppSettings.plannerProviderKey) private var provider = AppSettings.defaultPlannerProvider
+    @AppStorage(AppSettings.anthropicBaseURLKey) private var anthropicURL = ""
+    @AppStorage(AppSettings.openAIBaseURLKey) private var openAIURL = ""
+    @AppStorage(AppSettings.anthropicModelKey) private var anthropicModel = ""
+    @AppStorage(AppSettings.openAIModelKey) private var openAIModel = ""
+    @AppStorage(AppSettings.plannerTimeoutKey) private var plannerTimeout = AppSettings.defaultPlannerTimeout
+    @AppStorage(AppSettings.plannerMaxTokensKey) private var maxTokens = AppSettings.defaultPlannerMaxTokens
+    @State private var apiKey = ""
+    @State private var keyStatus = ""
+    @State private var testResult = ""
+    @State private var testing = false
+
+    private let services: AppServices
+
+    init(services: AppServices) {
+        self.services = services
+    }
+
+    var body: some View {
+        Form {
             Section {
                 Picker("Planner for free-form requests", selection: $provider) {
                     Text("None (direct commands only)").tag(AppSettings.PlannerProvider.none)
@@ -62,18 +118,6 @@ struct AssistantSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-
-            Section {
-                Stepper("Ask before changing \(confirmCount) or more devices", value: $confirmCount, in: AppSettings.confirmDeviceCountRange)
-                Stepper(String(format: "Wait %.1fs for a device to confirm a change", verifyTimeout),
-                        value: $verifyTimeout, in: AppSettings.commandVerifyTimeoutRange, step: 0.5)
-            } header: {
-                Text("Safety")
-            } footer: {
-                Text("Model-planned requests always ask first. Changes apply to the next command; the controller re-reads these settings when a command starts.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
         }
         .formStyle(.grouped)
         .padding(.top, 4)
@@ -82,17 +126,6 @@ struct AssistantSettingsView: View {
             keyStatus = ""
             services.reloadPlanner()
         }
-        .onChange(of: confirmCount) { _ in services.controller.config = .fromDefaults() }
-        .onChange(of: verifyTimeout) { _ in services.controller.config = .fromDefaults() }
-    }
-
-    private var voiceNote: String {
-        if !SpeechCommandRecognizer.usageDescriptionsPresent(in: .main) {
-            return "Voice input needs the Xcode-built app bundle (microphone usage description). Typed commands work everywhere."
-        }
-        return services.speech.isSupported
-            ? "Push to talk from the command bar (⇧⌘M). Recognition runs offline on this Mac."
-            : "No offline speech model is ready — install one under Speech engine below."
     }
 
     @ViewBuilder
@@ -116,7 +149,7 @@ struct AssistantSettingsView: View {
 
     private var account: String { AppSettings.plannerSecretAccount(for: provider) }
 
-    private var keyIsSaved: Bool { ((try? services.secrets.read(account: account)) ?? nil)?.isEmpty == false }
+    private var keyIsSaved: Bool { ResolvedSecret.resolve(secrets: services.secrets, account: account).source == .keychain }
 
     private var defaultBaseURL: String {
         provider == .anthropic ? AppSettings.defaultAnthropicBaseURL : AppSettings.defaultOpenAIBaseURL
@@ -130,13 +163,8 @@ struct AssistantSettingsView: View {
     private var model: Binding<String> { provider == .anthropic ? $anthropicModel : $openAIModel }
 
     private func saveKey() {
-        do {
-            try services.secrets.write(apiKey.trimmingCharacters(in: .whitespacesAndNewlines), account: account)
-            apiKey = ""
-            keyStatus = "Key saved in Keychain."
-        } catch {
-            keyStatus = error.localizedDescription
-        }
+        keyStatus = saveSecretVerified(apiKey, account: account, in: services.secrets)
+        if keyStatus.hasPrefix("Key saved") { apiKey = "" }
     }
 
     private func removeKey() {
@@ -149,7 +177,10 @@ struct AssistantSettingsView: View {
     }
 
     private func testConnection() async {
-        if !apiKey.isEmpty { saveKey() }
+        if !apiKey.isEmpty {
+            saveKey()
+            if !keyStatus.hasPrefix("Key saved") { testResult = keyStatus; return }   // refused: do not test the old key
+        }
         testing = true
         defer { testing = false }
         let planner = CloudPlanner(controller: services.controller, secrets: services.secrets)
@@ -169,5 +200,38 @@ struct AssistantSettingsView: View {
         case .jev:
             return JevSettingsFields.privacyNote
         }
+    }
+}
+
+/// Assistant tab: safety settings for executed commands.
+struct AssistantSettingsView: View {
+    @AppStorage(AppSettings.confirmDeviceCountKey) private var confirmCount = AppSettings.defaultConfirmDeviceCount
+    @AppStorage(AppSettings.commandVerifyTimeoutKey) private var verifyTimeout = AppSettings.defaultCommandVerifyTimeout
+    @AppStorage(AppSettings.assistantCommandTimeoutKey) private var commandTimeout = AppSettings.defaultAssistantCommandTimeout
+
+    private let services: AppServices
+
+    init(services: AppServices) {
+        self.services = services
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                Stepper("Ask before changing \(confirmCount) or more devices", value: $confirmCount, in: AppSettings.confirmDeviceCountRange)
+                Stepper(String(format: "Wait %.1fs for a device to confirm a change", verifyTimeout),
+                        value: $verifyTimeout, in: AppSettings.commandVerifyTimeoutRange, step: 0.5)
+            } header: {
+                Text("Safety")
+            } footer: {
+                Text("Model-planned requests always ask first. Changes apply to the next command; the controller re-reads these settings when a command starts.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .padding(.top, 4)
+        .onChange(of: confirmCount) { _ in services.controller.config = .fromDefaults() }
+        .onChange(of: verifyTimeout) { _ in services.controller.config = .fromDefaults() }
     }
 }

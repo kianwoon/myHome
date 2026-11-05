@@ -1,5 +1,5 @@
-// Settings → Assistant → Speech engine: the offline STT knobs (engine choice,
-// model install state, VAD / endpointing). Every default and range comes from
+// Settings → Speech (engine choice, model install state) and Settings → Voice
+// (Listening: VAD / endpointing) — the offline STT knobs. Every default and range comes from
 // AppSettings (SpeechSettings.swift); changes apply to the next listen.
 import MyHomeCore
 import SwiftUI
@@ -11,11 +11,6 @@ struct SpeechEngineSettingsSection: View {
     @AppStorage(AppSettings.speechSenseVoiceEnabledKey) private var senseVoiceEnabled = AppSettings.defaultSpeechSenseVoiceEnabled
     @AppStorage(AppSettings.speechUsePopModelsKey) private var usePop = AppSettings.defaultSpeechUsePopModels
     @AppStorage(AppSettings.speechHotwordBiasKey) private var hotwords = AppSettings.defaultSpeechHotwordBias
-    @AppStorage(AppSettings.speechVADThresholdKey) private var threshold = AppSettings.defaultSpeechVADThreshold
-    @AppStorage(AppSettings.speechVADMinSilenceKey) private var minSilence = AppSettings.defaultSpeechVADMinSilence
-    @AppStorage(AppSettings.speechEndpointHangoverKey) private var hangover = AppSettings.defaultSpeechEndpointHangover
-    @AppStorage(AppSettings.speechNoSpeechTimeoutKey) private var noSpeech = AppSettings.defaultSpeechNoSpeechTimeout
-    @AppStorage(AppSettings.speechMaxUtteranceKey) private var maxUtterance = AppSettings.defaultSpeechMaxUtterance
 
     var body: some View {
         Section {
@@ -34,19 +29,6 @@ struct SpeechEngineSettingsSection: View {
             Text("Speech runs on this Mac with offline models (sherpa-onnx), the same ones the Pop app uses. "
                  + "Qwen3-ASR is tried first; SenseVoice takes over if it is missing or stops responding. "
                  + "Name biasing applies to Qwen3-ASR.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        Section {
-            slider("Speech threshold", value: $threshold, range: AppSettings.speechVADThresholdRange, format: "%.2f")
-            slider("Pause that splits a phrase", value: $minSilence, range: AppSettings.speechVADMinSilenceRange, format: "%.2fs")
-            slider("Wait after speaking before acting", value: $hangover, range: AppSettings.speechEndpointHangoverRange, format: "%.1fs")
-            slider("Give up when nothing is said", value: $noSpeech, range: AppSettings.speechNoSpeechTimeoutRange, format: "%.0fs")
-            slider("Longest command", value: $maxUtterance, range: AppSettings.speechMaxUtteranceRange, format: "%.0fs")
-        } header: {
-            Text("Listening")
-        } footer: {
-            Text("Voice activity detection (Silero) ends a command automatically. Applies to the next command.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -74,6 +56,30 @@ struct SpeechEngineSettingsSection: View {
                 Button("Install (~\(SpeechModelSpec.approxDownloadMB) MB)") { speech.installModel(kind) }
                     .help(SpeechModelStore.ownDirectory(kind).path)
             }
+        }
+    }
+}
+
+struct SpeechListeningSettingsSection: View {
+    @AppStorage(AppSettings.speechVADThresholdKey) private var threshold = AppSettings.defaultSpeechVADThreshold
+    @AppStorage(AppSettings.speechVADMinSilenceKey) private var minSilence = AppSettings.defaultSpeechVADMinSilence
+    @AppStorage(AppSettings.speechEndpointHangoverKey) private var hangover = AppSettings.defaultSpeechEndpointHangover
+    @AppStorage(AppSettings.speechNoSpeechTimeoutKey) private var noSpeech = AppSettings.defaultSpeechNoSpeechTimeout
+    @AppStorage(AppSettings.speechMaxUtteranceKey) private var maxUtterance = AppSettings.defaultSpeechMaxUtterance
+
+    var body: some View {
+        Section {
+            slider("Speech threshold", value: $threshold, range: AppSettings.speechVADThresholdRange, format: "%.2f")
+            slider("Pause that splits a phrase", value: $minSilence, range: AppSettings.speechVADMinSilenceRange, format: "%.2fs")
+            slider("Wait after speaking before acting", value: $hangover, range: AppSettings.speechEndpointHangoverRange, format: "%.1fs")
+            slider("Give up when nothing is said", value: $noSpeech, range: AppSettings.speechNoSpeechTimeoutRange, format: "%.0fs")
+            slider("Longest command", value: $maxUtterance, range: AppSettings.speechMaxUtteranceRange, format: "%.0fs")
+        } header: {
+            Text("Listening")
+        } footer: {
+            Text("Voice activity detection (Silero) ends a command automatically. Applies to the next command.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 

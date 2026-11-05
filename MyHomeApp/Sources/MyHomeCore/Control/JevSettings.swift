@@ -33,6 +33,8 @@ public extension AppSettings {
 
     /// Retry only transient failures (network/timeout, 429, 5xx): 3 attempts, then fail open.
     static let jevMaxAttempts = 3
+    /// Longest server error text quoted back in a 401/403 diagnostic.
+    static let jevServerMessageMax = 120
     static let jevRetryBackoffs: [TimeInterval] = [0.2, 0.6]
 
     /// Contract bounds on a choice question's options and labels.
@@ -46,6 +48,8 @@ public extension AppSettings {
     static let jevKeyEnvironmentVariable = "OPENROUTER_API_KEY"
     // allow-hardcode: OpenRouter attribution header value.
     static let jevAppTitle = "MyHome"
+    // allow-hardcode: OpenRouter attribution referer (opencode sends https://opencode.ai/).
+    static let jevReferer = "https://myhome.app/"
 
     static func jevEndpoint(from defaults: UserDefaults = .standard) -> String {
         let stored = defaults.string(forKey: jevEndpointKey)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""

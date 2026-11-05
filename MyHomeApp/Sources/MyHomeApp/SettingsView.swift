@@ -3,8 +3,9 @@ import SwiftUI
 import ServiceManagement
 import MyHomeCore
 
-/// Native Settings window (macOS Settings scene). Three tabs: cloud
-/// credentials, control cadence, and general preferences.
+/// Native Settings window (macOS Settings scene). Tabs: cloud
+/// credentials, control cadence, voice / speech / hotkey, AI planner,
+/// assistant safety, and general preferences.
 struct SettingsView: View {
     var body: some View {
         TabView {
@@ -12,12 +13,20 @@ struct SettingsView: View {
                 .tabItem { Label("Cloud", systemImage: "cloud") }
             ControlSettingsView()
                 .tabItem { Label("Control", systemImage: "slider.horizontal.3") }
+            VoiceSettingsView(services: AppServices.shared)
+                .tabItem { Label("Voice", systemImage: "waveform") }
+            SpeechSettingsView(services: AppServices.shared)
+                .tabItem { Label("Speech", systemImage: "mic") }
+            HotkeySettingsView(services: AppServices.shared)
+                .tabItem { Label("Hotkey", systemImage: "command") }
+            PlannerSettingsView(services: AppServices.shared)
+                .tabItem { Label("AI Planner", systemImage: "sparkles") }
             AssistantSettingsView(services: AppServices.shared)
-                .tabItem { Label("Assistant", systemImage: "waveform") }
+                .tabItem { Label("Assistant", systemImage: "checkmark.shield") }
             GeneralSettingsView()
                 .tabItem { Label("General", systemImage: "gearshape") }
         }
-        .frame(width: 560, height: 470)
+        .frame(width: 680, height: 500)
     }
 }
 

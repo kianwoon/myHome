@@ -1,4 +1,4 @@
-// Settings → Assistant → "Hold-to-talk shortcut": click-to-record field,
+// Settings → Hotkey → "Hold-to-talk shortcut": click-to-record field,
 // Clear / Reset, validation and registration-error text.
 import AppKit
 import MyHomeCore

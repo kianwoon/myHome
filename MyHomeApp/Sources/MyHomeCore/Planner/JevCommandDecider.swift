@@ -115,7 +115,7 @@ public final class JevCommandDecider {
 
     /// Settings are read on every request.
     public var client: JevClient {
-        JevClient(config: .fromDefaults(defaults), key: JevClient.resolveKey(secrets: secrets, environment: environment), transport: transport)
+        JevClient(config: .fromDefaults(defaults), secret: JevClient.resolveSecret(secrets: secrets, environment: environment), transport: transport)
     }
 
     public var unavailableReason: String? {

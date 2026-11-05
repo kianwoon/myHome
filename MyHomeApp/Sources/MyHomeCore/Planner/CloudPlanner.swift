@@ -71,6 +71,11 @@ public final class CloudPlanner: NaturalLanguagePlanner {
         URLSession(configuration: .ephemeral, delegate: NoRedirectDelegate(), delegateQueue: nil)
     }
 
+    /// Keychain read with its status kept (never swallowed) for diagnostics.
+    private func resolvedKey(for provider: AppSettings.PlannerProvider) -> ResolvedSecret {
+        ResolvedSecret.resolve(secrets: secrets, account: AppSettings.plannerSecretAccount(for: provider))
+    }
+
     private var provider: AppSettings.PlannerProvider {
         let chosen = AppSettings.plannerProvider(from: defaults)
         return chosen.isCloud ? chosen : .openAICompatible
@@ -81,14 +86,18 @@ public final class CloudPlanner: NaturalLanguagePlanner {
     public var isAvailable: Bool { unavailableReason == nil }
 
     public var unavailableReason: String? {
-        Self.problem(with: config, key: try? secrets.read(account: AppSettings.plannerSecretAccount(for: provider)))
+        let secret = resolvedKey(for: provider)
+        if let invalid = secret.missingMessage, secret.invalid != nil { return invalid }
+        return Self.problem(with: config, key: secret.value)
     }
 
     // MARK: - Planning
 
     public func plan(_ utterance: String, devices: [DeviceSummary]) async throws -> ProposedPlan {
         let config = self.config
-        let key = (try? secrets.read(account: AppSettings.plannerSecretAccount(for: config.provider))) ?? nil
+        let secret = resolvedKey(for: config.provider)
+        let key = secret.value
+        if secret.invalid != nil, let message = secret.missingMessage { throw PlannerError.unavailable(message) }
         if let problem = Self.problem(with: config, key: key) { throw PlannerError.unavailable(problem) }
         let catalogue = PlannerCatalogue(devices: devices, utterance: utterance, budget: config.catalogueBudget,
                                          maxDevices: config.maxDevices, toolOutputBudget: config.toolOutputBudget)
@@ -101,21 +110,37 @@ public final class CloudPlanner: NaturalLanguagePlanner {
     /// One tiny request that proves URL, key and model work together.
     public func testConnection() async -> String {
         let config = self.config
-        let key = (try? secrets.read(account: AppSettings.plannerSecretAccount(for: config.provider))) ?? nil
-        if let problem = Self.problem(with: config, key: key) { return problem }
+        let secret = resolvedKey(for: config.provider)
+        let key = secret.value
+        let shape = Self.expectedShape(for: config)
+        if secret.invalid != nil, let message = secret.missingMessage {
+            AppLog.assistant.info("planner test: invalid key \(secret.logSummary, privacy: .public)")
+            return "\(message). \(secret.shapeDescription(expecting: shape))"
+        }
+        if let problem = Self.problem(with: config, key: key) {
+            AppLog.assistant.info("planner test: no key \(secret.logSummary, privacy: .public)")
+            return secret.missingMessage ?? problem
+        }
         var small = config
         small.maxTokens = AppSettings.plannerMaxTokensRange.lowerBound
         do {
             _ = try await Self.complete(config: small, key: key, system: "Reply with the single word OK.", user: "ping", session: session)
             return "Connected: \(config.model) replied."
         } catch PlannerError.failed(let text) {
-            return text
+            AppLog.assistant.info("planner test failed: \(secret.logSummary, privacy: .public)")
+            return text.contains("rejected the API key") ? "\(secret.sentDescription), \(text). \(secret.shapeDescription(expecting: shape))" : text
         } catch {
             return Self.scrub(error.localizedDescription, key: key)
         }
     }
 
     // MARK: - Request / response (static so tests can drive them directly)
+
+    /// The key shape a provider/base URL pair expects (diagnostics only).
+    static func expectedShape(for config: Config) -> KeyShapeClass {
+        if config.provider == .anthropic { return .anthropic }
+        return config.baseURL.lowercased().contains("openrouter") ? .openRouter : .openAI   // allow-hardcode: host marker
+    }
 
     static func problem(with config: Config, key: String?) -> String? {
         if config.model.isEmpty { return "choose a model name in Settings → Assistant" }
@@ -161,12 +186,16 @@ public final class CloudPlanner: NaturalLanguagePlanner {
         let body: [String: Any]
         switch config.provider {
         case .anthropic:
+            if let key, !key.isEmpty, !APIKeySanitizer.isHeaderSafe(key) { throw PlannerError.unavailable("the API key contains characters that cannot be sent in a header") }
             request.setValue(key ?? "", forHTTPHeaderField: "x-api-key")
             request.setValue(config.apiVersion, forHTTPHeaderField: "anthropic-version")
             body = ["model": config.model, "max_tokens": config.maxTokens, "system": system,
                     "messages": [["role": "user", "content": user]]]
         default:
-            if let key, !key.isEmpty { request.setValue("Bearer \(key)", forHTTPHeaderField: "authorization") }
+            if let key, !key.isEmpty {
+                guard APIKeySanitizer.isHeaderSafe(key) else { throw PlannerError.unavailable("the API key contains characters that cannot be sent in a header") }
+                request.setValue("Bearer \(key)", forHTTPHeaderField: "authorization")
+            }
             body = ["model": config.model, "max_completion_tokens": config.maxTokens,
                     "messages": [["role": "system", "content": system], ["role": "user", "content": user]]]
         }
