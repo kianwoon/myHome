@@ -9,7 +9,10 @@ let package = Package(
         .macOS(.v13)
     ],
     products: [
-        .executable(name: "MyHomeApp", targets: ["MyHomeApp"])
+        .executable(name: "MyHomeApp", targets: ["MyHomeApp"]),
+        // Library product so the Xcode app target (MyHome.xcodeproj, generated
+        // from project.yml) can depend on the same core the SwiftPM app uses.
+        .library(name: "MyHomeCore", targets: ["MyHomeCore"])
     ],
     targets: [
         .target(

@@ -12,10 +12,12 @@ struct SettingsView: View {
                 .tabItem { Label("Cloud", systemImage: "cloud") }
             ControlSettingsView()
                 .tabItem { Label("Control", systemImage: "slider.horizontal.3") }
+            AssistantSettingsView(services: AppServices.shared)
+                .tabItem { Label("Assistant", systemImage: "waveform") }
             GeneralSettingsView()
                 .tabItem { Label("General", systemImage: "gearshape") }
         }
-        .frame(width: 560, height: 430)
+        .frame(width: 560, height: 470)
     }
 }
 

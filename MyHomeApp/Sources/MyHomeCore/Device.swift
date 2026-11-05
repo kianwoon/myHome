@@ -68,7 +68,7 @@ public struct Device: Identifiable, Decodable, Hashable {
 
 /// Icon and grouping decision for a device, driven by category first and
 /// name keywords as the fallback.
-public enum DeviceKind: String, Equatable {
+public enum DeviceKind: String, Equatable, Codable, Sendable {
     case fan, curtain, light, plug, climate, purifier, kettle, unknown
 
     public var iconName: String {

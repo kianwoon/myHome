@@ -120,3 +120,14 @@ Recorded here so future work moves toward the target state rather than adding to
 ## Briturn (Zengge) WiFi commands in `bridge.py`
 
 The bridge picks the command family by bulb firmware (state frame byte 10, cached per device id from every status read). Firmware >= 10 uses the Briturn mobile-app packets over TCP 5577 (payload plus a sum-mod-256 checksum): power `3B 23|24 00*10`, HSV colour `3B A1 hue/2 sat val 00 00 00 00 1E 00 00`, brightness `3B 01 00 00 v 00 v 00*5`, white temperature `3B B1 00 00 00 cct bright 00 00 1E 00 00`. Firmware < 10, unknown firmware, or an explicit `w` in a colour request use the legacy commands (`71 23/24`, `31 r g b w F0 AA`). BLE is unchanged. See the `bridge.py` module docstring and `test_bridge.py`.
+
+## MyHome app: unified device control and Apple assistants
+
+The macOS app (`MyHomeApp/`) layers every way of asking for a change over one control API:
+
+```
+interaction (command bar, voice, Siri/Shortcuts) → planning (Level-1 grammar; Level-2 Foundation Models, proposes only)
+    → DeviceController (resolve → policy → execute via DeviceStore → verify from published state) → adapters (bridge.py, Briturn cloud/WiFi/BLE)
+```
+
+Module boundaries (all in `MyHomeCore` unless noted): `Control/` holds the semantic `DeviceCommand`, the `CapabilityMap` (spec codes + `DeviceState` heuristics → supported capabilities and the exact dp write the dashboard would make), the `DeviceResolver` (ambiguity is returned, never guessed) and the `DeviceController` (policy = `isControllable` + `reachability` + capability; verification observes `DeviceStore`'s publisher with a configurable timeout and never polls a device). `Voice/` holds the rule-based parser, the speech capture/synthesis adapters and the `AssistantCoordinator` that owns pending confirmations. `Planner/` holds the availability-gated Foundation Models adapter. The app target adds `AppServices` (the single shared store/controller), the App Intents and the command bar. Rules: nothing above the controller touches `DeviceStore` writes; every knob is an `AppSettings` key; model output is validated against the registry and confirmed before it runs. Details, verification semantics and the deferred extension points (scene engine, MCP server, Matter adapter) are in `docs/MyHomeAssistant.md`.

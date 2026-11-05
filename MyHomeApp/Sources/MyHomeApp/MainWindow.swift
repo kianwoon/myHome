@@ -287,6 +287,8 @@ struct DashboardView: View {
                     .frame(width: clampedDetailWidth)
             }
         }
+        // Voice / text command bar (CommandBarView.swift); shares the store.
+        .safeAreaInset(edge: .bottom, spacing: 0) { CommandBarView(services: AppServices.shared) }
         .task {
             // The bridge spawn can transiently fail (slow host, killed
             // process). Always fetch the roster at launch — BLE lights make

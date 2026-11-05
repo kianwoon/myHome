@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Hardened Runtime (not App Sandbox): the app spawns the embedded Python
+	     bridge and talks to devices over LAN/BLE, which the sandbox would block.
+	     Microphone and Bluetooth are the only protected resources it needs;
+	     network client/server access needs no hardened-runtime entitlement. -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+	<key>com.apple.security.device.bluetooth</key>
+	<true/>
+</dict>
+</plist>

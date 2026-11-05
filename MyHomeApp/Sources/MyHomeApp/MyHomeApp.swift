@@ -6,7 +6,9 @@ import MyHomeCore
 @main
 struct MyHomeApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @StateObject private var store = DeviceStore()
+    // The one store in the process: shared with the App Intents and the
+    // assistant through AppServices (see AppServices.swift).
+    @StateObject private var store = AppServices.shared.store
 
     var body: some Scene {
         MenuBarExtra {

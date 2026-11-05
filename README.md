@@ -1152,6 +1152,16 @@ wdm = WiFiDualMeterDevice.WiFiDualMeterDevice(
 * Tuya Hardware Development - Protocol: https://developer.tuya.com/en/docs/iot/device-development/embedded-software-development/mcu-development-access/wifi-mcu-sdk-solution/tuya-cloud-universal-serial-port-access-protocol?id=K9hhi0xxtn9cb
 * TuyaMCU listing of Tuya DP IDs: https://tasmota.github.io/docs/TuyaMCU/#switches-or-plugspower-strips
 
+## MyHome App (macOS): voice, Siri and natural-language control
+
+The `MyHomeApp/` Swift package is a menu-bar dashboard for the devices `bridge.py` exposes, plus Briturn lights. It now has a unified control layer and three ways to ask for a change:
+
+* **Command bar** under the dashboard — type or speak (⇧⌘M): `turn off the bedroom lights`, `set the study fan to 50%`, `set the lamp to warm white`, `open the study curtain`, `is the study fan on`. Multi-device requests ask first; ambiguous names come back as a choice.
+* **Siri / Shortcuts** — "Control my home with MyHome", "Set *device* power with MyHome", "Set *device* level with MyHome" (needs the Xcode-built bundle: `cd MyHomeApp && xcodegen generate && xcodebuild -project MyHome.xcodeproj -scheme MyHome build`).
+* **Natural language** — on macOS 26+ with Apple Intelligence, requests the grammar cannot parse are planned by the on-device model; the plan is shown and confirmed before anything runs. Everywhere else the direct commands still work.
+
+Settings → Assistant holds the voice, planner and safety knobs. Architecture, verification semantics and the extension points (scene engine, MCP server, Matter) are in [docs/MyHomeAssistant.md](docs/MyHomeAssistant.md).
+
 ## Credits
 
   * TuyAPI https://github.com/codetheweb/tuyapi by codetheweb and blackrozes.

@@ -11,4 +11,9 @@ enum AppLog {
 
     static let ble = Logger(subsystem: subsystem, category: "ble")
     static let store = Logger(subsystem: subsystem, category: "store")
+    /// Unified control layer (resolver / policy / execution outcomes).
+    static let control = Logger(subsystem: subsystem, category: "control")
+    /// Voice, planner and intents adapters. Utterances are personal data:
+    /// interpolate them with the default (private) privacy only.
+    static let assistant = Logger(subsystem: subsystem, category: "assistant")
 }

@@ -1,0 +1,409 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		217CD027747DB3AFB632547E /* AppServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A40831232019FE17DFCE541 /* AppServices.swift */; };
+		49B2A8D834DCD088E2275FA6 /* BriturnCloudSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3C17180F1199E37ED604EE1 /* BriturnCloudSettingsView.swift */; };
+		4F8744AFDAE40BB6354215C3 /* AssistantSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC116BFBB8AB47D767CE420A /* AssistantSettingsView.swift */; };
+		597F120642BE8E45A5416117 /* CommandBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D898F519E81CDFABF41FADA /* CommandBarView.swift */; };
+		646792CA2BA4E73F87349A4C /* DeviceIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B98F9FE07DF7101447DB4CF /* DeviceIntents.swift */; };
+		6F20A2A652F39A19F38646B1 /* BriturnColorWheel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11E100ACADA9A41A06DEDB9D /* BriturnColorWheel.swift */; };
+		75E092B4D2C38EE52FACDB60 /* MyHomeCore in Frameworks */ = {isa = PBXBuildFile; productRef = 19644969924D90A9445210AB /* MyHomeCore */; };
+		9F1510C90D309A19D82A7540 /* SpecControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81FE9F3B979384342150D39A /* SpecControls.swift */; };
+		B83897D1AB817ECC93E271AB /* MenuContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA216D0C142E0CFF19B47BC6 /* MenuContentView.swift */; };
+		C3E075CE935FAC31A677C906 /* ScheduleSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6F42298384742B657F3B1FC /* ScheduleSection.swift */; };
+		E1E54BFD34E79D5006F9FF9F /* MainWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87AD030C867FB1670213C59C /* MainWindow.swift */; };
+		E35660965C5E27E41E509392 /* MyHomeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 025EB1036E4D31BAC39CC68D /* MyHomeApp.swift */; };
+		E4D6E9F51A7F3A05F7D211E3 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEC2FF8663C0FA7C9EFBC95F /* SettingsView.swift */; };
+		F317B7D65C3E75768462303A /* DeviceEntity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D7042748DAC7386EE28CB1C /* DeviceEntity.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		025EB1036E4D31BAC39CC68D /* MyHomeApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MyHomeApp.swift; sourceTree = "<group>"; };
+		0339E1273FFE7B7433B83A9F /* MyHomeApp */ = {isa = PBXFileReference; lastKnownFileType = folder; name = MyHomeApp; path = .; sourceTree = SOURCE_ROOT; };
+		11E100ACADA9A41A06DEDB9D /* BriturnColorWheel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BriturnColorWheel.swift; sourceTree = "<group>"; };
+		1D898F519E81CDFABF41FADA /* CommandBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandBarView.swift; sourceTree = "<group>"; };
+		2B98F9FE07DF7101447DB4CF /* DeviceIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceIntents.swift; sourceTree = "<group>"; };
+		5A40831232019FE17DFCE541 /* AppServices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppServices.swift; sourceTree = "<group>"; };
+		6D7042748DAC7386EE28CB1C /* DeviceEntity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceEntity.swift; sourceTree = "<group>"; };
+		81FE9F3B979384342150D39A /* SpecControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpecControls.swift; sourceTree = "<group>"; };
+		87AD030C867FB1670213C59C /* MainWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainWindow.swift; sourceTree = "<group>"; };
+		AEC2FF8663C0FA7C9EFBC95F /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		B3C17180F1199E37ED604EE1 /* BriturnCloudSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BriturnCloudSettingsView.swift; sourceTree = "<group>"; };
+		D81C297BE7E44FE55552EB27 /* MyHome.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MyHome.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		E6F42298384742B657F3B1FC /* ScheduleSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScheduleSection.swift; sourceTree = "<group>"; };
+		EA216D0C142E0CFF19B47BC6 /* MenuContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuContentView.swift; sourceTree = "<group>"; };
+		EC116BFBB8AB47D767CE420A /* AssistantSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantSettingsView.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		89B510E1813BC091EE7753E0 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				75E092B4D2C38EE52FACDB60 /* MyHomeCore in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		2492281AE1BA91C5EE0AF129 /* Intents */ = {
+			isa = PBXGroup;
+			children = (
+				6D7042748DAC7386EE28CB1C /* DeviceEntity.swift */,
+				2B98F9FE07DF7101447DB4CF /* DeviceIntents.swift */,
+			);
+			path = Intents;
+			sourceTree = "<group>";
+		};
+		30E38B091A3ED95B003D5DD7 /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+				0339E1273FFE7B7433B83A9F /* MyHomeApp */,
+			);
+			name = Packages;
+			sourceTree = "<group>";
+		};
+		748F3F8AF2334CD7D8C54BB5 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				D81C297BE7E44FE55552EB27 /* MyHome.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		B00FB472D0F6A11DA1B76F29 /* MyHomeApp */ = {
+			isa = PBXGroup;
+			children = (
+				2492281AE1BA91C5EE0AF129 /* Intents */,
+				5A40831232019FE17DFCE541 /* AppServices.swift */,
+				EC116BFBB8AB47D767CE420A /* AssistantSettingsView.swift */,
+				B3C17180F1199E37ED604EE1 /* BriturnCloudSettingsView.swift */,
+				11E100ACADA9A41A06DEDB9D /* BriturnColorWheel.swift */,
+				1D898F519E81CDFABF41FADA /* CommandBarView.swift */,
+				87AD030C867FB1670213C59C /* MainWindow.swift */,
+				EA216D0C142E0CFF19B47BC6 /* MenuContentView.swift */,
+				025EB1036E4D31BAC39CC68D /* MyHomeApp.swift */,
+				E6F42298384742B657F3B1FC /* ScheduleSection.swift */,
+				AEC2FF8663C0FA7C9EFBC95F /* SettingsView.swift */,
+				81FE9F3B979384342150D39A /* SpecControls.swift */,
+			);
+			path = MyHomeApp;
+			sourceTree = "<group>";
+		};
+		B64E5A5CD27F29FB0A4CD4FB = {
+			isa = PBXGroup;
+			children = (
+				30E38B091A3ED95B003D5DD7 /* Packages */,
+				F7BDC33EC1F8697444A5A05C /* Sources */,
+				748F3F8AF2334CD7D8C54BB5 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		F7BDC33EC1F8697444A5A05C /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				B00FB472D0F6A11DA1B76F29 /* MyHomeApp */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		B8094875EAB138FF889E859C /* MyHome */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B8EC04466D2E14090D08BE26 /* Build configuration list for PBXNativeTarget "MyHome" */;
+			buildPhases = (
+				702EC18B4DBC7D9C849A2DF3 /* Sources */,
+				89B510E1813BC091EE7753E0 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = MyHome;
+			packageProductDependencies = (
+				19644969924D90A9445210AB /* MyHomeCore */,
+			);
+			productName = MyHome;
+			productReference = D81C297BE7E44FE55552EB27 /* MyHome.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		3A54E7388EB6FBA7B6C70D0D /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					B8094875EAB138FF889E859C = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Manual;
+					};
+				};
+			};
+			buildConfigurationList = 5F8780741C2A60DD6772AA3C /* Build configuration list for PBXProject "MyHome" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = B64E5A5CD27F29FB0A4CD4FB;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				CDF001D9FEC1446BEC298A87 /* XCLocalSwiftPackageReference "." */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 748F3F8AF2334CD7D8C54BB5 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				B8094875EAB138FF889E859C /* MyHome */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		702EC18B4DBC7D9C849A2DF3 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				217CD027747DB3AFB632547E /* AppServices.swift in Sources */,
+				4F8744AFDAE40BB6354215C3 /* AssistantSettingsView.swift in Sources */,
+				49B2A8D834DCD088E2275FA6 /* BriturnCloudSettingsView.swift in Sources */,
+				6F20A2A652F39A19F38646B1 /* BriturnColorWheel.swift in Sources */,
+				597F120642BE8E45A5416117 /* CommandBarView.swift in Sources */,
+				F317B7D65C3E75768462303A /* DeviceEntity.swift in Sources */,
+				646792CA2BA4E73F87349A4C /* DeviceIntents.swift in Sources */,
+				E1E54BFD34E79D5006F9FF9F /* MainWindow.swift in Sources */,
+				B83897D1AB817ECC93E271AB /* MenuContentView.swift in Sources */,
+				E35660965C5E27E41E509392 /* MyHomeApp.swift in Sources */,
+				C3E075CE935FAC31A677C906 /* ScheduleSection.swift in Sources */,
+				E4D6E9F51A7F3A05F7D211E3 /* SettingsView.swift in Sources */,
+				9F1510C90D309A19D82A7540 /* SpecControls.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		2C09DE171A5E8D486055DAA5 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MARKETING_VERSION = 1.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		2DDE97D77E26F38FE543C304 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = "";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MARKETING_VERSION = 1.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		8D518B66009AAD0F5675E42E /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = Xcode/MyHome.entitlements;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Xcode/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.myhome.app;
+				PRODUCT_NAME = MyHome;
+				SDKROOT = macosx;
+				SWIFT_STRICT_CONCURRENCY = minimal;
+			};
+			name = Debug;
+		};
+		A7D4A35F47815CA39FD9402C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = Xcode/MyHome.entitlements;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Xcode/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.myhome.app;
+				PRODUCT_NAME = MyHome;
+				SDKROOT = macosx;
+				SWIFT_STRICT_CONCURRENCY = minimal;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		5F8780741C2A60DD6772AA3C /* Build configuration list for PBXProject "MyHome" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				2C09DE171A5E8D486055DAA5 /* Debug */,
+				2DDE97D77E26F38FE543C304 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		B8EC04466D2E14090D08BE26 /* Build configuration list for PBXNativeTarget "MyHome" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				8D518B66009AAD0F5675E42E /* Debug */,
+				A7D4A35F47815CA39FD9402C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		CDF001D9FEC1446BEC298A87 /* XCLocalSwiftPackageReference "." */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = .;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		19644969924D90A9445210AB /* MyHomeCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MyHomeCore;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 3A54E7388EB6FBA7B6C70D0D /* Project object */;
+}

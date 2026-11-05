@@ -99,6 +99,10 @@ cat > "$STAGE/MyHome.app/Contents/Info.plist" <<'PLIST'
 	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>MyHome controls your lights directly on the local network (WiFi and Bluetooth).</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>MyHome listens for spoken device commands when you press the microphone button.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>MyHome turns your spoken commands into device actions, on this Mac when possible.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 </dict>

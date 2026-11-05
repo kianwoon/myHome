@@ -138,6 +138,9 @@ server/.beta_build
 # MyHome app build artifacts (generated)
 MyHomeApp/.build/
 MyHomeApp/MyHome.app/
+# Xcode per-user state inside the checked-in project (regenerate: xcodegen generate)
+MyHomeApp/MyHome.xcodeproj/xcuserdata/
+MyHomeApp/MyHome.xcodeproj/project.xcworkspace/xcuserdata/
 MyHomeApp/Icons/
 MyHomeApp/AppIcon.icns
 
