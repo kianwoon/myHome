@@ -11,8 +11,10 @@ struct CommandBarView: View {
     @ObservedObject private var responder: SpeechResponder
     @State private var text = ""
     @FocusState private var focused: Bool
+    private let services: AppServices
 
     init(services: AppServices) {
+        self.services = services
         _assistant = ObservedObject(wrappedValue: services.assistant)
         _speech = ObservedObject(wrappedValue: services.speech)
         _responder = ObservedObject(wrappedValue: services.responder)
@@ -62,13 +64,12 @@ struct CommandBarView: View {
         .padding(.vertical, 8)
         .background(.bar)
         .overlay(alignment: .top) { Divider() }
-        .onAppear {
-            speech.onUtterance = { utterance in
-                Task { await send(utterance, origin: .voice) }
-            }
-        }
         .onChange(of: speech.transcript) { transcript in
             if speech.isListening { text = transcript }
+        }
+        .onChange(of: speech.isListening) { listening in
+            // The utterance itself is run by AppServices; just drop the echo.
+            if !listening { text = "" }
         }
     }
 
@@ -132,17 +133,11 @@ struct CommandBarView: View {
     }
 
     private func send(_ utterance: String, origin: CommandOrigin) async {
-        let reply = await assistant.handle(utterance, origin: origin)
-        if origin == .voice {
-            text = ""
-            responder.speak(reply.text)
-        }
+        _ = await assistant.handle(utterance, origin: origin)
     }
 
     private func confirm() async {
-        if let reply = await assistant.confirmPending() {
-            responder.speak(reply.text)
-        }
+        await services.confirmPending()
     }
 
     private func toggleMicrophone() {

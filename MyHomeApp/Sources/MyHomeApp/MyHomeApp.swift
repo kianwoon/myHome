@@ -55,6 +55,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Menu-bar only: no Dock icon, no app switcher entry.
         NSApp.setActivationPolicy(.accessory)
+        // Global hold-to-talk shortcut (Settings → Assistant); a no-op until set.
+        AppServices.shared.startHotkey()
     }
 
     func applicationWillTerminate(_ notification: Notification) {

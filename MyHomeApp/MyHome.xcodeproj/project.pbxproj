@@ -9,11 +9,14 @@
 /* Begin PBXBuildFile section */
 		217CD027747DB3AFB632547E /* AppServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A40831232019FE17DFCE541 /* AppServices.swift */; };
 		49B2A8D834DCD088E2275FA6 /* BriturnCloudSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3C17180F1199E37ED604EE1 /* BriturnCloudSettingsView.swift */; };
+		4F212C0D1E8DB925728245E2 /* CarbonHotkeyRegistrar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30AA2CA98B2FA5BEA1CEAD6E /* CarbonHotkeyRegistrar.swift */; };
 		4F8744AFDAE40BB6354215C3 /* AssistantSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC116BFBB8AB47D767CE420A /* AssistantSettingsView.swift */; };
 		597F120642BE8E45A5416117 /* CommandBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D898F519E81CDFABF41FADA /* CommandBarView.swift */; };
 		646792CA2BA4E73F87349A4C /* DeviceIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B98F9FE07DF7101447DB4CF /* DeviceIntents.swift */; };
 		6F20A2A652F39A19F38646B1 /* BriturnColorWheel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11E100ACADA9A41A06DEDB9D /* BriturnColorWheel.swift */; };
+		730898B9CD47FB4BEC807FB0 /* HotkeyHUD.swift in Sources */ = {isa = PBXBuildFile; fileRef = D48416B1996D9F389EFCD501 /* HotkeyHUD.swift */; };
 		75E092B4D2C38EE52FACDB60 /* MyHomeCore in Frameworks */ = {isa = PBXBuildFile; productRef = 19644969924D90A9445210AB /* MyHomeCore */; };
+		7A5D77E6A587FD8B1839123D /* HotkeySettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2584D53CB844C49682F5ECA9 /* HotkeySettingsView.swift */; };
 		9F1510C90D309A19D82A7540 /* SpecControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81FE9F3B979384342150D39A /* SpecControls.swift */; };
 		B83897D1AB817ECC93E271AB /* MenuContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA216D0C142E0CFF19B47BC6 /* MenuContentView.swift */; };
 		C3E075CE935FAC31A677C906 /* ScheduleSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6F42298384742B657F3B1FC /* ScheduleSection.swift */; };
@@ -29,13 +32,16 @@
 		0339E1273FFE7B7433B83A9F /* MyHomeApp */ = {isa = PBXFileReference; lastKnownFileType = folder; name = MyHomeApp; path = .; sourceTree = SOURCE_ROOT; };
 		11E100ACADA9A41A06DEDB9D /* BriturnColorWheel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BriturnColorWheel.swift; sourceTree = "<group>"; };
 		1D898F519E81CDFABF41FADA /* CommandBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandBarView.swift; sourceTree = "<group>"; };
+		2584D53CB844C49682F5ECA9 /* HotkeySettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeySettingsView.swift; sourceTree = "<group>"; };
 		2B98F9FE07DF7101447DB4CF /* DeviceIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceIntents.swift; sourceTree = "<group>"; };
+		30AA2CA98B2FA5BEA1CEAD6E /* CarbonHotkeyRegistrar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarbonHotkeyRegistrar.swift; sourceTree = "<group>"; };
 		5A40831232019FE17DFCE541 /* AppServices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppServices.swift; sourceTree = "<group>"; };
 		6D7042748DAC7386EE28CB1C /* DeviceEntity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceEntity.swift; sourceTree = "<group>"; };
 		81FE9F3B979384342150D39A /* SpecControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpecControls.swift; sourceTree = "<group>"; };
 		87AD030C867FB1670213C59C /* MainWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainWindow.swift; sourceTree = "<group>"; };
 		AEC2FF8663C0FA7C9EFBC95F /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		B3C17180F1199E37ED604EE1 /* BriturnCloudSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BriturnCloudSettingsView.swift; sourceTree = "<group>"; };
+		D48416B1996D9F389EFCD501 /* HotkeyHUD.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyHUD.swift; sourceTree = "<group>"; };
 		D81C297BE7E44FE55552EB27 /* MyHome.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MyHome.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		E6F42298384742B657F3B1FC /* ScheduleSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScheduleSection.swift; sourceTree = "<group>"; };
 		EA216D0C142E0CFF19B47BC6 /* MenuContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuContentView.swift; sourceTree = "<group>"; };
@@ -88,7 +94,10 @@
 				EC116BFBB8AB47D767CE420A /* AssistantSettingsView.swift */,
 				B3C17180F1199E37ED604EE1 /* BriturnCloudSettingsView.swift */,
 				11E100ACADA9A41A06DEDB9D /* BriturnColorWheel.swift */,
+				30AA2CA98B2FA5BEA1CEAD6E /* CarbonHotkeyRegistrar.swift */,
 				1D898F519E81CDFABF41FADA /* CommandBarView.swift */,
+				D48416B1996D9F389EFCD501 /* HotkeyHUD.swift */,
+				2584D53CB844C49682F5ECA9 /* HotkeySettingsView.swift */,
 				87AD030C867FB1670213C59C /* MainWindow.swift */,
 				EA216D0C142E0CFF19B47BC6 /* MenuContentView.swift */,
 				025EB1036E4D31BAC39CC68D /* MyHomeApp.swift */,
@@ -185,9 +194,12 @@
 				4F8744AFDAE40BB6354215C3 /* AssistantSettingsView.swift in Sources */,
 				49B2A8D834DCD088E2275FA6 /* BriturnCloudSettingsView.swift in Sources */,
 				6F20A2A652F39A19F38646B1 /* BriturnColorWheel.swift in Sources */,
+				4F212C0D1E8DB925728245E2 /* CarbonHotkeyRegistrar.swift in Sources */,
 				597F120642BE8E45A5416117 /* CommandBarView.swift in Sources */,
 				F317B7D65C3E75768462303A /* DeviceEntity.swift in Sources */,
 				646792CA2BA4E73F87349A4C /* DeviceIntents.swift in Sources */,
+				730898B9CD47FB4BEC807FB0 /* HotkeyHUD.swift in Sources */,
+				7A5D77E6A587FD8B1839123D /* HotkeySettingsView.swift in Sources */,
 				E1E54BFD34E79D5006F9FF9F /* MainWindow.swift in Sources */,
 				B83897D1AB817ECC93E271AB /* MenuContentView.swift in Sources */,
 				E35660965C5E27E41E509392 /* MyHomeApp.swift in Sources */,

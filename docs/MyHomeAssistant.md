@@ -145,6 +145,16 @@ package extractor rejects when `SourcePackages` sits under `/tmp` (a symlink to
 `-clonedSourcePackagesDirPath <path outside /tmp>`, or make `<derivedData>/SourcePackages` a
 symlink to such a path.
 
+### Global hold-to-talk shortcut (`MyHomeCore/Hotkey/`, `MyHomeApp/CarbonHotkeyRegistrar.swift`, `HotkeyHUD.swift`, `HotkeySettingsView.swift`)
+
+Settings → Assistant → **Hold-to-talk shortcut**: click the field, press a combination (Esc cancels), **Clear** or **Reset**. **Hold to talk, release to run** — press starts listening, release stops and runs the utterance through the same `AssistantCoordinator` path as the command bar. There is no toggle mode. No shortcut is set by default.
+
+* `HotkeyBinding` (key code + modifier mask, stored as JSON under `assistantHotkeyBinding`) must include at least one modifier; bare keys and modifier-only keys are rejected, and well-known system combinations (⌘Space, ⌘Tab, ⇧⌘3/4/5, …) are accepted with a warning.
+* Registered with Carbon `RegisterEventHotKey` (as Pop does): works from any app, needs no Accessibility / Input Monitoring permission, and delivers both key-down and key-up. A conflict with another app is shown under the field. Changing the setting re-registers live; the shortcut is paused while recording.
+* `HotkeyController` is the testable state machine (registration is injected): key-repeat and release-without-press are ignored, re-binding or sleep while held counts as a release. Releasing before the speech model has loaded (or while the microphone prompt is up) cancels the pending start instead of leaving the recogniser listening; the first press with no microphone permission triggers the normal permission prompt.
+* The utterance wiring lives in `AppServices`, so it works with every window closed. A small non-activating floating panel (never takes focus from the frontmost app) shows Listening…, the live transcript, the result and **Yes / No** for a pending confirmation (model plans always need one), then disappears after `hotkeyHUDDismissSeconds` (default 4; `hotkeyHUDConfirmDismissSeconds`, default 15, while a confirmation is pending — a confirmation left unanswered stays pending in the command bar). The spoken reply is unchanged.
+* Safety is unchanged: the shortcut only starts listening; policy checks, the multi-device threshold and always-confirm for model plans still apply.
+
 ### Siri / Shortcuts (`MyHomeApp/Intents/`)
 
 `DeviceEntity` (+ `EntityStringQuery` through the same resolver), `SetDevicePowerIntent`,

@@ -41,6 +41,8 @@ struct AssistantSettingsView: View {
 
             SpeechEngineSettingsSection(speech: services.speech)
 
+            HotkeySettingsSection(hotkey: services.hotkey)
+
             Section {
                 Picker("Planner for free-form requests", selection: $provider) {
                     Text("None (direct commands only)").tag(AppSettings.PlannerProvider.none)
