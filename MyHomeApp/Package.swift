@@ -45,6 +45,12 @@ let package = Package(
             name: "BridgePingTest",
             dependencies: ["MyHomeCore"],
             path: "Sources/BridgePingTest"
+        ),
+        // Read-only KEF qualification probe: `swift run KEFProbe <ipv4>`.
+        .executableTarget(
+            name: "KEFProbe",
+            dependencies: ["MyHomeCore"],
+            path: "Sources/KEFProbe"
         )
     ]
 )

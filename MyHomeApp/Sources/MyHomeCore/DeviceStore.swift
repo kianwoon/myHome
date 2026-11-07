@@ -48,6 +48,10 @@ public final class DeviceStore: ObservableObject {
         didSet { invalidateDerivedCaches(roster: true) }
     }
     var bridgeRoster: [Device] = []
+    /// Local KEF speakers (records, readings, client seam). See DeviceStore+KEF.swift.
+    @Published var kef = KEFRegistry() {
+        didSet { invalidateDerivedCaches() }
+    }
     var briturnCloudDevices: [String: BriturnCloudDevice] = [:] {
         didSet { invalidateDerivedCaches() }
     }
@@ -79,7 +83,7 @@ public final class DeviceStore: ObservableObject {
     /// have no roster entry to store it in).
     public var devices: [Device] {
         // Cloud is the base once synced: BLE is only a transport attached to cloud lights.
-        guard briturnCloudDevices.isEmpty else { return roster }
+        guard briturnCloudDevices.isEmpty else { return roster + kef.devices }
         // Read by every dashboard body (filters, counts, header): memoized,
         // rebuilt only when an input changes (see invalidateDerivedCaches).
         if let cached = derivedCaches.devices { return cached }
@@ -96,7 +100,7 @@ public final class DeviceStore: ObservableObject {
                           version: "BLE", category: "briturn",
                           group: bleGroups[light.id], online: true)
         }
-        return roster + bleOnlyDevices
+        return roster + bleOnlyDevices + kef.devices
     }
 
     /// Matches a BLE discovery to its canonical roster id, if it has one.
@@ -221,6 +225,9 @@ public final class DeviceStore: ObservableObject {
            let stored = try? JSONDecoder().decode([BLELight].self, from: data) {
             for light in Self.migrateBLESeen(stored) { bleSeen[light.id] = light }
         }
+        kef.persistence = KEFConfigurationStore(defaults: defaults)
+        kef.config = KEFConfig.fromDefaults(defaults)
+        loadKEFSpeakers()
         bindBLE()
         startPublishMeter()
     }
@@ -345,6 +352,7 @@ public final class DeviceStore: ObservableObject {
     /// from existing facts only. `.offline` means NO control path at the moment:
     /// no online LAN address, cloud not online, and no LIVE Bluetooth peripheral.
     public func reachability(for device: Device) -> Reachability {
+        if isKEF(device) { return device.online ? .wifi : .offline }
         let bleLive = isBLELive(for: device)
         let cloud = cloudOnline[device.id]
         let lan = device.hasAddress && device.online
@@ -369,7 +377,8 @@ public final class DeviceStore: ObservableObject {
     /// or fallback) or the Briturn cloud. A cloud-offline light next to the
     /// Mac is controllable over Bluetooth, so its UI must not be disabled.
     public func isControllable(for device: Device) -> Bool {
-        device.hasAddress || isBLEAvailable(for: device) || isBriturnCloudAvailable(for: device)
+        if isKEF(device) { return kef.records[device.id] != nil }
+        return device.hasAddress || isBLEAvailable(for: device) || isBriturnCloudAvailable(for: device)
     }
 
     @discardableResult
@@ -788,6 +797,7 @@ public final class DeviceStore: ObservableObject {
     /// cloud reading taken before the light went Bluetooth-only is never
     /// refreshed (the sweep skips it) and must not read as a current "off".
     public func power(for device: Device) -> Bool? {
+        if isKEF(device) { return kefPower(for: device) }
         if isBriturn(device) {
             guard let state = briturnStatus[device.id] else { return nil }
             return hasCurrentBriturnReading(device) ? state.on : nil

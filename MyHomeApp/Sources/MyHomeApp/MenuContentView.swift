@@ -38,7 +38,7 @@ struct MenuContentView: View {
                             case .group(let group):
                                 BriturnGroupMenuRow(group: group)
                             case .device(let device):
-                                DeviceRow(device: device)
+                                if store.isKEF(device) { KEFMenuRow(device: device) } else { DeviceRow(device: device) }
                             }
                         }
                     }

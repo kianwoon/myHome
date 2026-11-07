@@ -71,6 +71,7 @@ public extension JevCommandDecider {
         case .climate: return "Air conditioners, heaters and thermostats."
         case .purifier: return "Air purifiers and filters."
         case .kettle: return "Kettles and kitchen appliances."
+        case .speaker: return "Speakers and hi-fi (KEF)."
         case .unknown: return "Other devices."
         }
     }

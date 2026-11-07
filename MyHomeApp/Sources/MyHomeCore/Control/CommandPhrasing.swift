@@ -16,6 +16,9 @@ public enum CommandPhrasing {
         case .mode(let mode): return "Set \(target) to \(mode) mode"
         case .fanSpeed(let gear): return "Set \(target) to speed \(gear)"
         case .cover(let action): return "\(action.rawValue.capitalized) \(target)"
+        case .volume(let percent): return "Set \(target) volume to \(percent)%"
+        case .mute(let muted): return "\(muted ? "Mute" : "Unmute") \(target)"
+        case .input(let name): return "Switch \(target) to \(name)"
         }
     }
 
@@ -29,6 +32,8 @@ public enum CommandPhrasing {
             case .close: return "Closed \(target)"
             case .stop: return "Stopped \(target)"
             }
+        case .mute(let muted): return "\(muted ? "Muted" : "Unmuted") \(target)"
+        case .input(let name): return "Switched \(target) to \(name)"
         default: return action(command, target: target)
         }
     }
@@ -109,6 +114,7 @@ public enum CommandPhrasing {
     // MARK: Status
 
     public static func describe(_ device: DeviceSummary) -> String {
+        if let speaker = device.speaker { return describeSpeaker(device, speaker) }
         var parts: [String] = []
         if let on = device.isOn { parts.append(on ? "on" : "off") }
         if let level = device.levelPercent, device.isOn != false {
@@ -117,6 +123,19 @@ public enum CommandPhrasing {
         if device.reachability == .offline { parts.append("offline") }
         if parts.isEmpty { return "\(device.name): state unknown" }
         return "\(device.name) is \(parts.joined(separator: ", "))"
+    }
+
+    /// Speaker status from confirmed readings; stale values are labelled, never presented as current.
+    static func describeSpeaker(_ device: DeviceSummary, _ speaker: DeviceSummary.SpeakerSummary) -> String {
+        if device.reachability == .offline { return "\(device.name) is offline" + (speaker.volume.map { " (last known volume \($0)%)" } ?? "") }
+        var parts: [String] = []
+        if let on = device.isOn { parts.append(on ? "on" : "in standby") }
+        if let volume = speaker.volume { parts.append("volume \(volume)%") }
+        if let muted = speaker.muted { parts.append(muted ? "muted" : "not muted") }
+        if let input = speaker.inputLabel { parts.append("input \(input)") }
+        if parts.isEmpty { return "\(device.name): state unknown" }
+        let stale = speaker.isStale ? " (last known" + (speaker.secondsSinceUpdate.map { ", \($0)s ago" } ?? "") + ")" : ""
+        return "\(device.name) is \(parts.joined(separator: ", "))\(stale)"
     }
 
     static func plural(_ noun: String) -> String {

@@ -4,14 +4,14 @@ import SwiftUI
 import MyHomeCore
 
 enum DeviceGroup: String, CaseIterable, Identifiable {
-    case fans, curtains, lights, plugs, climate, briturn, other
+    case fans, curtains, lights, plugs, climate, briturn, speakers, other
 
     /// General rule: any roster category listed here owns its own sidebar
     /// group, keyed on `device.category` rather than on DeviceKind. The
     /// kind-derived groups below must not claim those devices, so a source
     /// cannot double-appear. Categories NOT listed here keep the existing
     /// behaviour: classified by kind, falling through to Other.
-    static let sourceCategories: Set<String> = ["briturn"]
+    static let sourceCategories: Set<String> = ["briturn", KEFProtocol.category]
 
     var id: String { rawValue }
 
@@ -23,6 +23,7 @@ enum DeviceGroup: String, CaseIterable, Identifiable {
         case .plugs: return "Plugs"
         case .climate: return "Climate"
         case .briturn: return "Briturn"
+        case .speakers: return "Speakers"
         case .other: return "Other"
         }
     }
@@ -35,6 +36,7 @@ enum DeviceGroup: String, CaseIterable, Identifiable {
         case .plugs: return "powerplug"
         case .climate: return "thermometer.medium"
         case .briturn: return "lamp.desk"
+        case .speakers: return DeviceKind.speaker.iconName
         case .other: return "square.grid.2x2"
         }
     }
@@ -48,6 +50,7 @@ enum DeviceGroup: String, CaseIterable, Identifiable {
         case .plugs: return !isSourceOwned && device.kind == .plug
         case .climate: return !isSourceOwned && device.kind == .climate
         case .briturn: return device.category.lowercased() == "briturn"
+        case .speakers: return device.category == KEFProtocol.category
         case .other:
             return !isSourceOwned
                 && ![DeviceKind.fan, .curtain, .light, .plug, .climate].contains(device.kind)
@@ -116,6 +119,7 @@ struct DashboardView: View {
     @EnvironmentObject private var store: DeviceStore
     @State private var group: DeviceGroup = DeviceGroup.allCases.first { ProcessInfo.processInfo.environment["MYHOME_GROUP"] == $0.title.lowercased() } ?? .fans
     @State private var selectedID: String?
+    @State private var addingSpeaker = false
     // Which category's button started the current rescan (drives the spinner).
     // Local view state only; the working flag itself stays store.isWorking.
     @State private var rescanningGroup: DeviceGroup?
@@ -182,6 +186,15 @@ struct DashboardView: View {
     }
 
     private func onRank(_ device: Device) -> Int {
+        if store.isKEF(device) {
+            // Speakers: active, unknown, standby, then offline.
+            if store.reachability(for: device) == .offline { return 3 }
+            switch store.kefPower(for: device) {
+            case true?: return 0
+            case nil: return 1
+            case false?: return 2
+            }
+        }
         if store.isOn[device.id] == true || store.briturnStatus[device.id]?.on == true {
             return 0
         }
@@ -262,6 +275,9 @@ struct DashboardView: View {
                             .foregroundStyle(.secondary)
                         Text("No devices in \(selectedRoom ?? group.title).")
                             .foregroundStyle(.secondary)
+                        if selectedRoom == nil && group == .speakers {
+                            Button("Add Speaker…") { addingSpeaker = true }
+                        }
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.top, 60)
@@ -271,11 +287,17 @@ struct DashboardView: View {
                         spacing: 14
                     ) {
                         ForEach(filtered) { device in
-                            DeviceCard(
-                                device: device,
-                                isSelected: selectedID == device.id
-                            ) {
-                                selectedID = device.id
+                            if store.isKEF(device) {
+                                KEFSpeakerCard(device: device, isSelected: selectedID == device.id) {
+                                    selectedID = device.id
+                                }
+                            } else {
+                                DeviceCard(
+                                    device: device,
+                                    isSelected: selectedID == device.id
+                                ) {
+                                    selectedID = device.id
+                                }
                             }
                         }
                     }
@@ -285,11 +307,14 @@ struct DashboardView: View {
             .frame(minWidth: 480, idealWidth: 580)
             .frame(maxWidth: .infinity)
             .navigationTitle(selectedRoom ?? group.title)
+            .sheet(isPresented: $addingSpeaker) { AddKEFSpeakerView().environmentObject(store) }
 
             if let device = selectedDevice {
                 detailResizeHandle
-                DeviceDetailView(device: device)
-                    .frame(width: clampedDetailWidth)
+                Group {
+                    if store.isKEF(device) { KEFSpeakerDetailView(device: device) } else { DeviceDetailView(device: device) }
+                }
+                .frame(width: clampedDetailWidth)
             }
         }
         // Voice / text command bar (CommandBarView.swift); shares the store.

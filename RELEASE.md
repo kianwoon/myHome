@@ -1,5 +1,10 @@
 # RELEASE NOTES
 
+## Unreleased
+
+### MyHome app
+* New: KEF LS50 Wireless II support — a native LAN adapter (`MyHomeCore/KEF`), a Speakers category with card, detail panel and menu controls, and power/volume/mute/input in the unified control layer, voice grammar and assistant. Protocol shapes are reference-derived and pending hardware qualification; see [docs/KEF.md](docs/KEF.md).
+
 ## v1.20.0 - Monitor Reliability, Security & Bug Fixes
 
 Release rollup. The **Monitor reliability** changes below ship in this PR; the

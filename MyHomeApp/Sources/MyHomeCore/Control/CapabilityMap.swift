@@ -12,12 +12,17 @@ public struct DeviceProfile {
     public let device: Device
     public let state: DeviceState
     public let isBriturn: Bool
+    /// Non-nil only for KEF speakers: the last confirmed reading (possibly empty).
+    public let kef: KEFState?
 
-    public init(device: Device, state: DeviceState, isBriturn: Bool) {
+    public init(device: Device, state: DeviceState, isBriturn: Bool, kef: KEFState? = nil) {
         self.device = device
         self.state = state
         self.isBriturn = isBriturn
+        self.kef = kef
     }
+
+    public var isKEF: Bool { kef != nil }
 
     public var kind: DeviceKind { device.kind }
 }
@@ -29,6 +34,8 @@ public enum CapabilityMap {
         case tuya(dpId: String, value: DPSValue)
         /// `DeviceStore.setBriturn` / `setBriturnGroupState` arguments.
         case briturn(on: Bool?, color: RGB?, brightness: Int?, cct: Int?)
+        /// `DeviceStore.kefWrite`.
+        case kef(KEFAction)
     }
 
     /// What the store's published state must show for the write to count as
@@ -43,6 +50,7 @@ public enum CapabilityMap {
         case briturnColor(RGB)
         /// CCT readback bytes vary with the temperature: never comparable.
         case briturnColorTemperature(Int)
+        case kef(KEFAction)
         case accepted
     }
 
@@ -80,6 +88,7 @@ public enum CapabilityMap {
     // MARK: - Supported capabilities
 
     public static func supported(for profile: DeviceProfile) -> Set<SemanticCapability> {
+        if profile.isKEF { return [.power, .volume, .mute, .input] }
         if profile.isBriturn {
             return [.power, .level, .color, .colorTemperature]
         }
@@ -101,6 +110,7 @@ public enum CapabilityMap {
     // MARK: - Planning
 
     public static func plan(_ command: DeviceCommand, for profile: DeviceProfile) -> Result<WritePlan, Rejection> {
+        if profile.isKEF { return kefPlan(command, profile: profile) }
         if profile.isBriturn { return briturnPlan(command) }
         switch command {
         case .power(let on):
@@ -146,6 +156,10 @@ public enum CapabilityMap {
             }
             return .success(.tuya(dpId: target.dpId, value: .string(action.rawValue)))
 
+        case .volume: return .failure(.unsupported(.volume))
+        case .mute: return .failure(.unsupported(.mute))
+        case .input: return .failure(.unsupported(.input))
+
         case .color:
             // Tuya colour_data is a vendor-specific HSV encoding the dashboard
             // never writes; colour stays Briturn-only until a verified encoder
@@ -159,6 +173,8 @@ public enum CapabilityMap {
         switch plan {
         case .tuya(let dpId, let value):
             return .dps(dpId: dpId, value: value)
+        case .kef(let action):
+            return .kef(action)
         case .briturn(let on, let color, let brightness, let cct):
             if let cct { return .briturnColorTemperature(cct) }
             if let color { return .briturnColor(color) }
@@ -197,6 +213,40 @@ public enum CapabilityMap {
             return .failure(.unsupported(.fanSpeed))
         case .cover:
             return .failure(.unsupported(.openClose))
+        case .volume: return .failure(.unsupported(.volume))
+        case .mute: return .failure(.unsupported(.mute))
+        case .input: return .failure(.unsupported(.input))
+        }
+    }
+
+    // MARK: - KEF speakers
+
+    /// Speaker plan: only power, volume, mute and input exist; volume is the
+    /// native 0…100 scale bounded by the speaker's own ceiling, and input names
+    /// resolve only against the sources qualified for the model.
+    private static func kefPlan(_ command: DeviceCommand, profile: DeviceProfile) -> Result<WritePlan, Rejection> {
+        switch command {
+        case .power(let on):
+            return .success(.kef(.power(on)))
+        case .volume(let percent):
+            let upper = min(profile.kef?.maxVolume ?? Percent.range.upperBound, Percent.range.upperBound)
+            guard (Percent.range.lowerBound...upper).contains(percent) else {
+                return .failure(.outOfRange(.volume, lower: Percent.range.lowerBound, upper: upper))
+            }
+            return .success(.kef(.volume(percent)))
+        case .mute(let muted):
+            return .success(.kef(.mute(muted)))
+        case .input(let name):
+            guard let input = KEFInput.fromSpoken(name) ?? KEFInput.selectable.first(where: { $0.wireValue == name.lowercased() }) else {
+                return .failure(.unknownMode(name, options: KEFInput.selectable.map(\.label)))
+            }
+            return .success(.kef(.input(input)))
+        case .level: return .failure(.unsupported(.level))
+        case .color: return .failure(.unsupported(.color))
+        case .colorTemperature: return .failure(.unsupported(.colorTemperature))
+        case .mode: return .failure(.unsupported(.mode))
+        case .fanSpeed: return .failure(.unsupported(.fanSpeed))
+        case .cover: return .failure(.unsupported(.openClose))
         }
     }
 
@@ -357,6 +407,7 @@ public enum CapabilityMap {
 
     /// Current level as a percent, for summaries and the model's context.
     public static func levelPercent(_ profile: DeviceProfile, briturn: DeviceStore.BriturnState?) -> Int? {
+        if profile.isKEF { return nil }   // volume is not a level
         if profile.isBriturn {
             guard let state = briturn else { return nil }
             let peak = Double(max(state.r, state.g, state.b, state.whiteLevel))

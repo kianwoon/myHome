@@ -23,6 +23,8 @@ struct SettingsView: View {
                 .tabItem { Label("AI Models", systemImage: "sparkles") }
             AssistantSettingsView(services: AppServices.shared)
                 .tabItem { Label("Assistant", systemImage: "checkmark.shield") }
+            KEFSpeakersSettingsView()
+                .tabItem { Label("Speakers", systemImage: "speaker.wave.2") }
             GeneralSettingsView()
                 .tabItem { Label("General", systemImage: "gearshape") }
         }

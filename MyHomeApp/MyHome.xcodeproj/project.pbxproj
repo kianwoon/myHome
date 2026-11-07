@@ -8,23 +8,30 @@
 
 /* Begin PBXBuildFile section */
 		217CD027747DB3AFB632547E /* AppServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A40831232019FE17DFCE541 /* AppServices.swift */; };
+		43FD135660E06B49E59462F5 /* KEFSpeakerCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75068B0AAD80282154960A73 /* KEFSpeakerCard.swift */; };
 		49B2A8D834DCD088E2275FA6 /* BriturnCloudSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3C17180F1199E37ED604EE1 /* BriturnCloudSettingsView.swift */; };
 		4F212C0D1E8DB925728245E2 /* CarbonHotkeyRegistrar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30AA2CA98B2FA5BEA1CEAD6E /* CarbonHotkeyRegistrar.swift */; };
 		4F8744AFDAE40BB6354215C3 /* AssistantSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC116BFBB8AB47D767CE420A /* AssistantSettingsView.swift */; };
+		565F1D52F5224FF1C82116CA /* SidebarSettingsButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83EA9D09560160D6EC5BC7CB /* SidebarSettingsButton.swift */; };
 		597F120642BE8E45A5416117 /* CommandBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D898F519E81CDFABF41FADA /* CommandBarView.swift */; };
 		646792CA2BA4E73F87349A4C /* DeviceIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B98F9FE07DF7101447DB4CF /* DeviceIntents.swift */; };
+		6533B8F35024C8665581E932 /* AIModelsSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43A18FC8547783151F7062F1 /* AIModelsSettingsView.swift */; };
 		6F20A2A652F39A19F38646B1 /* BriturnColorWheel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11E100ACADA9A41A06DEDB9D /* BriturnColorWheel.swift */; };
 		730898B9CD47FB4BEC807FB0 /* HotkeyHUD.swift in Sources */ = {isa = PBXBuildFile; fileRef = D48416B1996D9F389EFCD501 /* HotkeyHUD.swift */; };
 		75E092B4D2C38EE52FACDB60 /* MyHomeCore in Frameworks */ = {isa = PBXBuildFile; productRef = 19644969924D90A9445210AB /* MyHomeCore */; };
 		7A5D77E6A587FD8B1839123D /* HotkeySettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2584D53CB844C49682F5ECA9 /* HotkeySettingsView.swift */; };
 		9973CA02EFF81E9AD2082DCF /* JevSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61E3AF12D4C07AE1EE34FA31 /* JevSettingsView.swift */; };
 		9F1510C90D309A19D82A7540 /* SpecControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81FE9F3B979384342150D39A /* SpecControls.swift */; };
+		ACC5ED7F84C30A6C6CD0B40B /* KEFSpeakerDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6101481FA52B5CDCCA15597 /* KEFSpeakerDetailView.swift */; };
+		AF08B4612C3CF088E4F2742D /* DiagnosticLaunch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BE7DF252AF7843C9815291A /* DiagnosticLaunch.swift */; };
 		B83897D1AB817ECC93E271AB /* MenuContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA216D0C142E0CFF19B47BC6 /* MenuContentView.swift */; };
 		BF74D41E699A0758B5627B88 /* OutputMuteSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0AEC1FE03A2D878EBD3DBF96 /* OutputMuteSettingsView.swift */; };
 		C3E075CE935FAC31A677C906 /* ScheduleSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6F42298384742B657F3B1FC /* ScheduleSection.swift */; };
+		E0403F76E01EC0B67DCF0812 /* AddKEFSpeakerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C571755332559E4344F87887 /* AddKEFSpeakerView.swift */; };
 		E1E54BFD34E79D5006F9FF9F /* MainWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87AD030C867FB1670213C59C /* MainWindow.swift */; };
 		E35660965C5E27E41E509392 /* MyHomeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 025EB1036E4D31BAC39CC68D /* MyHomeApp.swift */; };
 		E4D6E9F51A7F3A05F7D211E3 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEC2FF8663C0FA7C9EFBC95F /* SettingsView.swift */; };
+		EC8F8E46461BF2CE7943415F /* HousekeeperSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 388AD936E03C355E486E2F49 /* HousekeeperSettingsView.swift */; };
 		F0A5731F474DC7518231D351 /* SecretKeyEntryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A99861946F3DF615BC4E49B /* SecretKeyEntryView.swift */; };
 		F317B7D65C3E75768462303A /* DeviceEntity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D7042748DAC7386EE28CB1C /* DeviceEntity.swift */; };
 		F4F85783C9717DEEC072F30A /* SpeechEngineSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1E72525B7B501D3D2AC0806 /* SpeechEngineSettingsView.swift */; };
@@ -39,15 +46,22 @@
 		2584D53CB844C49682F5ECA9 /* HotkeySettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeySettingsView.swift; sourceTree = "<group>"; };
 		2B98F9FE07DF7101447DB4CF /* DeviceIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceIntents.swift; sourceTree = "<group>"; };
 		30AA2CA98B2FA5BEA1CEAD6E /* CarbonHotkeyRegistrar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarbonHotkeyRegistrar.swift; sourceTree = "<group>"; };
+		388AD936E03C355E486E2F49 /* HousekeeperSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HousekeeperSettingsView.swift; sourceTree = "<group>"; };
+		3BE7DF252AF7843C9815291A /* DiagnosticLaunch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticLaunch.swift; sourceTree = "<group>"; };
+		43A18FC8547783151F7062F1 /* AIModelsSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIModelsSettingsView.swift; sourceTree = "<group>"; };
 		4A99861946F3DF615BC4E49B /* SecretKeyEntryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecretKeyEntryView.swift; sourceTree = "<group>"; };
 		5A40831232019FE17DFCE541 /* AppServices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppServices.swift; sourceTree = "<group>"; };
 		61E3AF12D4C07AE1EE34FA31 /* JevSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JevSettingsView.swift; sourceTree = "<group>"; };
 		6D7042748DAC7386EE28CB1C /* DeviceEntity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceEntity.swift; sourceTree = "<group>"; };
+		75068B0AAD80282154960A73 /* KEFSpeakerCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KEFSpeakerCard.swift; sourceTree = "<group>"; };
 		81FE9F3B979384342150D39A /* SpecControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpecControls.swift; sourceTree = "<group>"; };
+		83EA9D09560160D6EC5BC7CB /* SidebarSettingsButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarSettingsButton.swift; sourceTree = "<group>"; };
 		87AD030C867FB1670213C59C /* MainWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainWindow.swift; sourceTree = "<group>"; };
 		AEC2FF8663C0FA7C9EFBC95F /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		B3C17180F1199E37ED604EE1 /* BriturnCloudSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BriturnCloudSettingsView.swift; sourceTree = "<group>"; };
+		C571755332559E4344F87887 /* AddKEFSpeakerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddKEFSpeakerView.swift; sourceTree = "<group>"; };
 		D48416B1996D9F389EFCD501 /* HotkeyHUD.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyHUD.swift; sourceTree = "<group>"; };
+		D6101481FA52B5CDCCA15597 /* KEFSpeakerDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KEFSpeakerDetailView.swift; sourceTree = "<group>"; };
 		D81C297BE7E44FE55552EB27 /* MyHome.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MyHome.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		E6F42298384742B657F3B1FC /* ScheduleSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScheduleSection.swift; sourceTree = "<group>"; };
 		EA216D0C142E0CFF19B47BC6 /* MenuContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuContentView.swift; sourceTree = "<group>"; };
@@ -96,15 +110,21 @@
 			isa = PBXGroup;
 			children = (
 				2492281AE1BA91C5EE0AF129 /* Intents */,
+				C571755332559E4344F87887 /* AddKEFSpeakerView.swift */,
+				43A18FC8547783151F7062F1 /* AIModelsSettingsView.swift */,
 				5A40831232019FE17DFCE541 /* AppServices.swift */,
 				EC116BFBB8AB47D767CE420A /* AssistantSettingsView.swift */,
 				B3C17180F1199E37ED604EE1 /* BriturnCloudSettingsView.swift */,
 				11E100ACADA9A41A06DEDB9D /* BriturnColorWheel.swift */,
 				30AA2CA98B2FA5BEA1CEAD6E /* CarbonHotkeyRegistrar.swift */,
 				1D898F519E81CDFABF41FADA /* CommandBarView.swift */,
+				3BE7DF252AF7843C9815291A /* DiagnosticLaunch.swift */,
 				D48416B1996D9F389EFCD501 /* HotkeyHUD.swift */,
 				2584D53CB844C49682F5ECA9 /* HotkeySettingsView.swift */,
+				388AD936E03C355E486E2F49 /* HousekeeperSettingsView.swift */,
 				61E3AF12D4C07AE1EE34FA31 /* JevSettingsView.swift */,
+				75068B0AAD80282154960A73 /* KEFSpeakerCard.swift */,
+				D6101481FA52B5CDCCA15597 /* KEFSpeakerDetailView.swift */,
 				87AD030C867FB1670213C59C /* MainWindow.swift */,
 				EA216D0C142E0CFF19B47BC6 /* MenuContentView.swift */,
 				025EB1036E4D31BAC39CC68D /* MyHomeApp.swift */,
@@ -112,6 +132,7 @@
 				E6F42298384742B657F3B1FC /* ScheduleSection.swift */,
 				4A99861946F3DF615BC4E49B /* SecretKeyEntryView.swift */,
 				AEC2FF8663C0FA7C9EFBC95F /* SettingsView.swift */,
+				83EA9D09560160D6EC5BC7CB /* SidebarSettingsButton.swift */,
 				81FE9F3B979384342150D39A /* SpecControls.swift */,
 				F1E72525B7B501D3D2AC0806 /* SpeechEngineSettingsView.swift */,
 			);
@@ -199,6 +220,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				6533B8F35024C8665581E932 /* AIModelsSettingsView.swift in Sources */,
+				E0403F76E01EC0B67DCF0812 /* AddKEFSpeakerView.swift in Sources */,
 				217CD027747DB3AFB632547E /* AppServices.swift in Sources */,
 				4F8744AFDAE40BB6354215C3 /* AssistantSettingsView.swift in Sources */,
 				49B2A8D834DCD088E2275FA6 /* BriturnCloudSettingsView.swift in Sources */,
@@ -207,9 +230,13 @@
 				597F120642BE8E45A5416117 /* CommandBarView.swift in Sources */,
 				F317B7D65C3E75768462303A /* DeviceEntity.swift in Sources */,
 				646792CA2BA4E73F87349A4C /* DeviceIntents.swift in Sources */,
+				AF08B4612C3CF088E4F2742D /* DiagnosticLaunch.swift in Sources */,
 				730898B9CD47FB4BEC807FB0 /* HotkeyHUD.swift in Sources */,
 				7A5D77E6A587FD8B1839123D /* HotkeySettingsView.swift in Sources */,
+				EC8F8E46461BF2CE7943415F /* HousekeeperSettingsView.swift in Sources */,
 				9973CA02EFF81E9AD2082DCF /* JevSettingsView.swift in Sources */,
+				43FD135660E06B49E59462F5 /* KEFSpeakerCard.swift in Sources */,
+				ACC5ED7F84C30A6C6CD0B40B /* KEFSpeakerDetailView.swift in Sources */,
 				E1E54BFD34E79D5006F9FF9F /* MainWindow.swift in Sources */,
 				B83897D1AB817ECC93E271AB /* MenuContentView.swift in Sources */,
 				E35660965C5E27E41E509392 /* MyHomeApp.swift in Sources */,
@@ -217,6 +244,7 @@
 				C3E075CE935FAC31A677C906 /* ScheduleSection.swift in Sources */,
 				F0A5731F474DC7518231D351 /* SecretKeyEntryView.swift in Sources */,
 				E4D6E9F51A7F3A05F7D211E3 /* SettingsView.swift in Sources */,
+				565F1D52F5224FF1C82116CA /* SidebarSettingsButton.swift in Sources */,
 				9F1510C90D309A19D82A7540 /* SpecControls.swift in Sources */,
 				F4F85783C9717DEEC072F30A /* SpeechEngineSettingsView.swift in Sources */,
 			);

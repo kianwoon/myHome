@@ -253,6 +253,10 @@ bar; multi-device plans ask for confirmation through Siri). `MyHomeShortcuts` re
 phrases. The intents run in-process and reach the app's single `DeviceStore` through
 `AppServices.shared`; a cold launch from Shortcuts does one bounded roster refresh.
 
+## Speakers (KEF LS50 Wireless II)
+
+KEF speakers are native `DeviceStore` records (`kef:<mac>`, `Device.ip` empty so no Tuya/Briturn path claims them). The controller gains `volume`, `mute` and `input` capabilities; `CapabilityMap` plans them as `WritePlan.kef`, `DeviceStore.kefWrite` sends and does one readback, and `compare` verifies against the published reading. Volume/mute/input are refused in standby. Speech: "set KEF volume to 30 percent", "mute the speakers", "switch KEF to TV", "what volume are the speakers at?". Details: [KEF.md](KEF.md).
+
 ## Using it
 
 * **Command bar** (bottom of the dashboard): type a command and press Return, or press the

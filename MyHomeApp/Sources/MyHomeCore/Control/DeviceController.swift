@@ -27,6 +27,16 @@ public struct DeviceSummary: Identifiable, Hashable, Codable, Sendable {
     public let isControllable: Bool
     public let isOn: Bool?
     public let levelPercent: Int?
+    /// Speakers only: confirmed readings with their freshness.
+    public var speaker: SpeakerSummary? = nil
+
+    public struct SpeakerSummary: Hashable, Codable, Sendable {
+        public let volume: Int?
+        public let muted: Bool?
+        public let inputLabel: String?
+        public let isStale: Bool
+        public let secondsSinceUpdate: Int?
+    }
 
     public enum ReachabilitySummary: String, Codable, Hashable, Sendable {
         case wifi, cloud, bluetooth, offline
@@ -172,7 +182,8 @@ public final class DeviceController: ObservableObject {
     }
 
     public func profile(for device: Device) -> DeviceProfile {
-        DeviceProfile(device: device, state: store.state(for: device), isBriturn: store.isBriturn(device))
+        DeviceProfile(device: device, state: store.state(for: device), isBriturn: store.isBriturn(device),
+                      kef: store.isKEF(device) ? (store.kefState(for: device) ?? KEFState()) : nil)
     }
 
     public func supports(_ device: Device, _ capability: SemanticCapability) -> Bool {
@@ -194,8 +205,19 @@ public final class DeviceController: ObservableObject {
             reachability: reachability,
             isControllable: store.isControllable(for: device),
             isOn: store.power(for: device),
-            levelPercent: CapabilityMap.levelPercent(profile, briturn: store.briturnStatus[device.id])
+            levelPercent: CapabilityMap.levelPercent(profile, briturn: store.briturnStatus[device.id]),
+            speaker: speakerSummary(for: device)
         )
+    }
+
+    private func speakerSummary(for device: Device) -> DeviceSummary.SpeakerSummary? {
+        guard store.isKEF(device) else { return nil }
+        let state = store.kefState(for: device)
+        let last = store.kefReading(for: device)?.lastSuccess
+        return DeviceSummary.SpeakerSummary(
+            volume: state?.volume, muted: state?.muted, inputLabel: state?.input?.label,
+            isStale: store.kefFreshness(for: device) != .fresh,
+            secondsSinceUpdate: last.map { Int(Date().timeIntervalSince($0)) })
     }
 
     public func summaries() -> [DeviceSummary] {
@@ -224,6 +246,13 @@ public final class DeviceController: ObservableObject {
         // Bluetooth facts). For Tuya devices it only echoes the last scan and
         // cloud poll, and the bridge still has a cloud fallback — so, like the
         // dashboard, the write is attempted and its real outcome reported.
+        if store.isKEF(device) {
+            if store.reachability(for: device) == .offline { return .denied(.denied("is offline (the speaker did not answer)")) }
+            // A stale reading is refreshed by the pre-check; kefWrite re-enforces standby on the fresh one.
+            if command.capability != .power, store.kefFreshness(for: device) == .fresh, store.kefPower(for: device) != true {
+                return .denied(.denied(store.kefPower(for: device) == false ? "is in standby; turn it on first" : "power state is unknown"))
+            }
+        }
         if store.isBriturn(device), store.reachability(for: device) == .offline {
             return .denied(.denied("is offline (no live WiFi, cloud or Bluetooth path)"))
         }
@@ -390,6 +419,17 @@ public final class DeviceController: ObservableObject {
             // rejection is reported as such, a transport error stays unknown.
             if store.lastSetRejected.contains(device.id) { return finish(device, expectation: expectation, result: .rejected(message), evidence: "bridge rejected") }
             return finish(device, expectation: expectation, result: .uncertain(message), evidence: "transport error, no read-back")
+        case .kef(let action):
+            switch await store.kefWrite(device, action) {
+            case .failed(let error):
+                return finish(device, expectation: expectation, result: .rejected(error.message), evidence: "kef write failed")
+            case .superseded:
+                return finish(device, expectation: expectation, result: .unverified("replaced by a newer volume request"), evidence: "superseded")
+            case .confirmed:
+                return finish(device, expectation: expectation, result: .confirmed, evidence: "kef readback")
+            case .mismatch, .unconfirmed:
+                return await verifyByReadBack(expectation, device: device, since: started)
+            }
         case .briturn(let on, let color, let brightness, let cct):
             let ack = await store.setBriturn(device, on: on, color: color?.tuple, brightness: brightness, cct: cct)
             switch ack {
@@ -459,6 +499,11 @@ public final class DeviceController: ObservableObject {
         switch (expectation, reading) {
         case (_, .unavailable(let text)):
             return .unavailable(text)
+        case (.kef(let action), .kef(let state)):
+            guard let ok = action.matches(state) else { return .unavailable("the speaker did not report that value") }
+            return ok ? .match : .mismatch("\(state)")
+        case (.kef, _), (_, .kef):
+            return .unavailable("a KEF expectation against another transport")
         case (.dps(let dpId, let value), .tuya(let dps, _)):
             guard let current = dps[dpId] else { return .unavailable("the status carries no dp \(dpId)") }
             return Self.equivalent(current, value) ? .match : .mismatch("dp \(dpId) = \(current)")

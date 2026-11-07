@@ -14,6 +14,22 @@ public enum ParsedIntent: Equatable {
     case unknown(String)
 }
 
+/// Spoken vocabulary for speaker volume, mute and input.
+public struct SpeakerGrammar: Sendable {
+    public var volumeWords: Set<String>
+    public var muteWord: String
+    public var unmuteWord: String
+    public var inputNouns: Set<String>
+    public var inputVerbs: Set<String>
+    public var volumeFillers: Set<String>
+
+    // allow-hardcode: spoken-command vocabulary (reviewed, injectable).
+    public static let standard = SpeakerGrammar(
+        volumeWords: ["volume"], muteWord: "mute", unmuteWord: "unmute",
+        inputNouns: ["input", "source"], inputVerbs: ["switch", "change", "set", "put", "select"],
+        volumeFillers: ["level", "at", "is", "are", "what", "whats", "how", "loud", "currently"])
+}
+
 /// Vocabulary of the rule-based grammar. Overridable so other languages or
 /// house-specific phrasings can be supplied without touching the parser.
 public struct CommandGrammar: Sendable {
@@ -62,6 +78,8 @@ public struct CommandGrammar: Sendable {
     public var anyKindWords: Set<String>
     /// Function words dropped from a state question's device phrase.
     public var stateQueryFillers: Set<String>
+    /// Speaker vocabulary (defaulted: not part of the memberwise init).
+    public var speaker = SpeakerGrammar.standard
 
     // allow-hardcode: this is the spoken-command grammar (verbs, particles,
     // colour names) — reviewed vocabulary, not a scoring oracle; it is
@@ -178,6 +196,7 @@ public struct VoiceCommandParser {
         // Before the status branch: "how many lights are on" is a question
         // over a kind of device, not the status of one named device.
         if let intent = parseStateQuery(tokens) { return intent }
+        if let intent = parseSpeakerQuestion(tokens) { return intent }
 
         if grammar.statusLeads.contains(tokens[0]) {
             let rest = Array(tokens.dropFirst()).filter {
@@ -186,6 +205,7 @@ public struct VoiceCommandParser {
             return .status(query(from: rest))
         }
 
+        if let intent = parseSpeaker(tokens) { return intent }
         if let intent = parsePower(tokens) { return intent }
         if let intent = parseCover(tokens) { return intent }
         if let intent = parseSetting(tokens) { return intent }
@@ -307,6 +327,54 @@ public struct VoiceCommandParser {
         rest.remove(at: particleIndex)
         if hasVerb { rest.removeFirst() }
         return .command(query(from: rest), .power(on))
+    }
+
+    // MARK: - Speakers
+
+    /// "what volume are the speakers at" → a status question about the speakers.
+    private func parseSpeakerQuestion(_ tokens: [String]) -> ParsedIntent? {
+        guard grammar.statusLeads.contains(tokens[0]), tokens.contains(where: { grammar.speaker.volumeWords.contains($0) }) else { return nil }
+        let rest = tokens.dropFirst().filter {
+            !grammar.speaker.volumeWords.contains($0) && !grammar.speaker.volumeFillers.contains($0) && !grammar.statusLeads.contains($0)
+        }
+        return .status(query(from: Array(rest)))
+    }
+
+    /// Explicit speaker grammar: mute / unmute, "set kef volume to 30",
+    /// "switch kef to tv". Runs before power and levels so a volume never
+    /// becomes a brightness.
+    private func parseSpeaker(_ tokens: [String]) -> ParsedIntent? {
+        let speaker = grammar.speaker
+        if tokens[0] == speaker.muteWord || tokens[0] == speaker.unmuteWord, tokens.count > 1 {
+            return .command(query(from: Array(tokens.dropFirst())), .mute(tokens[0] == speaker.muteWord))
+        }
+        if let volumeIndex = tokens.firstIndex(where: { speaker.volumeWords.contains($0) }) {
+            var rest = tokens
+            rest.remove(at: volumeIndex)
+            if let first = rest.first, grammar.setVerbs.contains(first) || grammar.levelVerbs.contains(first) { rest.removeFirst() }
+            var target = rest
+            var number: Int?
+            if let to = rest.firstIndex(where: { grammar.toWords.contains($0) }) {
+                target = Array(rest[..<to])
+                number = numberValue(in: Array(rest[(to + 1)...]), allowHomophones: false)
+            } else if let index = rest.firstIndex(where: { self.number(from: $0) != nil }) {
+                target = Array(rest[..<index])
+                number = self.number(from: rest[index])
+            }
+            guard let number else { return nil }
+            target.removeAll { grammar.percentWords.contains($0) || speaker.volumeFillers.contains($0) }
+            return .command(query(from: target), .volume(number))
+        }
+        if let first = tokens.first, speaker.inputVerbs.contains(first),
+           let to = tokens.lastIndex(where: { grammar.toWords.contains($0) }), to + 1 < tokens.count {
+            let words = tokens[(to + 1)...].filter { !speaker.inputNouns.contains($0) && !vocabulary.stopWords.contains($0) }
+            if let input = KEFInput.fromSpoken(words.joined(separator: " ")) {
+                var target = Array(tokens[1..<to])
+                target.removeAll { speaker.inputNouns.contains($0) }
+                return .command(query(from: target), .input(input.wireValue))
+            }
+        }
+        return nil
     }
 
     // MARK: - Covers

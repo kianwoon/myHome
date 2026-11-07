@@ -22,12 +22,14 @@ extension DeviceStore {
     public enum RawReading: Equatable {
         case briturn(BriturnState, via: Reachability)
         case tuya([String: DPSValue], viaCloud: Bool)
+        case kef(KEFState)
         case unavailable(String)
 
         public var via: String {
             switch self {
             case .briturn(_, let via): return "\(via)"
             case .tuya(_, let viaCloud): return viaCloud ? "cloud" : "lan"
+            case .kef: return "lan"
             case .unavailable: return "none"
             }
         }
@@ -38,6 +40,10 @@ extension DeviceStore {
 
     /// True when no reading exists or the last one is older than `maxAge`.
     public func isStale(_ device: Device, maxAge: TimeInterval, now: Date = Date()) -> Bool {
+        if isKEF(device) {
+            guard let last = kef.readings[device.id]?.lastSuccess else { return true }
+            return now.timeIntervalSince(last) > maxAge
+        }
         if isBriturn(device) {
             if briturnStatus[device.id] == nil { return true }
         } else if device.hasAddress, dpsById[device.id] == nil {
@@ -54,7 +60,8 @@ extension DeviceStore {
         let stale = devices.filter { isStale($0, maxAge: maxAge, now: now) }
         guard !stale.isEmpty else { return }
         let briturn = stale.filter { isBriturn($0) }
-        let tuya = stale.filter { !isBriturn($0) && $0.hasAddress }
+        let tuya = stale.filter { !isBriturn($0) && !isKEF($0) && $0.hasAddress }
+        for speaker in stale where isKEF(speaker) { await refreshKEF(speaker.id, manual: true) }
         async let lights: Void = refreshBriturnStatuses(limitingTo: briturn, scope: "freshen")
         await refreshTuyaStatuses(limitingTo: tuya, scope: "freshen")
         await lights
@@ -63,6 +70,7 @@ extension DeviceStore {
     /// Reads the device now over the path it is reachable by.
     public func readBack(_ device: Device) async -> RawReading {
         if isBriturn(device) { return await readBackBriturn(device) }
+        if isKEF(device) { return await readBackKEF(device) }
         guard device.hasAddress else { return .unavailable("no address") }
         let started = Date()
         switch await fetchStatus(for: device.id) {

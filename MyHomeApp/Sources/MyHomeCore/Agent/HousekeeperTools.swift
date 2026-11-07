@@ -10,6 +10,7 @@ import Foundation
 public enum HousekeeperAction: String, CaseIterable, Sendable {
     case powerOn = "power_on", powerOff = "power_off", level, fanSpeed = "fan_speed", colorTemperature = "color_temperature"
     case open, close, stop, mode
+    case volume, mute, unmute, input
 
     public static let names = allCases.map(\.rawValue).joined(separator: ", ")
 
@@ -23,6 +24,16 @@ public enum HousekeeperAction: String, CaseIterable, Sendable {
         case .open: return .success(.cover(.open))
         case .close: return .success(.cover(.close))
         case .stop: return .success(.cover(.stop))
+        case .mute: return .success(.mute(true))
+        case .unmute: return .success(.mute(false))
+        case .volume:
+            guard let number = HousekeeperTools.integer(value), Percent.range.contains(number) else {
+                return .failure(ArgumentError(message: "volume needs an integer value \(Percent.range.lowerBound)-\(Percent.range.upperBound)"))
+            }
+            return .success(.volume(number))
+        case .input:
+            guard let text = value?.stringValue?.trimmingCharacters(in: .whitespaces), !text.isEmpty else { return .failure(ArgumentError(message: "input needs a source name (wifi, bluetooth, tv, optical, aux, usb)")) }
+            return .success(.input(text))
         case .mode:
             guard let text = value?.stringValue?.trimmingCharacters(in: .whitespaces), !text.isEmpty else { return .failure(ArgumentError(message: "mode needs a string value")) }
             return .success(.mode(text))
@@ -141,10 +152,10 @@ public final class HousekeeperTools {
                                                 "room": property("string", "Room or group words"),
                                                 "state": property("string", "on, off or any (default any)", enumValues: stateValues)])),
         AgentToolDefinition(name: Name.set.rawValue,
-                            description: "Change devices. Pass ONLY the handles that should change. Actions: \(HousekeeperAction.names). value: percent 0-100 for level/color_temperature, gear number for fan_speed, mode name for mode. A fan that is off is powered on automatically when its speed or level is set. Every device is checked by the house: unreachable or unsupported ones are refused in the result and must be mentioned in your reply.",
+                            description: "Change devices. Pass ONLY the handles that should change. Actions: \(HousekeeperAction.names). value: percent 0-100 for level/color_temperature, gear number for fan_speed, mode name for mode, percent 0-100 for volume (speakers), source name for input (speakers: wifi, bluetooth, tv, optical, aux, usb). A fan that is off is powered on automatically when its speed or level is set. Every device is checked by the house: unreachable or unsupported ones are refused in the result and must be mentioned in your reply.",
                             parameters: schema(["handles": property("array", "Device handles to change", items: .object(["type": .string("string")])),
                                                 "action": property("string", "What to do", enumValues: .array(HousekeeperAction.allCases.map { .string($0.rawValue) })),
-                                                "value": .object(["description": .string("Number (level, color_temperature, fan_speed) or mode name")])],
+                                                "value": .object(["description": .string("Number (level, color_temperature, fan_speed, volume) or mode/input name")])],
                                                required: ["handles", "action"])),
         AgentToolDefinition(name: Name.undoLast.rawValue, description: "Put the devices changed by the last set back to their previous state.",
                             parameters: schema([:])),
@@ -341,6 +352,10 @@ public final class HousekeeperTools {
                 if let level = item.before.levelPercent { list.append(.level(level)) }
                 if item.before.isOn == false { list.append(.power(false)) }
                 commands = list
+            case .mute:
+                commands = item.before.speaker?.muted.map { [.mute($0)] } ?? []
+            case .volume:
+                commands = item.before.speaker?.volume.map { [.volume($0)] } ?? []
             default: commands = []
             }
             guard !commands.isEmpty else {

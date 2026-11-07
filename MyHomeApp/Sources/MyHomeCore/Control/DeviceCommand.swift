@@ -20,6 +20,11 @@ public enum SemanticCapability: String, CaseIterable, Codable, Hashable, Sendabl
     /// Gear 1…max (numeric fans) or small/middle/large (string fans).
     case fanSpeed
     case openClose
+    /// Speaker volume percent (KEF native 0…100). Never a light brightness.
+    case volume
+    case mute
+    /// Speaker source selection (Wi-Fi, TV, Optical …).
+    case input
 }
 
 public enum CoverAction: String, CaseIterable, Codable, Hashable, Sendable {
@@ -49,6 +54,10 @@ public enum DeviceCommand: Equatable, Hashable, Sendable {
     case mode(String)
     case fanSpeed(Int)
     case cover(CoverAction)
+    case volume(Int)
+    case mute(Bool)
+    /// Spoken/wire input name, validated by CapabilityMap against the speaker's sources.
+    case input(String)
 
     public var capability: SemanticCapability {
         switch self {
@@ -59,6 +68,9 @@ public enum DeviceCommand: Equatable, Hashable, Sendable {
         case .mode: return .mode
         case .fanSpeed: return .fanSpeed
         case .cover: return .openClose
+        case .volume: return .volume
+        case .mute: return .mute
+        case .input: return .input
         }
     }
 

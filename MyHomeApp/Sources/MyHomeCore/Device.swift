@@ -69,7 +69,7 @@ public struct Device: Identifiable, Decodable, Hashable {
 /// Icon and grouping decision for a device, driven by category first and
 /// name keywords as the fallback.
 public enum DeviceKind: String, Equatable, Codable, Sendable {
-    case fan, curtain, light, plug, climate, purifier, kettle, unknown
+    case fan, curtain, light, plug, climate, purifier, kettle, speaker, unknown
 
     public var iconName: String {
         switch self {
@@ -80,6 +80,7 @@ public enum DeviceKind: String, Equatable, Codable, Sendable {
         case .climate: return "thermometer.medium"
         case .purifier: return "aqi.medium"
         case .kettle: return "cup.and.saucer.fill"
+        case .speaker: return "speaker.wave.2.fill"
         case .unknown: return "dot.radiowaves.left.and.right"
         }
     }
@@ -93,6 +94,7 @@ public enum DeviceKind: String, Equatable, Codable, Sendable {
         case .climate: return "Climate"
         case .purifier: return "Purifier"
         case .kettle: return "Kitchen"
+        case .speaker: return "Speaker"
         case .unknown: return "Device"
         }
     }
@@ -101,6 +103,8 @@ public enum DeviceKind: String, Equatable, Codable, Sendable {
         switch category.lowercased() {
         case "cl":
             return .curtain
+        case "kef":
+            return .speaker
         case "dj", "xdd", "briturn":
             return .light
         case "fs", "fsd":
