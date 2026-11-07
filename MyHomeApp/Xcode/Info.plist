@@ -28,8 +28,12 @@
 	<string>MyHome discovers and controls Bluetooth lights directly.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_kef-info._tcp</string>
+	</array>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>MyHome controls your lights directly on the local network (WiFi and Bluetooth).</string>
+	<string>MyHome controls your lights and speakers directly on the local network (WiFi and Bluetooth).</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>MyHome listens for spoken device commands when you press the microphone button.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>

@@ -13,6 +13,10 @@ struct AddKEFSpeakerView: View {
     @State private var testing = false
     @State private var message: String?
     @State private var failed = false
+    @State private var scanning = false
+    @State private var found: [KEFDiscoveredSpeaker] = []
+    @State private var scanned = false
+    @State private var manual = false
     /// When editing, the existing record's id (endpoint update keeps name/room).
     var editing: KEFSpeakerRecord?
 
@@ -20,7 +24,9 @@ struct AddKEFSpeakerView: View {
 
     var body: some View {
         Form {
-            Section(editing == nil ? "Add KEF LS50 Wireless II" : "Edit Connection") {
+            if editing == nil { discoverySection }
+            if editing != nil || manual {
+            Section(editing == nil ? "Add by address" : "Edit Connection") {
                 TextField("Primary speaker IPv4 address", text: $address)
                     .textContentType(.none)
                     .onChange(of: address) { _ in identity = nil; message = nil }
@@ -29,6 +35,13 @@ struct AddKEFSpeakerView: View {
                 TextField("Room (optional)", text: $room)
                 if !address.isEmpty, !addressValid {
                     Label(KEFError.invalidAddress.message, systemImage: "exclamationmark.circle").foregroundStyle(.red).font(.caption)
+                }
+            }
+            }
+            Section("Name and room (optional)") {
+                if editing == nil {
+                    TextField("Name", text: $name)
+                    TextField("Room", text: $room)
                 }
             }
             if let identity {
@@ -44,11 +57,13 @@ struct AddKEFSpeakerView: View {
             HStack {
                 Button("Cancel") { dismiss() }
                 Spacer()
-                Button("Test Connection") { Task { await test() } }
-                    .disabled(!addressValid || testing)
-                Button(editing == nil ? "Add Speaker" : "Save") { save() }
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(identity == nil)
+                if editing != nil || manual {
+                    Button("Test Connection") { Task { await test() } }
+                        .disabled(!addressValid || testing)
+                    Button(editing == nil ? "Add Speaker" : "Save") { save() }
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(identity == nil)
+                }
             }
         }
         .formStyle(.grouped)
@@ -56,7 +71,51 @@ struct AddKEFSpeakerView: View {
         .frame(width: 440)
         .onAppear {
             if let editing { address = editing.address; name = editing.name; room = editing.room }
+            else { Task { await scan() } }
         }
+    }
+
+    /// Speakers found on the network (Bonjour, then verified by a read-only identity read).
+    @ViewBuilder private var discoverySection: some View {
+        Section("Speakers on your network") {
+            if scanning {
+                HStack { ProgressView().controlSize(.small); Text("Looking for KEF speakers…") }
+            }
+            ForEach(found) { speaker in
+                let added = store.kefRecord(for: Device(id: speaker.id, name: "", ip: "", version: nil, category: KEFProtocol.category, online: true)) != nil
+                HStack {
+                    Image(systemName: DeviceKind.speaker.iconName)
+                    VStack(alignment: .leading) {
+                        Text("KEF LS50 Wireless II")
+                        Text("\(speaker.address) · firmware \(speaker.identity.firmware)").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if added { Text("Added").foregroundStyle(.secondary) }
+                    else { Button("Add") { add(speaker) } }
+                }
+            }
+            if scanned, found.isEmpty, !scanning {
+                Text("No speakers found. Make sure the speaker is on and on the same network as this Mac.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            HStack {
+                Button("Scan Again") { Task { await scan() } }.disabled(scanning)
+                Spacer()
+                Button(manual ? "Hide address entry" : "Enter address manually") { manual.toggle() }
+            }
+        }
+    }
+
+    private func scan() async {
+        scanning = true
+        defer { scanning = false; scanned = true }
+        found = await KEFDiscovery.discover()
+    }
+
+    private func add(_ speaker: KEFDiscoveredSpeaker) {
+        let record = store.addKEFSpeaker(identity: speaker.identity, address: speaker.address, name: name, room: room)
+        Task { await store.refreshKEF(record.id, manual: true) }
+        dismiss()
     }
 
     private func test() async {

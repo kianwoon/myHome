@@ -29,9 +29,11 @@ Because waking is a *source write*, MyHome refuses volume/mute/input while the s
 
 ## Setup
 
-1. Find the primary speaker's IPv4 address (router DHCP list).
-2. Settings → Speakers → **Add Speaker…** (or Speakers sidebar → Add Speaker). Enter the address, optional name/room, **Test Connection** (identity reads only), then **Add Speaker**.
+1. Settings → Speakers → **Add Speaker…** (or Speakers sidebar → Add Speaker). MyHome scans the network (Bonjour `_kef-info._tcp`, instance name `<mac>@LS50WII`) and lists verified speakers; click **Add**. Each candidate is confirmed by a read-only identity fetch whose MAC must match the advertisement. Optional name/room can be typed first.
+2. If nothing is found (speaker off, different VLAN, mDNS blocked), use **Enter address manually** → address → **Test Connection** → **Add Speaker**.
 3. Re-adding the same speaker (same MAC) updates its address and keeps its name and room. Removing a speaker only deletes MyHome's local record.
+
+`swift run KEFProbe discover` runs the same scan from the command line. macOS shows a Local Network prompt on first scan; the app declares `NSBonjourServices` for it.
 
 ## Qualification procedure (read-only first)
 

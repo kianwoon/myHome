@@ -6,6 +6,12 @@ import Foundation
 import MyHomeCore
 
 let arguments = CommandLine.arguments
+if arguments.count == 2, arguments[1] == "discover" {
+    let found = await KEFDiscovery.discover()
+    print("found \(found.count) speaker(s)")
+    for speaker in found { print("  \(speaker.identity.model) fw \(speaker.identity.firmware) at \(speaker.address)") }
+    exit(0)
+}
 guard arguments.count >= 2, KEFClient.isValidIPv4(arguments[1]) else {
     FileHandle.standardError.write(Data("usage: KEFProbe <speaker-ipv4> [port]\n".utf8))
     exit(2)
@@ -61,3 +67,5 @@ if arguments.count > 3, arguments[2] == "qualify", let lowVolume = Int(arguments
         try await client.setPower(true);  await show("power on", expect: "power=active")
     } catch { print("qualify aborted: \(error)") }
 }
+
+// MARK: - Discovery: `KEFProbe discover` (Bonjour + read-only identity verification)
