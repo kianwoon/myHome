@@ -163,5 +163,52 @@ class SetRouting(unittest.TestCase):
         self.assertEqual(self.sent, [bridge._briturn_cct_packet(0, 80)])
 
 
+class BriturnE0TimerTests(unittest.TestCase):
+    # Captured live from a firmware-10 bulb: slot 1 = enabled 19:00 every day, power on.
+    LIVE = bytes.fromhex(
+        "e00601f0130000fe0ee0010023000000000000000000000200000000000003"
+        "000000000000040000000000000500000000000006000000000000")
+
+    def test_parses_live_reply(self):
+        slots = bridge._briturn_parse_e0_timers(self.LIVE)
+        self.assertEqual(len(slots), 6)
+        self.assertEqual(slots[0]["time"], "19:00")
+        self.assertTrue(slots[0]["active"])
+        self.assertEqual(slots[0]["action"], "on")
+        self.assertEqual(slots[0]["days"], list(bridge.BRITURN_DAY_MASKS))
+        self.assertTrue(all(not s["active"] and s["time"] is None for s in slots[1:]))
+
+    def test_off_action_and_disabled_flag(self):
+        raw = bytearray(self.LIVE)
+        raw[2 + 7 + 3] = 0x24
+        raw[3] = 0x0F
+        slot = bridge._briturn_parse_e0_timers(bytes(raw))[0]
+        self.assertEqual(slot["action"], "off")
+        self.assertFalse(slot["active"])
+
+    def test_incomplete_or_foreign_reply_is_none(self):
+        self.assertIsNone(bridge._briturn_parse_e0_timers(self.LIVE[:30]))
+        self.assertIsNone(bridge._briturn_parse_e0_timers(bytes([0x81, 0x5F]) + self.LIVE))
+        self.assertIsNone(bridge._briturn_parse_e0_timers(b""))
+
+    def test_handler_prefers_e0_on_new_firmware_and_falls_back_on_old(self):
+        cfg = {"id": "briturn-aa", "ip": "1.2.3.4", "category": "briturn"}
+        with mock.patch.object(bridge, "_briturn_resolve", return_value=cfg), \
+             mock.patch.object(bridge, "_briturn_firmware", return_value=NEW_FW), \
+             mock.patch.object(bridge, "_briturn_read_e0_timers",
+                               return_value=bridge._briturn_parse_e0_timers(self.LIVE)):
+            reply = bridge.handle_briturntimers({"id": "briturn-aa"})
+        self.assertTrue(reply["ok"])
+        self.assertTrue(reply["readonly"])
+        self.assertEqual(reply["timers"][0]["time"], "19:00")
+        with mock.patch.object(bridge, "_briturn_resolve", return_value=cfg), \
+             mock.patch.object(bridge, "_briturn_firmware", return_value=OLD_FW), \
+             mock.patch.object(bridge, "_briturn_read_e0_timers") as e0, \
+             mock.patch.object(bridge.socket, "create_connection", side_effect=OSError):
+            reply = bridge.handle_briturntimers({"id": "briturn-aa"})
+        e0.assert_not_called()
+        self.assertFalse(reply["ok"])
+
+
 if __name__ == "__main__":
     unittest.main()

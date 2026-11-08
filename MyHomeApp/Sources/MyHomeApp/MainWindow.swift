@@ -1750,6 +1750,8 @@ struct ScheduleEditorSection: View {
     let load: () async -> Void
     let initial: () -> [DeviceStore.BriturnTimer]
     let save: ([DeviceStore.BriturnTimer]) async -> Bool
+    /// True when the light's schedule was read from the newer format we can't rewrite yet.
+    var readOnly: () -> Bool = { false }
 
     @State private var timers: [DeviceStore.BriturnTimer] = []
     @State private var loaded = false
@@ -1766,13 +1768,18 @@ struct ScheduleEditorSection: View {
                     .font(.headline)
                 if loading { ProgressView().controlSize(.small) }
                 Spacer()
+                if readOnly() {
+                    Text("Read-only — edit in the Briturn app")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Button("Add") {
                     guard timers.count < 6 else { return }
                     timers.append(DeviceStore.BriturnTimer(time: "08:00", days: dayNames, action: "on"))
                     editingIndex = timers.count - 1
                 }
                 .controlSize(.small)
-                .disabled(timers.count >= 6 || !loaded)
+                .disabled(timers.count >= 6 || !loaded || readOnly())
                 Button("Save") {
                     Task {
                         saving = true
@@ -1781,7 +1788,7 @@ struct ScheduleEditorSection: View {
                     }
                 }
                 .controlSize(.small)
-                .disabled(saving || !loaded)
+                .disabled(saving || !loaded || readOnly())
             }
 
             if let error = loadError, !loaded {
@@ -1810,12 +1817,14 @@ struct ScheduleEditorSection: View {
                             .font(.caption)
                             .foregroundStyle(.tertiary)
                         Spacer()
-                        Button("Edit") { editingIndex = index }
+                        if !readOnly() {
+                            Button("Edit") { editingIndex = index }
+                                .controlSize(.small)
+                            Button("Delete", role: .destructive) {
+                                timers.remove(at: index)
+                            }
                             .controlSize(.small)
-                        Button("Delete", role: .destructive) {
-                            timers.remove(at: index)
                         }
-                        .controlSize(.small)
                     }
                 }
             }
@@ -1835,6 +1844,7 @@ struct ScheduleEditorSection: View {
     private func actionLabel(_ timer: DeviceStore.BriturnTimer) -> String {
         switch timer.action {
         case "off": return "Turn Off"
+        case "other": return "Scene / colour"
         case "colour":
             return String(format: "Colour (%02X%02X%02X)", timer.r, timer.g, timer.b)
         default: return "Turn On"
@@ -1956,7 +1966,8 @@ struct BriturnGroupScheduleSheet: View {
                     loadError: store.statusErrors[first.id],
                     load: { await store.loadBriturnTimers(for: first) },
                     initial: { store.briturnTimers[first.id] ?? [] },
-                    save: { timers in await store.saveBriturnGroupTimers(group, timers: timers) }
+                    save: { timers in await store.saveBriturnGroupTimers(group, timers: timers) },
+                    readOnly: { store.briturnTimersReadOnly.contains(first.id) }
                 )
             } else {
                 Text("This group has no reachable members.")
@@ -2117,7 +2128,8 @@ struct BriturnControlsView: View {
                     loadError: store.statusErrors[device.id],
                     load: { await store.loadBriturnTimers(for: device) },
                     initial: { store.briturnTimers[device.id] ?? [] },
-                    save: { timers in await store.saveBriturnTimers(device, timers: timers) }
+                    save: { timers in await store.saveBriturnTimers(device, timers: timers) },
+                    readOnly: { store.briturnTimersReadOnly.contains(device.id) }
                 )
             }
         }

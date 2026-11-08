@@ -1352,6 +1352,17 @@ def handle_briturnsetgroup(request):
 BRITURN_TIMER_COUNT = 6
 BRITURN_TIMER_LEN = 14
 BRITURN_GET_TIMERS = bytes([0x22, 0x2A, 0x2B, 0x0F])
+# Firmware >= BRITURN_NEW_FW_MIN keeps schedules in the app's "E0" table:
+# query `E0 06` (raw, no checksum) -> `E0 06` + 6 records, each a 7-byte header
+# [idx][f0 on/0f off/00 empty][h][m][s][day mask Mo=02..Su=80][action len]
+# followed by `action len` action bytes; action[3] is the 3B power opcode
+# (0x23 on / 0x24 off). Layout decoded from the Briturn app (read-only).
+BRITURN_E0_TIMER_QUERY = bytes([0xE0, 0x06])
+BRITURN_E0_TIMER_HEAD = 2
+BRITURN_E0_RECORD_HEAD = 7
+BRITURN_E0_ACTION_OPCODE_INDEX = 3
+BRITURN_E0_TIMER_READ_SECONDS = 2.5
+BRITURN_E0_RECV_BYTES = 160
 BRITURN_DAY_MASKS = {"mon": 0x02, "tue": 0x04, "wed": 0x08, "thu": 0x10,
                      "fri": 0x20, "sat": 0x40, "sun": 0x80}
 
@@ -1414,6 +1425,75 @@ def _briturn_timer_slot(entry):
     return bytes(slot)
 
 
+def _briturn_parse_e0_timers(buf):
+    """Parse an `E0 06` timer table; None while incomplete or not an E0 reply."""
+    if len(buf) < BRITURN_E0_TIMER_HEAD or bytes(buf[:2]) != BRITURN_E0_TIMER_QUERY:
+        return None
+    pos = BRITURN_E0_TIMER_HEAD
+    slots = []
+    for _ in range(BRITURN_TIMER_COUNT):
+        head = buf[pos:pos + BRITURN_E0_RECORD_HEAD]
+        if len(head) < BRITURN_E0_RECORD_HEAD:
+            return None
+        flag, hour, minute = head[1], head[2], head[3]
+        action_len = head[6]
+        action = buf[pos + BRITURN_E0_RECORD_HEAD:
+                     pos + BRITURN_E0_RECORD_HEAD + action_len]
+        if len(action) < action_len:
+            return None
+        pos += BRITURN_E0_RECORD_HEAD + action_len
+        if flag == 0 or hour > 23 or minute > 59:
+            slots.append({"active": False, "time": None, "days": [], "action": None})
+            continue
+        opcode = (action[BRITURN_E0_ACTION_OPCODE_INDEX]
+                  if len(action) > BRITURN_E0_ACTION_OPCODE_INDEX else None)
+        if opcode == BRITURN_NEW_POWER_ON:
+            kind = "on"
+        elif opcode == BRITURN_NEW_POWER_OFF:
+            kind = "off"
+        else:
+            kind = "other"
+        slots.append({
+            "active": flag == 0xF0,
+            "time": "%02d:%02d" % (hour, minute),
+            "days": [name for name, mask in BRITURN_DAY_MASKS.items() if head[5] & mask],
+            "action": kind,
+            "r": 0, "g": 0, "b": 0,
+        })
+    return slots
+
+
+def _briturn_read_e0_timers(config):
+    """Read the E0 timer table from one bulb, or None when it doesn't answer."""
+    sock = None
+    buf = b""
+    try:
+        sock = socket.create_connection((config["ip"], BRITURN_TCP_PORT), timeout=3)
+        sock.settimeout(1.2)
+        sock.sendall(BRITURN_E0_TIMER_QUERY)
+        deadline = time.time() + BRITURN_E0_TIMER_READ_SECONDS
+        while time.time() < deadline:
+            slots = _briturn_parse_e0_timers(buf)
+            if slots is not None:
+                return slots
+            try:
+                chunk = sock.recv(BRITURN_E0_RECV_BYTES)
+            except socket.timeout:
+                continue
+            if not chunk:
+                break
+            buf += chunk
+        return _briturn_parse_e0_timers(buf)
+    except OSError:
+        return None
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+
 def handle_briturntimers(request=None):
     """Read the 6 on-bulb schedule slots of one briturn light.
 
@@ -1425,6 +1505,11 @@ def handle_briturntimers(request=None):
     if isinstance(resolved, dict) and resolved.get("ok") is False:
         return resolved
     config = resolved
+    if _briturn_new_proto(_briturn_firmware(config)):
+        e0_slots = _briturn_read_e0_timers(config)
+        if e0_slots is not None:
+            # Read-only: writes still use the legacy slot format.
+            return {"ok": True, "timers": e0_slots, "format": "e0", "readonly": True}
     sock = None
     try:
         sock = socket.create_connection((config["ip"], BRITURN_TCP_PORT), timeout=3)
