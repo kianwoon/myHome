@@ -157,3 +157,7 @@ GoogleHomeSDK-1.11.0.tar.gz
 GoogleHomeSDK-1.11.0/
 MyHomeApp/MyHome-standalone.zip
 Tuya_+Smart+Life,+Smart+Living_7.12.0_APKPure.xapk
+
+# Android installers
+*.apk
+*.xapk
