@@ -101,3 +101,23 @@ public extension Device {
             }
     }
 }
+
+public extension Capability {
+    /// Human-readable reading of a reported value, driven by this dp's own
+    /// declaration (type + unit) rather than a per-index guess.
+    func formatted(_ value: DPSValue) -> String {
+        switch kind {
+        case .boolean:
+            if let flag = value.boolValue { return flag ? "On" : "Off" }
+        case .integer:
+            if let number = value.doubleValue {
+                let text = DPSValue.format(number)
+                guard let unit, !unit.isEmpty else { return text }
+                return "\(text) \(unit)"
+            }
+        case .enumeration, .other:
+            break
+        }
+        return value.stringValue ?? value.description
+    }
+}
