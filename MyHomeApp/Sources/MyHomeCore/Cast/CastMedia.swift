@@ -9,19 +9,28 @@ public struct CastMediaSource: Equatable, Hashable, Sendable {
     public var contentType: String
     /// Endless streams (radio) are `live`: no duration, no seeking.
     public var isLive: Bool
+    /// Set for YouTube links: played through the YouTube receiver, not the media channel.
+    public var youtube: CastYouTubeRef?
 
-    public init(title: String, url: URL, contentType: String = CastMediaSource.fallbackContentType, isLive: Bool = false) {
+    public init(title: String, url: URL, contentType: String = CastMediaSource.fallbackContentType, isLive: Bool = false,
+                youtube: CastYouTubeRef? = nil) {
         self.title = title
         self.url = url
         self.contentType = contentType
         self.isLive = isLive
+        self.youtube = youtube
+    }
+
+    /// A YouTube link becomes a YouTube source; anything else a plain audio URL.
+    public static func from(url: URL, title: String, contentType: String = CastMediaSource.fallbackContentType, isLive: Bool = false) -> CastMediaSource {
+        CastMediaSource(title: title, url: url, contentType: contentType, isLive: isLive, youtube: CastYouTubeRef.parse(url))
     }
 
     public static let fallbackContentType = "audio/mpeg"
     static let allowedSchemes: Set<String> = ["http", "https"]
 
     /// Only http(s) URLs are ever handed to a speaker.
-    public var isPlayable: Bool { Self.allowedSchemes.contains(url.scheme?.lowercased() ?? "") && url.host != nil }
+    public var isPlayable: Bool { youtube != nil || Self.allowedSchemes.contains(url.scheme?.lowercased() ?? "") && url.host != nil }
 }
 
 public struct CastRadioPreset: Codable, Equatable, Identifiable, Hashable, Sendable {
@@ -39,7 +48,7 @@ public struct CastRadioPreset: Codable, Equatable, Identifiable, Hashable, Senda
 
     public var source: CastMediaSource? {
         guard let parsed = URL(string: url) else { return nil }
-        let source = CastMediaSource(title: name, url: parsed, contentType: contentType, isLive: true)
+        let source = CastMediaSource.from(url: parsed, title: name, contentType: contentType, isLive: true)
         return source.isPlayable ? source : nil
     }
 

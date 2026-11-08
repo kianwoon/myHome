@@ -20,11 +20,14 @@ public struct CastSwiftClient: CastClientProtocol {
     let timeout: TimeInterval
     let playTimeout: TimeInterval
     let mediaStatusTimeout: TimeInterval
+    let http: CastHTTPPosting
     private var deviceID: String { device.id }
 
     public init(record: CastSpeakerRecord, timeout: TimeInterval = CastConfig.defaults.requestTimeout,
                 playTimeout: TimeInterval = CastConfig.defaults.playTimeout,
-                mediaStatusTimeout: TimeInterval = CastConfig.defaults.mediaStatusTimeout) throws {
+                mediaStatusTimeout: TimeInterval = CastConfig.defaults.mediaStatusTimeout,
+                http: CastHTTPPosting? = nil) throws {
+        self.http = http ?? CastURLSessionHTTP(timeout: timeout)
         self.timeout = timeout
         self.mediaStatusTimeout = mediaStatusTimeout
         self.playTimeout = playTimeout
@@ -42,6 +45,7 @@ public struct CastSwiftClient: CastClientProtocol {
         guard Self.isValidIPv4(address), (1...65535).contains(port) else { throw CastError.invalidAddress }
         self.timeout = timeout
         self.playTimeout = CastConfig.defaults.playTimeout
+        self.http = CastURLSessionHTTP(timeout: timeout)
         self.mediaStatusTimeout = CastConfig.defaults.mediaStatusTimeout
         device = CastDevice(host: address, port: UInt16(port))
     }
@@ -109,9 +113,12 @@ public struct CastSwiftClient: CastClientProtocol {
         guard source.isPlayable else { throw CastError.unplayableSource }
         let client = CastClient(device: device)
         let limit = playTimeout
+        let http = self.http
+        let youtube = source.youtube
         do {
             try await Self.boundedThrowing(seconds: limit) {
                 try await client.connect()
+                if let youtube { try await Self.startYouTube(youtube, on: client, http: http); return }
                 let media = try await client.launchMediaReceiver()
                 let info = MediaInformation(
                     contentId: source.url.absoluteString, contentURL: source.url,
@@ -124,6 +131,38 @@ public struct CastSwiftClient: CastClientProtocol {
             throw Self.map(error)
         }
         await CastSessionHolder.shared.hold(device.id, client)
+    }
+
+    /// Launches the YouTube receiver, reads its screenId over the mdx channel, then
+    /// hands the video/playlist to the lounge API (see CastYouTube.swift).
+    static func startYouTube(_ ref: CastYouTubeRef, on client: CastClient, http: CastHTTPPosting) async throws {
+        let app = try await client.receiver.launch(.youTube)
+        try await client.openVirtualConnection(to: app.transportId)
+        let namespace = CastNamespace(YouTubeLounge.mdxNamespace)
+        let messages = client.messages(in: namespace)
+        let request = MdxStatusRequest()
+        let transport = app.transportId
+        let screenID: String? = await withTaskGroup(of: String?.self) { group in
+            // A freshly launched receiver may not be listening yet: ask repeatedly until it answers.
+            group.addTask {
+                while !Task.isCancelled {
+                    try? await client.send(request, namespace: namespace, to: transport)
+                    try? await Task.sleep(nanoseconds: UInt64(CastConfig.defaults.playSettleInterval * 1_000_000_000))
+                }
+                return nil
+            }
+            group.addTask {
+                for await message in messages where message.type == "mdxSessionStatus" {
+                    if let id = message.json?["data"]?["screenId"]?.stringValue, !id.isEmpty { return id }
+                }
+                return nil
+            }
+            defer { group.cancelAll() }
+            while let result = await group.next() { if let result { return result } }
+            return nil
+        }
+        guard let screenID else { throw CastError.malformedResponse }
+        try await YouTubeLounge(http: http).play(screenID: screenID, ref: ref)
     }
 
     // MARK: - Plumbing
@@ -197,6 +236,10 @@ public struct CastSwiftClient: CastClientProtocol {
         case .unknown: return .other
         }
     }
+}
+
+struct MdxStatusRequest: Encodable, Sendable {
+    let type = "getMdxSessionStatus"
 }
 
 /// Keeps one open Cast connection per playing speaker (see `CastSwiftClient.play`).

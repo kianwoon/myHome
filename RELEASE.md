@@ -5,6 +5,7 @@
 ### MyHome app
 * New: Google Home / Nest Mini (Google Cast) speakers — local control through the pure-Swift [SwiftCast](https://github.com/CreatureSurvive/SwiftCast) sender (`MyHomeCore/Cast`): discovery over Bonjour, volume and mute in the unified control layer and voice, play/pause/stop on the running session, and cards in the Speakers category. **The app now requires macOS 14** (SwiftCast's floor). See [docs/Cast.md](docs/Cast.md).
 * New: music on Google Home / Nest speakers — saved radio stations, any audio URL, and audio files from the Mac (local file server), with voice ("play jazz on the study room speaker", pause/resume/stop). The Mac holds a connection open while playing.
+* New: YouTube links as saved stations or via Play URL on Google Home / Nest speakers, through the YouTube receiver (unofficial lounge API; regular videos play, 24/7 live streams are refused by the speaker).
 * New: KEF LS50 Wireless II support — a native LAN adapter (`MyHomeCore/KEF`), a Speakers category with card, detail panel and menu controls, and power/volume/mute/input in the unified control layer, voice grammar and assistant. Protocol shapes are reference-derived and pending hardware qualification; see [docs/KEF.md](docs/KEF.md).
 
 ## v1.20.0 - Monitor Reliability, Security & Bug Fixes

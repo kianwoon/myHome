@@ -97,3 +97,62 @@ final class CastPlayStoreTests: XCTestCase {
         XCTAssertTrue(speaker.calls.contains("play:\(preset.name)"))
     }
 }
+
+final class CastYouTubeTests: XCTestCase {
+    func testLinkParsing() {
+        func ref(_ text: String) -> CastYouTubeRef? { CastYouTubeRef.parse(URL(string: text)!) }
+        XCTAssertEqual(ref("https://www.youtube.com/watch?v=dQw4w9WgXcQ"), CastYouTubeRef(videoID: "dQw4w9WgXcQ"))
+        XCTAssertEqual(ref("https://youtu.be/dQw4w9WgXcQ"), CastYouTubeRef(videoID: "dQw4w9WgXcQ"))
+        XCTAssertEqual(ref("https://music.youtube.com/watch?v=abc_123-x&list=PLx1"), CastYouTubeRef(videoID: "abc_123-x", listID: "PLx1"))
+        XCTAssertEqual(ref("https://www.youtube.com/playlist?list=PLx1"), CastYouTubeRef(listID: "PLx1"))
+        XCTAssertNil(ref("https://example.com/watch?v=dQw4w9WgXcQ"))
+        XCTAssertNil(ref("https://www.youtube.com/watch?v=bad%20id;rm"))
+        XCTAssertNil(ref("ftp://www.youtube.com/watch?v=dQw4w9WgXcQ"))
+    }
+
+    func testYouTubeSourceIsDetectedAndPlayable() {
+        let source = CastMediaSource.from(url: URL(string: "https://youtu.be/dQw4w9WgXcQ")!, title: "x")
+        XCTAssertEqual(source.youtube?.videoID, "dQw4w9WgXcQ")
+        XCTAssertTrue(source.isPlayable)
+        XCTAssertEqual(CastRadioPreset(name: "rick", url: "https://youtu.be/dQw4w9WgXcQ").source?.youtube?.videoID, "dQw4w9WgXcQ")
+    }
+
+    func testBindReplies() {
+        let accepted = "1395\n[[0,[\"c\",\"SID123\",\"\",8]]\n,[1,[\"S\",\"GSESSION456\"]]\n,[2,[\"loungeStatus\",{\"devices\":\"[]\"}]]\n]\n"
+        let refused = "157\n[[0,[\"c\",\"SID123\",\"\",8]]\n,[1,[\"S\",\"GSESSION456\"]]\n,[2,[\"loungeScreenDisconnected\",{\"reason\":\"unmatchingTheme\"}]]\n]\n"
+        XCTAssertEqual(YouTubeLounge.parseBind(accepted)?.sid, "SID123")
+        XCTAssertEqual(YouTubeLounge.parseBind(accepted)?.gsession, "GSESSION456")
+        XCTAssertNil(YouTubeLounge.refusalReason(accepted))
+        XCTAssertEqual(YouTubeLounge.refusalReason(refused), "unmatchingTheme")
+    }
+
+    struct FakeHTTP: CastHTTPPosting {
+        let refuseThemes: Set<String>
+        func post(url: URL, query: [String: String], form: [String: String], headers: [String: String]) async throws -> (status: Int, body: String) {
+            if url.path.hasSuffix("get_lounge_token_batch") { return (200, "{\"screens\":[{\"loungeToken\":\"TOKEN\"}]}") }
+            if query["RID"] == "0" {
+                let refused = refuseThemes.contains(query["theme"] ?? "")
+                let tail = refused ? "[\"loungeScreenDisconnected\",{\"reason\":\"unmatchingTheme\"}]" : "[\"loungeStatus\",{}]"
+                return (200, "9\n[[0,[\"c\",\"SID\",\"\",8]]\n,[1,[\"S\",\"GS\"]]\n,[2,\(tail)]\n]\n")
+            }
+            return (200, "8\n[0,-1,0]")
+        }
+    }
+
+    func testLoungeFallsBackToNextThemeThenRefuses() async throws {
+        let bound = try await YouTubeLounge(http: FakeHTTP(refuseThemes: ["m"])).bind(token: "TOKEN")
+        XCTAssertEqual(bound.theme, "cl")
+        try await YouTubeLounge(http: FakeHTTP(refuseThemes: [])).play(screenID: "S", ref: CastYouTubeRef(videoID: "dQw4w9WgXcQ"))
+        do {
+            _ = try await YouTubeLounge(http: FakeHTTP(refuseThemes: ["m", "cl"])).bind(token: "TOKEN")
+            XCTFail("expected refusal")
+        } catch { XCTAssertEqual(error as? CastError, .youtubeRefused("unmatchingTheme")) }
+    }
+
+    func testSetPlaylistFormCarriesIds() {
+        let form = YouTubeLounge.setPlaylistForm(CastYouTubeRef(videoID: "v", listID: "l"))
+        XCTAssertEqual(form["req0__sc"], "setPlaylist")
+        XCTAssertEqual(form["req0_videoId"], "v")
+        XCTAssertEqual(form["req0_listId"], "l")
+    }
+}

@@ -115,7 +115,7 @@ struct CastControls: View {
             }
             .sheet(isPresented: $askingURL) { CastPlayURLSheet(text: $urlText) { text in
                 if let url = URL(string: text.trimmingCharacters(in: .whitespaces)) {
-                    play(CastMediaSource(title: url.host ?? "Stream", url: url, isLive: false))
+                    play(CastMediaSource.from(url: url, title: url.host ?? "Stream"))
                 }
             } }
             if let error = runner.error ?? transportError ?? reading?.lastError?.message {

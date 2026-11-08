@@ -99,6 +99,8 @@ public enum CastError: Error, Equatable, Sendable {
     case invalidAddress
     case noActiveSession
     case unplayableSource
+    /// YouTube answered the lounge bind with loungeScreenDisconnected (reason attached).
+    case youtubeRefused(String)
     case volumeOutOfRange(ClosedRange<Int>)
     case malformedResponse
 
@@ -108,6 +110,7 @@ public enum CastError: Error, Equatable, Sendable {
         case .timeout: return "the speaker did not answer in time"
         case .invalidAddress: return "that is not a valid IPv4 address"
         case .noActiveSession: return "nothing is playing on the speaker"
+        case .youtubeRefused(let reason): return "YouTube refused the session (\(reason))"
         case .unplayableSource: return "that is not a playable http(s) audio address"
         case .volumeOutOfRange(let range): return "volume must be \(range.lowerBound)–\(range.upperBound)"
         case .malformedResponse: return "the speaker sent an unexpected reply"

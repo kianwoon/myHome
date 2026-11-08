@@ -15,6 +15,8 @@ Google's own "play music" (Spotify / YouTube Music through your Google account) 
 - **Any http(s) audio URL** — Play → Play URL…
 - **Files from this Mac** — Play → Play File…; served over the LAN by `CastFileServer` (only the picked file, behind an unguessable token, GET/HEAD with byte ranges). macOS may ask to allow incoming connections the first time.
 
+- **YouTube links** — a video or playlist link (youtube.com, youtu.be, music.youtube.com), as a saved station or via Play URL…. Started through the YouTube receiver and YouTube\'s lounge API, which is **unofficial** and can break. Public content only; it does not use your account, history or search. Findings (2026-11-08, Nest Mini with YouTube Music as its source): the lounge bind needs `theme=m` (receiver `lb-v4`); `cl`, `mu`, `lb`, `u` and none are refused with `unmatchingTheme`, so `m` is tried first with `cl` as fallback. A normal music video played; a 24/7 live stream (Lofi Girl) made the speaker say "something went wrong", so use regular videos. Playlist-only links are untested on hardware.
+
 Voice/text: "play jazz on the study room speaker", "play music" (last station, else the first), "pause the living room speaker", "resume music in the study", "stop the music on the living room speaker".
 
 **The Mac keeps a connection open while playing**: the Default Media Receiver quits when its last sender disconnects (observed on Nest Mini), so quitting MyHome ends playback it started. Stop releases the connection.
