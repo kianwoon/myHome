@@ -68,6 +68,8 @@ public enum CastAction: Equatable, Hashable, Sendable {
     case pause
     /// Loads and starts a stream/URL/file on the default media receiver.
     case playMedia(CastMediaSource)
+    /// Search YouTube for the phrase and play the first regular video.
+    case playSearch(String)
     /// Stops the running app (the closest honest equivalent of "off").
     case stop
 
@@ -75,7 +77,7 @@ public enum CastAction: Equatable, Hashable, Sendable {
         switch self {
         case .volume: return .volume
         case .mute: return .mute
-        case .play, .pause, .stop, .playMedia: return .transport
+        case .play, .pause, .stop, .playMedia, .playSearch: return .transport
         }
     }
 
@@ -84,7 +86,7 @@ public enum CastAction: Equatable, Hashable, Sendable {
         switch self {
         case .volume(let value): return state.volume.map { abs($0 - value) <= 1 }
         case .mute(let value): return state.muted.map { $0 == value }
-        case .play, .playMedia: return state.playback.map { $0 == .playing || $0 == .buffering }
+        case .play, .playMedia, .playSearch: return state.playback.map { $0 == .playing || $0 == .buffering }
         case .pause: return state.playback.map { $0 == .paused }
         case .stop: return state.appName == nil || state.playback == .idle
         }
@@ -99,6 +101,7 @@ public enum CastError: Error, Equatable, Sendable {
     case invalidAddress
     case noActiveSession
     case unplayableSource
+    case searchFailed(String)
     /// YouTube answered the lounge bind with loungeScreenDisconnected (reason attached).
     case youtubeRefused(String)
     case volumeOutOfRange(ClosedRange<Int>)
@@ -110,6 +113,7 @@ public enum CastError: Error, Equatable, Sendable {
         case .timeout: return "the speaker did not answer in time"
         case .invalidAddress: return "that is not a valid IPv4 address"
         case .noActiveSession: return "nothing is playing on the speaker"
+        case .searchFailed(let query): return "I could not find anything on YouTube for \(query)"
         case .youtubeRefused(let reason): return "YouTube refused the session (\(reason))"
         case .unplayableSource: return "that is not a playable http(s) audio address"
         case .volumeOutOfRange(let range): return "volume must be \(range.lowerBound)–\(range.upperBound)"

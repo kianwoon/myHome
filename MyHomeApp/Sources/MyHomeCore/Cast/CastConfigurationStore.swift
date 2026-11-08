@@ -45,6 +45,7 @@ public struct CastRegistry {
     var config: CastConfig = .fromDefaults()
     var persistence = CastConfigurationStore()
     var radio = CastRadioStore()
+    var search: any CastYouTubeSearching = YouTubeSearch()
     public var presets: [CastRadioPreset] = CastRadioStore().load()
 
     /// Roster-shaped devices. `ip` stays EMPTY so no Tuya/Briturn path adopts them.

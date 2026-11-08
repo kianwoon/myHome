@@ -259,6 +259,9 @@ public enum CapabilityMap {
         case .cover: return .failure(.unsupported(.openClose))
         case .play(let spoken):
             guard let preset = CastRadioPreset.resolve(spoken, in: profile.castPresets, lastPlayed: profile.castLastPlayed), let source = preset.source else {
+                // No saved station: any non-generic phrase becomes a YouTube search ("play jazz music").
+                let meaningful = spoken.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init).filter { !CastRadioPreset.genericWords.contains($0) }
+                if !meaningful.isEmpty { return .success(.cast(.playSearch(spoken))) }
                 return .failure(.unknownMode(spoken, options: profile.castPresets.map(\.name)))
             }
             return .success(.cast(.playMedia(source)))

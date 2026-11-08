@@ -54,7 +54,10 @@ final class CastMediaTests: XCTestCase {
         let result = CapabilityMap.plan(.play("jazz"), for: profile)
         guard case .success(.cast(.playMedia(let source))) = result else { return XCTFail("\(result)") }
         XCTAssertEqual(source.title, "Smooth Jazz")
-        guard case .failure = CapabilityMap.plan(.play("polka"), for: profile) else { return XCTFail("unknown station must be rejected") }
+        // No saved station: a real phrase becomes a YouTube search; a generic one with no presets is rejected.
+        guard case .success(.cast(.playSearch("polka music"))) = CapabilityMap.plan(.play("polka music"), for: profile) else { return XCTFail() }
+        let empty = DeviceProfile(device: device, state: DeviceState(dps: [:]), isBriturn: false, isCast: true)
+        guard case .failure = CapabilityMap.plan(.play("music"), for: empty) else { return XCTFail("nothing to play must be rejected") }
         guard case .success(.cast(.pause)) = CapabilityMap.plan(.playback(.pause), for: profile) else { return XCTFail() }
         let light = DeviceProfile(device: device, state: DeviceState(dps: [:]), isBriturn: true)
         guard case .failure = CapabilityMap.plan(.play("jazz"), for: light) else { return XCTFail("lights cannot play music") }
@@ -154,5 +157,72 @@ final class CastYouTubeTests: XCTestCase {
         XCTAssertEqual(form["req0__sc"], "setPlaylist")
         XCTAssertEqual(form["req0_videoId"], "v")
         XCTAssertEqual(form["req0_listId"], "l")
+    }
+}
+
+final class CastYouTubeSearchTests: XCTestCase {
+    static func page(_ renderers: String) -> String {
+        "<html><script>var ytInitialData = {\"contents\":[\(renderers)]};</script></html>"
+    }
+    static let live = "{\"videoRenderer\":{\"videoId\":\"LIVEid00001\",\"title\":{\"runs\":[{\"text\":\"Jazz 24/7\"}]}}}"
+    static let vod = "{\"videoRenderer\":{\"videoId\":\"VODid000002\",\"title\":{\"runs\":[{\"text\":\"Smooth Jazz\"}]},\"lengthText\":{\"simpleText\":\"1:10:37\"}}}"
+
+    func testSkipsLiveStreamsAndTakesFirstDuration() {
+        let hit = YouTubeSearch.firstPlayable(inHTML: Self.page(Self.live + "," + Self.vod))
+        XCTAssertEqual(hit?.id, "VODid000002")
+        XCTAssertEqual(hit?.title, "Smooth Jazz")
+        XCTAssertNil(YouTubeSearch.firstPlayable(inHTML: Self.page(Self.live)))
+        XCTAssertNil(YouTubeSearch.firstPlayable(inHTML: "<html>consent wall</html>"))
+    }
+
+    func testBuildsSourceAndEncodesQuery() async throws {
+        let seen = SeenURL()
+        let search = YouTubeSearch(fetch: { url in await seen.set(url); return Self.page(Self.vod) })
+        let source = try await search.firstVideo(for: "jazz & blues music")
+        XCTAssertEqual(source?.youtube?.videoID, "VODid000002")
+        let url = await seen.value?.absoluteString ?? ""
+        XCTAssertTrue(url.contains("search_query=jazz%20%26%20blues%20music"), url)
+        XCTAssertTrue(url.hasSuffix("&sp=EgIQAQ%3D%3D"), url)
+    }
+
+    actor SeenURL { var value: URL?; func set(_ url: URL) { value = url } }
+}
+
+@MainActor
+final class CastSearchStoreTests: XCTestCase {
+    struct StubSearch: CastYouTubeSearching {
+        let source: CastMediaSource?
+        func firstVideo(for query: String) async throws -> CastMediaSource? { source }
+    }
+
+    func makeStore(search: CastMediaSource?) async -> (DeviceStore, FakeCastSpeaker, Device) {
+        let defaults = UserDefaults(suiteName: "CastSearch-\(UUID())")!
+        let store = DeviceStore(bridge: NullKEFBridge(), defaults: defaults)
+        let speaker = FakeCastSpeaker(state: CastState(volume: 30, muted: false))
+        var config = CastConfig.defaults
+        config.readbackDelay = 0.01
+        config.playSettleInterval = 0.01
+        store.setCastConfigForTest(config)
+        store.setCastPersistenceForTest(CastConfigurationStore(defaults: defaults))
+        store.setCastClientFactoryForTest { _ in speaker }
+        store.setCastSearchForTest(StubSearch(source: search))
+        store.addCastSpeaker(CastSpeakerRecord(deviceID: "m", name: "Mini", serviceName: "m"))
+        let device = store.castSpeakerDevices[0]
+        await store.refreshCast(device.id)
+        return (store, speaker, device)
+    }
+
+    func testSearchPlaysFirstResult() async {
+        let hit = CastMediaSource.from(url: URL(string: "https://www.youtube.com/watch?v=VODid000002")!, title: "Smooth Jazz")
+        let (store, speaker, device) = await makeStore(search: hit)
+        guard case .confirmed = await store.castWrite(device, .playSearch("jazz music")) else { return XCTFail() }
+        XCTAssertTrue(speaker.calls.contains("play:Smooth Jazz"))
+    }
+
+    func testNoResultsFailsWithoutTouchingTheSpeaker() async {
+        let (store, speaker, device) = await makeStore(search: nil)
+        let before = speaker.calls.count
+        guard case .failed(.searchFailed("polka")) = await store.castWrite(device, .playSearch("polka")) else { return XCTFail() }
+        XCTAssertEqual(speaker.calls.count, before)
     }
 }

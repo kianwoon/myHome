@@ -38,7 +38,11 @@ if let target = ProcessInfo.processInfo.environment["CAST_QUALIFY_WRITE"], let s
 if let target = ProcessInfo.processInfo.environment["CAST_QUALIFY_PLAY"], let speaker = found.first(where: { $0.deviceID == target }) {
     let client = try CastSwiftClient(record: speaker.record())
     var source: CastMediaSource
-    if let link = ProcessInfo.processInfo.environment["CAST_QUALIFY_YOUTUBE"], let url = URL(string: link) {
+    if let phrase = ProcessInfo.processInfo.environment["CAST_QUALIFY_SEARCH"] {
+        guard let hit = try await YouTubeSearch().firstVideo(for: phrase) else { fatalError("no search result") }
+        source = hit
+        print("search \(phrase) -> \(hit.title) \(hit.url)")
+    } else if let link = ProcessInfo.processInfo.environment["CAST_QUALIFY_YOUTUBE"], let url = URL(string: link) {
         source = CastMediaSource.from(url: url, title: "YouTube")
         print("youtube ref: \(String(describing: source.youtube))")
     } else if let path = ProcessInfo.processInfo.environment["CAST_QUALIFY_FILE"] {

@@ -114,8 +114,11 @@ struct CastControls: View {
                 if let app = state?.appName { Text(app).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
             }
             .sheet(isPresented: $askingURL) { CastPlayURLSheet(text: $urlText) { text in
-                if let url = URL(string: text.trimmingCharacters(in: .whitespaces)) {
+                let trimmed = text.trimmingCharacters(in: .whitespaces)
+                if let url = URL(string: trimmed), CastMediaSource.from(url: url, title: "").isPlayable, url.host != nil {
                     play(CastMediaSource.from(url: url, title: url.host ?? "Stream"))
+                } else if !trimmed.isEmpty {
+                    transport(.playSearch(trimmed))
                 }
             } }
             if let error = runner.error ?? transportError ?? reading?.lastError?.message {
@@ -132,15 +135,15 @@ struct CastPlayURLSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Play an audio URL").font(.headline)
-            TextField("https://…/stream.mp3", text: $text).textFieldStyle(.roundedBorder).frame(width: 360)
-            Text("Only http(s) audio streams or files. The speaker fetches it directly.").font(.caption).foregroundStyle(.secondary)
+            Text("Play a URL or search YouTube").font(.headline)
+            TextField("https://…  or  jazz music", text: $text).textFieldStyle(.roundedBorder).frame(width: 360)
+            Text("An http(s) audio URL or YouTube link, or words to search YouTube (first regular video; unofficial).").font(.caption).foregroundStyle(.secondary)
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
                 Button("Play") { onPlay(text); dismiss() }
                     .keyboardShortcut(.defaultAction)
-                    .disabled(CastMediaSource(title: "", url: URL(string: text.trimmingCharacters(in: .whitespaces)) ?? URL(fileURLWithPath: "/")).isPlayable == false)
+                    .disabled(text.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         }
         .padding(16)

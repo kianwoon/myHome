@@ -102,6 +102,7 @@ extension DeviceStore {
 
     // MARK: - Test seams
 
+    func setCastSearchForTest(_ search: any CastYouTubeSearching) { cast.search = search }
     func setCastClientFactoryForTest(_ factory: @escaping (CastSpeakerRecord) throws -> any CastClientProtocol) { cast.makeClient = factory }
     func setCastConfigForTest(_ config: CastConfig) { cast.config = config }
     func setCastPersistenceForTest(_ store: CastConfigurationStore) { cast.persistence = store }
@@ -184,8 +185,14 @@ extension DeviceStore {
     // MARK: - Writes
 
     /// Sends one action, then ONE bounded readback; success of the send alone never confirms.
-    public func castWrite(_ device: Device, _ action: CastAction) async -> CastWriteOutcome {
+    public func castWrite(_ device: Device, _ requested: CastAction) async -> CastWriteOutcome {
         let id = device.id
+        var action = requested
+        if case .playSearch(let query) = requested {
+            guard cast.records[id] != nil else { return .failed(.unreachable) }
+            guard let source = try? await cast.search.firstVideo(for: query) else { return .failed(.searchFailed(query)) }
+            action = .playMedia(source)
+        }
         guard let record = cast.records[id] else { return .failed(.unreachable) }
         if case .volume(let value) = action {
             let range = cast.config.volumeRange
@@ -250,6 +257,7 @@ extension DeviceStore {
         case .mute(let value): try await client.setMuted(value)
         case .play, .pause, .stop: try await client.transport(action)
         case .playMedia(let source): try await client.play(source)
+        case .playSearch: throw CastError.unplayableSource   // resolved to playMedia before sending
         }
     }
 }
