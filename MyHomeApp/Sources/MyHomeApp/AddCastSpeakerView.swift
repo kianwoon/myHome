@@ -14,9 +14,12 @@ struct AddCastSpeakerView: View {
 
     private var added: Set<String> { Set(store.castSpeakerDevices.map { $0.id.replacingOccurrences(of: CastProtocol.idPrefix, with: "") }) }
 
+    private var selectable: [CastDiscoveredSpeaker] { found.filter { !added.contains($0.deviceID) } }
+
     var body: some View {
+        VStack(spacing: 0) {
         Form {
-            Section("Google Home / Nest speakers on your network") {
+            Section(found.isEmpty ? "Google Home / Nest speakers on your network" : "Found \(found.count) on your network") {
                 if scanning { HStack { ProgressView().controlSize(.small); Text("Searching…") } }
                 else if scanned, found.isEmpty { Text("No Cast speakers found. Check that the Mac is on the same Wi-Fi and Local Network access is allowed.").font(.caption).foregroundStyle(.secondary) }
                 ForEach(found) { speaker in
@@ -31,11 +34,15 @@ struct AddCastSpeakerView: View {
                     }.disabled(isAdded)
                 }
             }
-            if let message { Label(message, systemImage: "checkmark.circle").foregroundStyle(.green).font(.callout) }
-            HStack {
+        }
+        .formStyle(.grouped)
+        Divider()
+        HStack {
                 Button("Cancel") { dismiss() }
                 Button("Search Again") { Task { await scan() } }.disabled(scanning)
+                Button("Select All") { selection = Set(selectable.map(\.id)) }.disabled(selectable.isEmpty)
                 Spacer()
+                if !selection.isEmpty { Text("\(selection.count) selected").font(.caption).foregroundStyle(.secondary) }
                 Button("Add Selected") {
                     var count = 0
                     for speaker in found where selection.contains(speaker.id) {
@@ -49,11 +56,10 @@ struct AddCastSpeakerView: View {
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(selection.isEmpty)
-            }
         }
-        .formStyle(.grouped)
-        .frame(width: 440)
-        .padding()
+        .padding(12)
+        }
+        .frame(width: 460, height: 460)
         .task { await scan() }
     }
 
