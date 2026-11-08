@@ -209,6 +209,27 @@ class BriturnE0TimerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             bridge._briturn_e0_slot_frame(1, {"time": "08:00", "days": ["mon"], "action": "colour"})
 
+    def test_paused_slot_is_flagged_and_blocks_write(self):
+        raw = bytearray(self.LIVE)
+        raw[3] = 0x0F
+        slots = bridge._briturn_parse_e0_timers(bytes(raw))
+        self.assertTrue(slots[0]["paused"])
+        self.assertTrue(bridge._briturn_e0_has_unsupported(slots))
+        self.assertFalse(bridge._briturn_e0_has_unsupported(bridge._briturn_parse_e0_timers(self.LIVE)))
+
+    def test_set_never_falls_back_to_legacy_on_new_firmware(self):
+        cfg = {"id": "briturn-aa", "ip": "1.2.3.4", "category": "briturn"}
+        entries = [{"time": "08:00", "days": ["mon"], "action": "on"}]
+        for fw, expect_error in ((NEW_FW, "could not read"), (0, "firmware")):
+            with mock.patch.object(bridge, "_briturn_resolve", return_value=cfg), \
+                 mock.patch.object(bridge, "_briturn_firmware", return_value=fw), \
+                 mock.patch.object(bridge, "_briturn_read_e0_timers", return_value=None), \
+                 mock.patch.object(bridge, "_briturn_exchange") as exchange:
+                reply = bridge.handle_briturntimerset({"id": "briturn-aa", "timers": entries})
+            self.assertFalse(reply["ok"])
+            self.assertIn(expect_error, reply["error"])
+            exchange.assert_not_called()
+
     def test_set_refuses_scene_slots_and_colour_entries(self):
         cfg = {"id": "briturn-aa", "ip": "1.2.3.4", "category": "briturn"}
         scene = bridge._briturn_parse_e0_timers(self.LIVE)

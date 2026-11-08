@@ -779,6 +779,10 @@ public final class DeviceStore: ObservableObject {
                 errorText = reply["error"] as? String ?? "Group schedule failed."
                 return false
             }
+            if let applied = reply["applied"] as? Int, let members = reply["members"] as? Int, applied < members {
+                errorText = "Schedule saved on \(applied) of \(members) lights; the rest refused it (scene/colour or paused schedules must be edited in the Briturn app)."
+                return false
+            }
             errorText = nil
             return true
         } catch {
