@@ -681,15 +681,25 @@ public final class DeviceStore: ObservableObject {
     /// Lights whose E0 schedule holds scene/colour actions: shown, never rewritten.
     @Published public private(set) var briturnTimersReadOnly: Set<String> = []
 
-    public func loadBriturnTimers(for device: Device) async {
-        guard isBriturn(device), !device.isBLE, device.hasAddress else { return }
+    /// Last schedule read/write failure per light; separate from status errors so a
+    /// failed read is never mistaken for an empty schedule.
+    @Published public private(set) var briturnTimersError: [String: String] = [:]
+
+    /// Seconds a schedule read may take: the bridge retries a busy light several times.
+    private static let briturnTimersReadTimeout: TimeInterval = 30
+
+    /// Returns true only when the light's schedule was actually read.
+    @discardableResult
+    public func loadBriturnTimers(for device: Device) async -> Bool {
+        guard isBriturn(device), !device.isBLE, device.hasAddress else { return false }
         briturnTimersLoading.insert(device.id)
         defer { briturnTimersLoading.remove(device.id) }
         do {
-            let reply = try await bridge.request(["cmd": "briturntimers", "id": device.id], timeout: 15)
+            let reply = try await bridge.request(
+                ["cmd": "briturntimers", "id": device.id], timeout: Self.briturnTimersReadTimeout)
             guard reply["ok"] as? Bool == true, let raw = reply["timers"] as? [[String: Any]] else {
-                statusErrors[device.id] = reply["error"] as? String ?? "Schedule read failed."
-                return
+                briturnTimersError[device.id] = reply["error"] as? String ?? "Schedule read failed."
+                return false
             }
             let timers = raw.compactMap { entry -> BriturnTimer? in
                 guard let time = entry["time"] as? String,
@@ -707,12 +717,11 @@ public final class DeviceStore: ObservableObject {
             } else {
                 briturnTimersReadOnly.remove(device.id)
             }
-            statusErrors[device.id] = nil
+            briturnTimersError[device.id] = nil
+            return true
         } catch {
-            // Quiet-stale like status: schedules stay on the bulb regardless.
-            if briturnTimers[device.id] == nil {
-                statusErrors[device.id] = error.localizedDescription
-            }
+            briturnTimersError[device.id] = error.localizedDescription
+            return false
         }
     }
 
@@ -738,7 +747,7 @@ public final class DeviceStore: ObservableObject {
                 "cmd": "briturntimerset", "id": device.id, "timers": payload
             ], timeout: 30)
             guard reply["ok"] as? Bool == true else {
-                statusErrors[device.id] = reply["error"] as? String ?? "Schedule save failed."
+                briturnTimersError[device.id] = reply["error"] as? String ?? "Schedule save failed."
                 return false
             }
             if let raw = reply["timers"] as? [[String: Any]] {
@@ -752,10 +761,10 @@ public final class DeviceStore: ObservableObject {
                 }
                 briturnTimers[device.id] = timers
             }
-            statusErrors[device.id] = nil
+            briturnTimersError[device.id] = nil
             return true
         } catch {
-            statusErrors[device.id] = error.localizedDescription
+            briturnTimersError[device.id] = error.localizedDescription
             return false
         }
     }

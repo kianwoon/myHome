@@ -164,6 +164,11 @@ class SetRouting(unittest.TestCase):
 
 
 class BriturnE0TimerTests(unittest.TestCase):
+    def setUp(self):
+        patcher = mock.patch.object(bridge.time, "sleep")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     # Captured live from a firmware-10 bulb: slot 1 = enabled 19:00 every day, power on.
     LIVE = bytes.fromhex(
         "e00601f0130000fe0ee0010023000000000000000000000200000000000003"
@@ -208,6 +213,28 @@ class BriturnE0TimerTests(unittest.TestCase):
             2, {"time": "25:00", "days": ["mon"], "action": "on"}), bytes([0xE0, 0x05, 2, 0, 0, 0, 0, 0, 0]))
         with self.assertRaises(ValueError):
             bridge._briturn_e0_slot_frame(1, {"time": "08:00", "days": ["mon"], "action": "colour"})
+
+    def test_read_never_reports_empty_when_light_does_not_answer(self):
+        cfg = {"id": "briturn-aa", "ip": "1.2.3.4", "category": "briturn"}
+        for fw, read, expect in ((NEW_FW, None, "did not answer"), (0, None, "firmware")):
+            with mock.patch.object(bridge, "_briturn_resolve", return_value=cfg), \
+                 mock.patch.object(bridge, "_briturn_firmware", return_value=fw), \
+                 mock.patch.object(bridge, "_briturn_read_e0_timers", return_value=read), \
+                 mock.patch.object(bridge.socket, "create_connection") as connect:
+                reply = bridge.handle_briturntimers({"id": "briturn-aa"})
+            self.assertFalse(reply["ok"])
+            self.assertIn(expect, reply["error"])
+            connect.assert_not_called()  # no legacy-format read that would look like "empty"
+
+    def test_read_retries_until_light_answers(self):
+        cfg = {"id": "briturn-aa", "ip": "1.2.3.4", "category": "briturn"}
+        good = bridge._briturn_parse_e0_timers(self.LIVE)
+        with mock.patch.object(bridge, "_briturn_resolve", return_value=cfg), \
+             mock.patch.object(bridge, "_briturn_firmware", return_value=NEW_FW), \
+             mock.patch.object(bridge, "_briturn_read_e0_timers", side_effect=[None, None, good]):
+            reply = bridge.handle_briturntimers({"id": "briturn-aa"})
+        self.assertTrue(reply["ok"])
+        self.assertEqual(reply["timers"][0]["time"], "19:00")
 
     def test_paused_slot_is_flagged_and_blocks_write(self):
         raw = bytearray(self.LIVE)

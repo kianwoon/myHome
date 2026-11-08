@@ -957,7 +957,7 @@ def _briturn_note_frame(device_id, frame):
         _briturn_fw_cache[device_id] = frame[BRITURN_FW_INDEX]
 
 
-def _briturn_firmware(config):
+def _briturn_firmware(config, attempts=None):
     """Firmware for a device: cache first, else one quick status read.
 
     Returns 0 (legacy commands) when unknown/unreadable — control must never
@@ -968,7 +968,7 @@ def _briturn_firmware(config):
         return _briturn_fw_cache[device_id]
     reply = _briturn_exchange(
         config["ip"], BRITURN_QUERY,
-        attempts=BRITURN_FW_READ_ATTEMPTS, timeout=BRITURN_FW_READ_TIMEOUT)
+        attempts=attempts or BRITURN_FW_READ_ATTEMPTS, timeout=BRITURN_FW_READ_TIMEOUT)
     frame = _briturn_frame(reply) if reply else None
     if frame is None:
         return 0
@@ -1372,6 +1372,10 @@ BRITURN_E0_ACTION_LEN = 14
 BRITURN_E0_ACTION_HEAD = [0xE0, 0x01, 0x00]
 BRITURN_E0_ENABLED = 0xF0
 BRITURN_E0_FRAME_GAP_SECONDS = 0.2
+# A bulb serves few TCP clients at once; the app's status polling makes a lone
+# schedule read fail often, so schedule reads retry instead of giving up.
+BRITURN_SCHEDULE_READ_ATTEMPTS = 5
+BRITURN_SCHEDULE_RETRY_GAP_SECONDS = 0.5
 BRITURN_E0_SETTLE_SECONDS = 0.5
 BRITURN_E0_RECV_BYTES = 160
 BRITURN_DAY_MASKS = {"mon": 0x02, "tue": 0x04, "wed": 0x08, "thu": 0x10,
@@ -1475,6 +1479,28 @@ def _briturn_parse_e0_timers(buf):
     return slots
 
 
+def _briturn_schedule_firmware(config):
+    """Firmware for a schedule command, retried; 0 only when it really can't be read."""
+    for attempt in range(BRITURN_SCHEDULE_READ_ATTEMPTS):
+        firmware = _briturn_firmware(config)
+        if firmware:
+            return firmware
+        if attempt + 1 < BRITURN_SCHEDULE_READ_ATTEMPTS:
+            time.sleep(BRITURN_SCHEDULE_RETRY_GAP_SECONDS)
+    return 0
+
+
+def _briturn_read_e0_timers_retry(config):
+    """E0 timer table with retries; None when the bulb never answers cleanly."""
+    for attempt in range(BRITURN_SCHEDULE_READ_ATTEMPTS):
+        slots = _briturn_read_e0_timers(config)
+        if slots is not None:
+            return slots
+        if attempt + 1 < BRITURN_SCHEDULE_READ_ATTEMPTS:
+            time.sleep(BRITURN_SCHEDULE_RETRY_GAP_SECONDS)
+    return None
+
+
 def _briturn_e0_slot_frame(index, entry):
     """One `E0 05` slot frame (index is 1-based); None entry/invalid -> empty slot.
 
@@ -1572,12 +1598,17 @@ def handle_briturntimers(request=None):
     if isinstance(resolved, dict) and resolved.get("ok") is False:
         return resolved
     config = resolved
-    if _briturn_new_proto(_briturn_firmware(config)):
-        e0_slots = _briturn_read_e0_timers(config)
-        if e0_slots is not None:
-            # Scene/colour slots can't be re-encoded, so those lights stay read-only.
-            return {"ok": True, "timers": e0_slots, "format": "e0",
-                    "readonly": _briturn_e0_has_unsupported(e0_slots)}
+    firmware = _briturn_schedule_firmware(config)
+    if firmware == 0:
+        # Never guess the format: a wrong-format read looks like an empty schedule.
+        return {"ok": False, "error": "could not read the light's firmware; try Reload"}
+    if _briturn_new_proto(firmware):
+        e0_slots = _briturn_read_e0_timers_retry(config)
+        if e0_slots is None:
+            return {"ok": False, "error": "light did not answer the schedule read; try Reload"}
+        # Scene/colour slots can't be re-encoded, so those lights stay read-only.
+        return {"ok": True, "timers": e0_slots, "format": "e0",
+                "readonly": _briturn_e0_has_unsupported(e0_slots)}
     sock = None
     try:
         sock = socket.create_connection((config["ip"], BRITURN_TCP_PORT), timeout=3)
@@ -1661,14 +1692,14 @@ def handle_briturntimerset(request):
     entries = (request or {}).get("timers")
     if not isinstance(entries, list) or len(entries) > BRITURN_TIMER_COUNT:
         return {"ok": False, "error": "timers must be a list of at most 6 entries"}
-    firmware = _briturn_firmware(config)
+    firmware = _briturn_schedule_firmware(config)
     if firmware == 0:
         # Unknown firmware: the wire format of a write can't be guessed.
         return {"ok": False, "error": "could not determine the light's firmware"}
     if _briturn_new_proto(firmware):
         # Never fall back to the legacy table write on a read failure: that would
         # create a second schedule next to the E0 one.
-        current = _briturn_read_e0_timers(config)
+        current = _briturn_read_e0_timers_retry(config)
         if current is None:
             return {"ok": False, "error": "could not read the current schedule"}
         return _briturn_set_e0_timers(config, entries, current)

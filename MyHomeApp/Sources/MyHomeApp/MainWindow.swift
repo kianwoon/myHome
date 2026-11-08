@@ -1748,7 +1748,7 @@ enum BriturnColorUtil {
 struct ScheduleEditorSection: View {
     let title: String
     var loadError: String?
-    let load: () async -> Void
+    let load: () async -> Bool
     let initial: () -> [DeviceStore.BriturnTimer]
     let save: ([DeviceStore.BriturnTimer]) async -> Bool
     /// True when the schedule holds scene/colour actions we cannot re-encode.
@@ -1756,6 +1756,7 @@ struct ScheduleEditorSection: View {
 
     @State private var timers: [DeviceStore.BriturnTimer] = []
     @State private var loaded = false
+    @State private var loadFailed = false
     @State private var loading = false
     @State private var saving = false
     @State private var editingIndex: Int?
@@ -1796,13 +1797,13 @@ struct ScheduleEditorSection: View {
                 .disabled(saving || !loaded || readOnly())
             }
 
-            if let error = loadError, !loaded {
-                Text(error)
+            if loadFailed || loadError != nil {
+                Text((loadError ?? "Couldn't read the schedule") + (loadFailed ? " — tap Reload." : ""))
                     .font(.callout)
                     .foregroundStyle(.red)
             }
 
-            if !loaded {
+            if !loaded && !loadFailed {
                 Text("Loading schedule…")
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -1843,9 +1844,13 @@ struct ScheduleEditorSection: View {
     /// Reads the schedule from the light and refreshes the editable list.
     private func reload() async {
         loading = true
-        await load()
-        timers = initial()
-        loaded = true
+        if await load() {
+            timers = initial()
+            loaded = true
+            loadFailed = false
+        } else {
+            loadFailed = true
+        }
         loading = false
     }
 
@@ -1971,7 +1976,7 @@ struct BriturnGroupScheduleSheet: View {
             if let first = store.members(of: group).first {
                 ScheduleEditorSection(
                     title: "",
-                    loadError: store.statusErrors[first.id],
+                    loadError: store.briturnTimersError[first.id],
                     load: { await store.loadBriturnTimers(for: first) },
                     initial: { store.briturnTimers[first.id] ?? [] },
                     save: { timers in await store.saveBriturnGroupTimers(group, timers: timers) },
@@ -2133,7 +2138,7 @@ struct BriturnControlsView: View {
             if !device.isBLE && device.hasAddress {
                 ScheduleEditorSection(
                     title: "Schedule",
-                    loadError: store.statusErrors[device.id],
+                    loadError: store.briturnTimersError[device.id],
                     load: { await store.loadBriturnTimers(for: device) },
                     initial: { store.briturnTimers[device.id] ?? [] },
                     save: { timers in await store.saveBriturnTimers(device, timers: timers) },
