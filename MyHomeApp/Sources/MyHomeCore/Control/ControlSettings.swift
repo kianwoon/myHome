@@ -34,6 +34,15 @@ public extension AppSettings {
     static let defaultResolverMinCoverage = 0.5
     static let unitFractionRange = 0.0...1.0
 
+    /// "Fuzzy" matching: when no device matches a spoken name exactly, offer
+    /// the near-misses (accent-caused misrecognitions) as suggestions.
+    static let fuzzyMatchKey = "fuzzyDeviceMatch"
+    static let defaultFuzzyMatch = true
+    /// Words shorter than this are never fuzzy-matched.
+    static let defaultFuzzyMinTokenLength = 4
+    /// Edit distance allowed, as a fraction of the longer word's length.
+    static let defaultFuzzyMaxDistanceRatio = 0.25
+
     /// State questions ("which lights are on?") name at most this many devices.
     static let stateQueryListMaxKey = "stateQueryListMax"
     static let defaultStateQueryListMax = 5
@@ -68,6 +77,10 @@ public extension AppSettings {
 
     static func resolverAmbiguityMargin(from defaults: UserDefaults = .standard) -> Double {
         clamped(defaults.object(forKey: resolverAmbiguityMarginKey) as? Double, defaultResolverAmbiguityMargin, unitFractionRange)
+    }
+
+    static func fuzzyMatch(from defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: fuzzyMatchKey) as? Bool ?? defaultFuzzyMatch
     }
 
     static func resolverMinCoverage(from defaults: UserDefaults = .standard) -> Double {
@@ -364,6 +377,7 @@ public struct ControlConfig: Equatable, Sendable {
 public extension ResolverConfig {
     static func fromDefaults(_ defaults: UserDefaults = .standard) -> ResolverConfig {
         ResolverConfig(ambiguityMargin: AppSettings.resolverAmbiguityMargin(from: defaults),
-                       minCoverage: AppSettings.resolverMinCoverage(from: defaults))
+                       minCoverage: AppSettings.resolverMinCoverage(from: defaults),
+                       fuzzy: AppSettings.fuzzyMatch(from: defaults))
     }
 }

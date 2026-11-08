@@ -85,10 +85,13 @@ public struct ResolverConfig: Equatable, Sendable {
     public var ambiguityMargin: Double
     /// Minimum fraction of query tokens that must match for a relaxed hit.
     public var minCoverage: Double
+    /// Offer near-miss names as suggestions when nothing matches exactly.
+    public var fuzzy: Bool
 
     public init(nameWeight: Double = 1.0, roomWeight: Double = 0.9, groupWeight: Double = 0.9, kindWeight: Double = 0.8,
                 exactNameBonus: Double = 0.5, ambiguityMargin: Double = AppSettings.defaultResolverAmbiguityMargin,
-                minCoverage: Double = AppSettings.defaultResolverMinCoverage) {
+                minCoverage: Double = AppSettings.defaultResolverMinCoverage,
+                fuzzy: Bool = AppSettings.defaultFuzzyMatch) {
         self.nameWeight = nameWeight
         self.roomWeight = roomWeight
         self.groupWeight = groupWeight
@@ -96,6 +99,7 @@ public struct ResolverConfig: Equatable, Sendable {
         self.exactNameBonus = exactNameBonus
         self.ambiguityMargin = ambiguityMargin
         self.minCoverage = minCoverage
+        self.fuzzy = fuzzy
     }
 }
 
@@ -258,6 +262,13 @@ public struct DeviceResolver {
             candidates = matches.filter { $0.coverage >= config.minCoverage && $0.coverage > 0 }
             relaxed = true
         }
+        // Fuzzy: an accent-misheard name ("links lamp" for "Ling Lamp") only
+        // matches partially or not at all. Near-name hits narrow that to the
+        // likely device. Suggestions only (.ambiguous), so the caller confirms.
+        if relaxed {
+            let near = fuzzyCandidates(filtered, queryTokens: queryTokens)
+            if !near.isEmpty { return .ambiguous(near) }
+        }
         guard !candidates.isEmpty else { return .none }
 
         if query.preferControllable {
@@ -291,6 +302,28 @@ public struct DeviceResolver {
             return .briturnGroup(group, members: band.map(\.device))
         }
         return .ambiguous(band.sorted { $0.score > $1.score }.map(\.device))
+    }
+
+    /// Devices where every query token matches a name/room/group/kind word
+    /// exactly or closely (accent misrecognitions). Needs at least one close,
+    /// non-exact name hit, otherwise strict matching would already have found it.
+    private func fuzzyCandidates(_ devices: [Device], queryTokens: [String]) -> [Device] {
+        guard config.fuzzy, !queryTokens.isEmpty else { return [] }
+        let scored: [(Device, Int)] = devices.compactMap { device in
+            let nameTokens = Set(TextNormalizer.tokens(device.name))
+            let others = Set(TextNormalizer.tokens(device.room, stopWords: vocabulary.stopWords))
+                .union(TextNormalizer.tokens(device.group ?? "", stopWords: vocabulary.stopWords))
+                .union(vocabulary.tokens(for: device.kind))
+            var fuzzyName = 0
+            for token in queryTokens {
+                if nameTokens.contains(token) || others.contains(token) { continue }
+                if nameTokens.contains(where: { FuzzyTokenMatcher.isClose(token, $0) }) { fuzzyName += 1; continue }
+                if others.contains(where: { FuzzyTokenMatcher.isClose(token, $0) }) { continue }
+                return nil
+            }
+            return fuzzyName > 0 ? (device, fuzzyName) : nil
+        }
+        return scored.sorted { $0.1 > $1.1 }.map(\.0)
     }
 
     private func classifySet(_ found: [Device], query: DeviceQuery, scope: ResolutionScope) -> Resolution {

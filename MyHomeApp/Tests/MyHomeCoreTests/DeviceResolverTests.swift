@@ -94,3 +94,32 @@ final class DeviceEntityMatchingTests: XCTestCase {
         XCTAssertTrue(DeviceEntityMatching.clearMatches(in: resolution).isEmpty)
     }
 }
+
+final class FuzzyMatchTests: XCTestCase {
+    private let lamp = ControlFixtures.device("lamp-ling", name: "Ling Lamp", category: "dj", room: "Study")
+    private let other = ControlFixtures.device("lamp-desk", name: "Desk Lamp", category: "dj", room: "Study")
+    private let fan = ControlFixtures.device("fan-desk", name: "Desk Fan", category: "fs", room: "Study")
+
+    private func resolve(_ text: String, fuzzy: Bool) -> Resolution {
+        DeviceResolver(devices: [lamp, other, fan], config: ResolverConfig(fuzzy: fuzzy), vocabulary: .standard)
+            .resolve(DeviceQuery(text: text))
+    }
+
+    func testMisheardNameIsOnlyEverASuggestion() {
+        guard case .ambiguous(let devices) = resolve("links lamp", fuzzy: true) else { return XCTFail("expected a suggestion") }
+        XCTAssertEqual(devices.map(\.id), [lamp.id])
+    }
+
+    func testOffKeepsStrictBehaviour() {
+        XCTAssertEqual(resolve("links lamp", fuzzy: false).devices.map(\.id), [lamp.id, other.id],
+                       "without fuzzy a partial match lists every lamp")
+    }
+
+    func testUnrelatedWordsAreUnchangedByFuzzy() {
+        XCTAssertEqual(resolve("banana lamp", fuzzy: true), resolve("banana lamp", fuzzy: false))
+    }
+
+    func testExactMatchIsUnchangedByFuzzy() {
+        XCTAssertEqual(resolve("ling lamp", fuzzy: true), .single(lamp))
+    }
+}

@@ -12,6 +12,8 @@ struct SpeechEngineSettingsSection: View {
     @AppStorage(AppSettings.speechUsePopModelsKey) private var usePop = AppSettings.defaultSpeechUsePopModels
     @AppStorage(AppSettings.speechHotwordBiasKey) private var hotwords = AppSettings.defaultSpeechHotwordBias
 
+    @AppStorage(AppSettings.fuzzyMatchKey) private var fuzzy = AppSettings.defaultFuzzyMatch
+
     var body: some View {
         Section {
             Picker("Engine", selection: $preferred) {
@@ -23,12 +25,14 @@ struct SpeechEngineSettingsSection: View {
             ForEach(SpeechEngineKind.allCases) { modelRow($0) }
             Toggle("Use models installed by Pop", isOn: $usePop)
             Toggle("Bias recognition toward device and room names", isOn: $hotwords)
+            Toggle("Fuzzy: suggest near-miss device names", isOn: $fuzzy)
         } header: {
             Text("Speech engine")
         } footer: {
             Text("Speech runs on this Mac with offline models (sherpa-onnx), the same ones the Pop app uses. "
                  + "Qwen3-ASR is tried first; SenseVoice takes over if it is missing or stops responding. "
-                 + "Name biasing applies to Qwen3-ASR and is off by default: a long device list can make the engine echo the list back instead of what you said.")
+                 + "Name biasing applies to Qwen3-ASR and is off by default: a long device list can make the engine echo the list back instead of what you said. "
+                 + "Fuzzy helps with accents: if no device matches a name you spoke, close-sounding names are offered for you to confirm, never acted on directly.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
