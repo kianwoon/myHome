@@ -1750,7 +1750,7 @@ struct ScheduleEditorSection: View {
     let load: () async -> Void
     let initial: () -> [DeviceStore.BriturnTimer]
     let save: ([DeviceStore.BriturnTimer]) async -> Bool
-    /// True when the light's schedule was read from the newer format we can't rewrite yet.
+    /// True when the schedule holds scene/colour actions we cannot re-encode.
     var readOnly: () -> Bool = { false }
 
     @State private var timers: [DeviceStore.BriturnTimer] = []
@@ -1769,7 +1769,7 @@ struct ScheduleEditorSection: View {
                 if loading { ProgressView().controlSize(.small) }
                 Spacer()
                 if readOnly() {
-                    Text("Read-only — edit in the Briturn app")
+                    Text("Scene or colour schedule — edit in the Briturn app")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

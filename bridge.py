@@ -1362,6 +1362,17 @@ BRITURN_E0_TIMER_HEAD = 2
 BRITURN_E0_RECORD_HEAD = 7
 BRITURN_E0_ACTION_OPCODE_INDEX = 3
 BRITURN_E0_TIMER_READ_SECONDS = 2.5
+# Write: one raw frame per slot, `E0 05` + the same record layout as the read
+# (traced from the app's sendTasks: [E0,05,idx,flag,h,m,s,mask,len]+action,
+# sent without a response and without a checksum). Power actions are
+# `E0 01 00 23|24` zero-padded to BRITURN_E0_ACTION_LEN; colour actions are
+# not supported for E0 writes.
+BRITURN_E0_TIMER_SET = bytes([0xE0, 0x05])
+BRITURN_E0_ACTION_LEN = 14
+BRITURN_E0_ACTION_HEAD = [0xE0, 0x01, 0x00]
+BRITURN_E0_ENABLED = 0xF0
+BRITURN_E0_FRAME_GAP_SECONDS = 0.2
+BRITURN_E0_SETTLE_SECONDS = 0.5
 BRITURN_E0_RECV_BYTES = 160
 BRITURN_DAY_MASKS = {"mon": 0x02, "tue": 0x04, "wed": 0x08, "thu": 0x10,
                      "fri": 0x20, "sat": 0x40, "sun": 0x80}
@@ -1463,6 +1474,61 @@ def _briturn_parse_e0_timers(buf):
     return slots
 
 
+def _briturn_e0_slot_frame(index, entry):
+    """One `E0 05` slot frame (index is 1-based); None entry/invalid -> empty slot.
+
+    Raises ValueError for an entry this format cannot store (colour actions).
+    """
+    head = list(BRITURN_E0_TIMER_SET) + [index]
+    empty = bytes(head + [0] * 6)
+    if not isinstance(entry, dict):
+        return empty
+    clock = entry.get("time")
+    if not isinstance(clock, str) or not re.match(r"^\d{2}:\d{2}$", clock):
+        return empty
+    hour, minute = int(clock[:2]), int(clock[3:])
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return empty
+    mask = 0
+    for day in entry.get("days") or []:
+        mask |= BRITURN_DAY_MASKS.get(str(day).lower(), 0)
+    if mask == 0:
+        return empty
+    action = str(entry.get("action", "on")).lower()
+    if action == "on":
+        opcode = BRITURN_NEW_POWER_ON
+    elif action == "off":
+        opcode = BRITURN_NEW_POWER_OFF
+    else:
+        raise ValueError("this light's schedule format only supports turn on / turn off")
+    body = BRITURN_E0_ACTION_HEAD + [opcode]
+    body += [0] * (BRITURN_E0_ACTION_LEN - len(body))
+    return bytes(head + [BRITURN_E0_ENABLED, hour, minute, 0, mask, len(body)] + body)
+
+
+def _briturn_write_e0_timers(config, entries):
+    """Send all 6 slot frames over one connection; True when every send worked."""
+    frames = []
+    for number in range(BRITURN_TIMER_COUNT):
+        entry = entries[number] if number < len(entries) else None
+        frames.append(_briturn_e0_slot_frame(number + 1, entry))
+    sock = None
+    try:
+        sock = socket.create_connection((config["ip"], BRITURN_TCP_PORT), timeout=3)
+        for frame in frames:
+            sock.sendall(frame)
+            time.sleep(BRITURN_E0_FRAME_GAP_SECONDS)
+        return True
+    except OSError:
+        return False
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+
 def _briturn_read_e0_timers(config):
     """Read the E0 timer table from one bulb, or None when it doesn't answer."""
     sock = None
@@ -1508,8 +1574,9 @@ def handle_briturntimers(request=None):
     if _briturn_new_proto(_briturn_firmware(config)):
         e0_slots = _briturn_read_e0_timers(config)
         if e0_slots is not None:
-            # Read-only: writes still use the legacy slot format.
-            return {"ok": True, "timers": e0_slots, "format": "e0", "readonly": True}
+            # Scene/colour slots can't be re-encoded, so those lights stay read-only.
+            has_other = any(t.get("active") and t.get("action") == "other" for t in e0_slots)
+            return {"ok": True, "timers": e0_slots, "format": "e0", "readonly": has_other}
     sock = None
     try:
         sock = socket.create_connection((config["ip"], BRITURN_TCP_PORT), timeout=3)
@@ -1556,6 +1623,21 @@ def handle_briturntimers(request=None):
     return {"ok": True, "timers": slots}
 
 
+def _briturn_set_e0_timers(config, entries, current):
+    """Replace the E0 schedule table; refuses to overwrite scene/colour slots."""
+    if any(slot.get("active") and slot.get("action") == "other" for slot in current):
+        return {"ok": False, "error": "this light has a scene/colour schedule; edit it in the Briturn app"}
+    try:
+        for number, entry in enumerate(entries):
+            _briturn_e0_slot_frame(number + 1, entry)
+    except ValueError as err:
+        return {"ok": False, "error": str(err)}
+    if not _briturn_write_e0_timers(config, entries):
+        return {"ok": False, "error": "timer write failed"}
+    time.sleep(BRITURN_E0_SETTLE_SECONDS)
+    return handle_briturntimers({"id": config.get("id")})
+
+
 def handle_briturntimerset(request):
     """Replace all 6 slots, then sync the bulb clock so they fire on time.
 
@@ -1572,6 +1654,10 @@ def handle_briturntimerset(request):
     entries = (request or {}).get("timers")
     if not isinstance(entries, list) or len(entries) > BRITURN_TIMER_COUNT:
         return {"ok": False, "error": "timers must be a list of at most 6 entries"}
+    if _briturn_new_proto(_briturn_firmware(config)):
+        current = _briturn_read_e0_timers(config)
+        if current is not None:
+            return _briturn_set_e0_timers(config, entries, current)
     slots = [_briturn_timer_slot(e) for e in entries]
     while len(slots) < BRITURN_TIMER_COUNT:
         slots.append(bytes(BRITURN_TIMER_LEN))

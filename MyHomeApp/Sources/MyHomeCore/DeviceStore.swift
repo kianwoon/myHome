@@ -678,7 +678,7 @@ public final class DeviceStore: ObservableObject {
 
     @Published public private(set) var briturnTimers: [String: [BriturnTimer]] = [:]
     @Published public private(set) var briturnTimersLoading: Set<String> = []
-    /// Lights whose schedule is in the firmware-10 "E0" format: shown, never rewritten.
+    /// Lights whose E0 schedule holds scene/colour actions: shown, never rewritten.
     @Published public private(set) var briturnTimersReadOnly: Set<String> = []
 
     public func loadBriturnTimers(for device: Device) async {

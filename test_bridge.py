@@ -191,6 +191,37 @@ class BriturnE0TimerTests(unittest.TestCase):
         self.assertIsNone(bridge._briturn_parse_e0_timers(bytes([0x81, 0x5F]) + self.LIVE))
         self.assertIsNone(bridge._briturn_parse_e0_timers(b""))
 
+    def test_slot_frame_matches_live_record(self):
+        frame = bridge._briturn_e0_slot_frame(
+            1, {"time": "19:00", "days": list(bridge.BRITURN_DAY_MASKS), "action": "on"})
+        # Same record the bulb reports (see LIVE), prefixed with the `E0 05` set opcode.
+        self.assertEqual(frame, bytes([0xE0, 0x05]) + self.LIVE[2:2 + 21])
+
+    def test_slot_frame_off_empty_and_unsupported(self):
+        off = bridge._briturn_e0_slot_frame(
+            3, {"time": "03:07", "days": ["mon"], "action": "off"})
+        self.assertEqual(off[:9], bytes([0xE0, 0x05, 3, 0xF0, 3, 7, 0, 0x02, 14]))
+        self.assertEqual(off[12], 0x24)
+        self.assertEqual(len(off), 9 + 14)
+        self.assertEqual(bridge._briturn_e0_slot_frame(2, None), bytes([0xE0, 0x05, 2, 0, 0, 0, 0, 0, 0]))
+        self.assertEqual(bridge._briturn_e0_slot_frame(
+            2, {"time": "25:00", "days": ["mon"], "action": "on"}), bytes([0xE0, 0x05, 2, 0, 0, 0, 0, 0, 0]))
+        with self.assertRaises(ValueError):
+            bridge._briturn_e0_slot_frame(1, {"time": "08:00", "days": ["mon"], "action": "colour"})
+
+    def test_set_refuses_scene_slots_and_colour_entries(self):
+        cfg = {"id": "briturn-aa", "ip": "1.2.3.4", "category": "briturn"}
+        scene = bridge._briturn_parse_e0_timers(self.LIVE)
+        scene[0]["action"] = "other"
+        with mock.patch.object(bridge, "_briturn_write_e0_timers") as write:
+            reply = bridge._briturn_set_e0_timers(cfg, [], scene)
+            self.assertFalse(reply["ok"])
+            reply = bridge._briturn_set_e0_timers(
+                cfg, [{"time": "08:00", "days": ["mon"], "action": "colour"}],
+                bridge._briturn_parse_e0_timers(self.LIVE))
+            self.assertFalse(reply["ok"])
+        write.assert_not_called()
+
     def test_handler_prefers_e0_on_new_firmware_and_falls_back_on_old(self):
         cfg = {"id": "briturn-aa", "ip": "1.2.3.4", "category": "briturn"}
         with mock.patch.object(bridge, "_briturn_resolve", return_value=cfg), \
@@ -199,7 +230,7 @@ class BriturnE0TimerTests(unittest.TestCase):
                                return_value=bridge._briturn_parse_e0_timers(self.LIVE)):
             reply = bridge.handle_briturntimers({"id": "briturn-aa"})
         self.assertTrue(reply["ok"])
-        self.assertTrue(reply["readonly"])
+        self.assertFalse(reply["readonly"])  # plain on/off table is editable
         self.assertEqual(reply["timers"][0]["time"], "19:00")
         with mock.patch.object(bridge, "_briturn_resolve", return_value=cfg), \
              mock.patch.object(bridge, "_briturn_firmware", return_value=OLD_FW), \
