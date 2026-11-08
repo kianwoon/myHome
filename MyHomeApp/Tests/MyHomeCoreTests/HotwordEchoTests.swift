@@ -42,3 +42,10 @@ final class QwenLanguageTests: XCTestCase {
         XCTAssertEqual(QwenLanguage.name(for: "zh-Hans"), "Chinese")
     }
 }
+
+final class SpokenReplyLanguageTests: XCTestCase {
+    func testReplyLanguageIsDetectedFromText() {
+        XCTAssertEqual(SpeechResponder.dominantLanguage(of: "一切安好，随时听候差遣。请问府上有何吩咐？")?.prefix(2), "zh")
+        XCTAssertEqual(SpeechResponder.dominantLanguage(of: "The study fan is now at speed two."), "en")
+    }
+}

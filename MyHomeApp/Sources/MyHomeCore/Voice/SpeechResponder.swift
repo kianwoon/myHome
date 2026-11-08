@@ -1,6 +1,7 @@
 // Spoken replies via AVSpeechSynthesizer. Gated by the spokenReplies setting.
 import Foundation
 import AVFoundation
+import NaturalLanguage
 
 @MainActor
 public final class SpeechResponder: ObservableObject {
@@ -21,7 +22,7 @@ public final class SpeechResponder: ObservableObject {
         guard AppSettings.spokenRepliesEnabled(from: defaults), !trimmed.isEmpty else { return }
         if synthesizer.isSpeaking { synthesizer.stopSpeaking(at: .immediate) }
         let utterance = AVSpeechUtterance(string: trimmed)
-        utterance.voice = voice()
+        utterance.voice = voice(for: trimmed)
         isSpeaking = true
         synthesizer.speak(utterance)
     }
@@ -31,7 +32,23 @@ public final class SpeechResponder: ObservableObject {
         isSpeaking = false
     }
 
-    private func voice() -> AVSpeechSynthesisVoice? {
+    /// The reply's own language wins (a Chinese reply read by an English voice
+    /// is silent or garbled); the voice locale is the fallback.
+    private func voice(for text: String) -> AVSpeechSynthesisVoice? {
+        if let detected = Self.dominantLanguage(of: text), let match = AVSpeechSynthesisVoice(language: detected) {
+            return match
+        }
+        return localeVoice()
+    }
+
+    nonisolated static func dominantLanguage(of text: String) -> String? {
+        let recognizer = NLLanguageRecognizer()
+        recognizer.processString(text)
+        guard let language = recognizer.dominantLanguage, language != .undetermined else { return nil }
+        return language.rawValue
+    }
+
+    private func localeVoice() -> AVSpeechSynthesisVoice? {
         let locale = AppSettings.voiceLocale(from: defaults)
         if let voice = AVSpeechSynthesisVoice(language: locale.identifier) { return voice }
         if let code = locale.language.languageCode?.identifier {
