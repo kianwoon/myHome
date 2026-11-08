@@ -151,7 +151,7 @@ public final class DeviceStore: ObservableObject {
     @Published public internal(set) var statusLoading: Set<String> = []
     @Published public internal(set) var statusErrors: [String: String] = [:]
     /// True when that device's latest status reply came over the cloud fallback
-    /// (`"via":"cloud"`) rather than the local LAN path. Cleared by the next
+    /// (any `"via"` tag: cloud or app API) rather than the local LAN path. Cleared by the next
     /// successful local status, so it always describes the current reading.
     @Published public internal(set) var statusViaCloud: [String: Bool] = [:]
     @Published public private(set) var schedules: [DeviceSchedule] = []
@@ -2300,7 +2300,7 @@ public final class DeviceStore: ObservableObject {
         guard let raw = reply["dps"] else { return }
         let decoded = try Self.decodeDps(raw)
         lastSetReply[id] = (decoded, Date())
-        applyStatus(id, decoded: decoded, viaCloud: reply["via"] as? String == "cloud")
+        applyStatus(id, decoded: decoded, viaCloud: Self.isRemoteVia(reply["via"]))
     }
 
     private func revert(device: Device, isOn previousOn: Bool, dps previousDps: [String: DPSValue]?) {

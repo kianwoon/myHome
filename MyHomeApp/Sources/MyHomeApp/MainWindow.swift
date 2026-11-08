@@ -204,6 +204,7 @@ struct DashboardView: View {
         }
         let isBriturnLight = device.category.lowercased() == "briturn"
         let cloudRed = store.cloudOnline[device.id] == false && !(isBriturnLight && store.reachability(for: device) == .bluetooth)
+            && !store.answeredOnLAN(device)
         let showsOffline = !store.isControllable(for: device) || cloudRed
         return showsOffline ? 2 : 1
     }
@@ -551,7 +552,8 @@ struct DeviceCard: View {
                         Text(device.name)
                             .font(.callout.weight(.semibold))
                         CloudStatusBadge(online: store.cloudOnline[device.id],
-                                         reachability: isBriturn ? store.reachability(for: device) : nil)
+                                         reachability: isBriturn ? store.reachability(for: device) : nil,
+                                         lanAnswered: store.answeredOnLAN(device))
                     }
                     HStack(spacing: 6) {
                         Text(summary(state))
@@ -839,18 +841,24 @@ struct CloudStatusBadge: View {
     /// Briturn lights pass their shared reachability: a cloud-offline light
     /// that still has a live Bluetooth link must not read as dead.
     var reachability: DeviceStore.Reachability?
+    /// A direct LAN status answer: first-hand and current, so it outranks a
+    /// stale or pending cloud flag (which refreshes only every few minutes).
+    var lanAnswered: Bool = false
 
     private var viaBluetooth: Bool { reachability == .bluetooth }
+    private var viaLAN: Bool { DeviceStore.badgeShowsLAN(cloud: online, lanAnswered: lanAnswered) }
 
     private var label: String {
         if envBroken { return "☁ bridge env" }
         if viaBluetooth { return "🔵 Bluetooth" }
+        if viaLAN { return DeviceStore.lanBadgeText }
         return DeviceStore.cloudBadgeText(online)
     }
 
     private var tint: Color {
         if envBroken { return .orange }
         if viaBluetooth { return .blue }
+        if viaLAN { return .green }
         switch online {
         case .some(true): return .green
         case .some(false): return .red
@@ -868,7 +876,13 @@ struct CloudStatusBadge: View {
             .foregroundStyle(tint)
             .lineLimit(1)
             .frame(width: 84, alignment: .leading)
-            .help(viaBluetooth ? "Cloud offline; controlled over Bluetooth" : (online == nil ? "Cloud status pending" : "Tuya cloud connectivity"))
+            .help(helpText)
+    }
+
+    private var helpText: String {
+        if viaBluetooth { return "Cloud offline; controlled over Bluetooth" }
+        if viaLAN { return "Answering on the local network; cloud status refreshes every few minutes" }
+        return online == nil ? "Cloud status pending" : "Tuya cloud connectivity"
     }
 }
 
@@ -1323,7 +1337,8 @@ struct DeviceDetailView: View {
                                 .fixedSize(horizontal: false, vertical: true)
                                 .layoutPriority(1)
                             CloudStatusBadge(online: store.cloudOnline[device.id], envBroken: device.category.lowercased() == "briturn" ? false : store.cloudEnvBroken,
-                                             reachability: device.category.lowercased() == "briturn" ? store.reachability(for: device) : nil)
+                                             reachability: device.category.lowercased() == "briturn" ? store.reachability(for: device) : nil,
+                                             lanAnswered: store.answeredOnLAN(device))
                         }
                         Text("\(device.kind.label) · \(device.category.isEmpty ? "uncategorised" : device.category)")
                             .font(.callout)

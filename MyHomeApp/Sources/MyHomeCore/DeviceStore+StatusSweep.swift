@@ -171,7 +171,7 @@ extension DeviceStore {
             }
             return .success(
                 try Self.decodeDps(raw),
-                viaCloud: reply["via"] as? String == "cloud"
+                viaCloud: Self.isRemoteVia(reply["via"])
             )
         } catch {
             return .failure(error.localizedDescription)
