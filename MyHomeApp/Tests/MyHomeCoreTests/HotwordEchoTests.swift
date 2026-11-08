@@ -49,3 +49,17 @@ final class SpokenReplyLanguageTests: XCTestCase {
         XCTAssertEqual(SpeechResponder.dominantLanguage(of: "The study fan is now at speed two."), "en")
     }
 }
+
+final class SpokenReplySegmentTests: XCTestCase {
+    func testMixedReplyIsSplitPerLanguage() {
+        let mixed = "书房已亮着的三盏灯均已确认调至百分之四十，书房后侧有一盏灯无法确认。 Not done: study room Bluetooth: light not seen recently — move closer or wait a moment."
+        let parts = SpeechResponder.segments(of: mixed)
+        XCTAssertEqual(parts.count, 2)
+        XCTAssertEqual(parts.first?.language?.prefix(2), "zh")
+        XCTAssertEqual(parts.last?.language, "en")
+    }
+
+    func testSingleLanguageReplyStaysOneUtterance() {
+        XCTAssertEqual(SpeechResponder.segments(of: "The study fan is now at speed two.").count, 1)
+    }
+}

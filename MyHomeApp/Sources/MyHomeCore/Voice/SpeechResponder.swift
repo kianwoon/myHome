@@ -21,10 +21,14 @@ public final class SpeechResponder: ObservableObject {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard AppSettings.spokenRepliesEnabled(from: defaults), !trimmed.isEmpty else { return }
         if synthesizer.isSpeaking { synthesizer.stopSpeaking(at: .immediate) }
-        let utterance = AVSpeechUtterance(string: trimmed)
-        utterance.voice = voice(for: trimmed)
         isSpeaking = true
-        synthesizer.speak(utterance)
+        // One utterance per language run: a Chinese reply with an English
+        // "Not done: ..." tail must not be read whole by a single voice.
+        for part in Self.segments(of: trimmed) {
+            let utterance = AVSpeechUtterance(string: part.text)
+            utterance.voice = part.language.flatMap { AVSpeechSynthesisVoice(language: $0) } ?? localeVoice()
+            synthesizer.speak(utterance)
+        }
     }
 
     public func stop() {
@@ -32,13 +36,23 @@ public final class SpeechResponder: ObservableObject {
         isSpeaking = false
     }
 
-    /// The reply's own language wins (a Chinese reply read by an English voice
-    /// is silent or garbled); the voice locale is the fallback.
-    private func voice(for text: String) -> AVSpeechSynthesisVoice? {
-        if let detected = Self.dominantLanguage(of: text), let match = AVSpeechSynthesisVoice(language: detected) {
-            return match
+    /// Sentences grouped into runs of the same language, in order.
+    nonisolated static func segments(of text: String) -> [(text: String, language: String?)] {
+        let tokenizer = NLTokenizer(unit: .sentence)
+        tokenizer.string = text
+        var runs: [(text: String, language: String?)] = []
+        tokenizer.enumerateTokens(in: text.startIndex..<text.endIndex) { range, _ in
+            let sentence = String(text[range]).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !sentence.isEmpty else { return true }
+            let language = dominantLanguage(of: sentence)
+            if let last = runs.last, last.language == language {
+                runs[runs.count - 1].text += " " + sentence
+            } else {
+                runs.append((sentence, language))
+            }
+            return true
         }
-        return localeVoice()
+        return runs.isEmpty ? [(text, dominantLanguage(of: text))] : runs
     }
 
     nonisolated static func dominantLanguage(of text: String) -> String? {
