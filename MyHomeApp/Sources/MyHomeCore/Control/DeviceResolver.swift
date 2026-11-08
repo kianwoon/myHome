@@ -123,7 +123,7 @@ public struct ResolverVocabulary: Sendable {
             "socket": .plug, "outlet": .plug, "switch": .plug,
             "thermostat": .climate, "aircon": .climate, "ac": .climate, "heater": .climate,
             "filter": .purifier,
-            "kef": .speaker, "hifi": .speaker, "stereo": .speaker,
+            "kef": .speaker, "nest": .speaker, "hifi": .speaker, "stereo": .speaker,
         ]
         for kind in [DeviceKind.fan, .curtain, .light, .plug, .climate, .purifier, .kettle, .speaker] {
             synonyms[TextNormalizer.singular(TextNormalizer.fold(kind.label))] = kind

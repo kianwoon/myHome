@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		217CD027747DB3AFB632547E /* AppServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A40831232019FE17DFCE541 /* AppServices.swift */; };
+		2B49520D4EAEFD2E65933483 /* CastSpeakerCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1333EAEEC3061CD7BBFC9BBB /* CastSpeakerCard.swift */; };
 		43FD135660E06B49E59462F5 /* KEFSpeakerCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75068B0AAD80282154960A73 /* KEFSpeakerCard.swift */; };
 		49B2A8D834DCD088E2275FA6 /* BriturnCloudSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3C17180F1199E37ED604EE1 /* BriturnCloudSettingsView.swift */; };
 		4F212C0D1E8DB925728245E2 /* CarbonHotkeyRegistrar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30AA2CA98B2FA5BEA1CEAD6E /* CarbonHotkeyRegistrar.swift */; };
@@ -27,6 +28,7 @@
 		B83897D1AB817ECC93E271AB /* MenuContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA216D0C142E0CFF19B47BC6 /* MenuContentView.swift */; };
 		BF74D41E699A0758B5627B88 /* OutputMuteSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0AEC1FE03A2D878EBD3DBF96 /* OutputMuteSettingsView.swift */; };
 		C3E075CE935FAC31A677C906 /* ScheduleSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6F42298384742B657F3B1FC /* ScheduleSection.swift */; };
+		DC2A82433ABB3E099B4370B9 /* AddCastSpeakerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64C3F8E8CCF8C9F524CECB36 /* AddCastSpeakerView.swift */; };
 		E0403F76E01EC0B67DCF0812 /* AddKEFSpeakerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C571755332559E4344F87887 /* AddKEFSpeakerView.swift */; };
 		E1E54BFD34E79D5006F9FF9F /* MainWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87AD030C867FB1670213C59C /* MainWindow.swift */; };
 		E35660965C5E27E41E509392 /* MyHomeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 025EB1036E4D31BAC39CC68D /* MyHomeApp.swift */; };
@@ -42,6 +44,7 @@
 		0339E1273FFE7B7433B83A9F /* MyHomeApp */ = {isa = PBXFileReference; lastKnownFileType = folder; name = MyHomeApp; path = .; sourceTree = SOURCE_ROOT; };
 		0AEC1FE03A2D878EBD3DBF96 /* OutputMuteSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OutputMuteSettingsView.swift; sourceTree = "<group>"; };
 		11E100ACADA9A41A06DEDB9D /* BriturnColorWheel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BriturnColorWheel.swift; sourceTree = "<group>"; };
+		1333EAEEC3061CD7BBFC9BBB /* CastSpeakerCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CastSpeakerCard.swift; sourceTree = "<group>"; };
 		1D898F519E81CDFABF41FADA /* CommandBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandBarView.swift; sourceTree = "<group>"; };
 		2584D53CB844C49682F5ECA9 /* HotkeySettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeySettingsView.swift; sourceTree = "<group>"; };
 		2B98F9FE07DF7101447DB4CF /* DeviceIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceIntents.swift; sourceTree = "<group>"; };
@@ -52,6 +55,7 @@
 		4A99861946F3DF615BC4E49B /* SecretKeyEntryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecretKeyEntryView.swift; sourceTree = "<group>"; };
 		5A40831232019FE17DFCE541 /* AppServices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppServices.swift; sourceTree = "<group>"; };
 		61E3AF12D4C07AE1EE34FA31 /* JevSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JevSettingsView.swift; sourceTree = "<group>"; };
+		64C3F8E8CCF8C9F524CECB36 /* AddCastSpeakerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddCastSpeakerView.swift; sourceTree = "<group>"; };
 		6D7042748DAC7386EE28CB1C /* DeviceEntity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceEntity.swift; sourceTree = "<group>"; };
 		75068B0AAD80282154960A73 /* KEFSpeakerCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KEFSpeakerCard.swift; sourceTree = "<group>"; };
 		81FE9F3B979384342150D39A /* SpecControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpecControls.swift; sourceTree = "<group>"; };
@@ -110,6 +114,7 @@
 			isa = PBXGroup;
 			children = (
 				2492281AE1BA91C5EE0AF129 /* Intents */,
+				64C3F8E8CCF8C9F524CECB36 /* AddCastSpeakerView.swift */,
 				C571755332559E4344F87887 /* AddKEFSpeakerView.swift */,
 				43A18FC8547783151F7062F1 /* AIModelsSettingsView.swift */,
 				5A40831232019FE17DFCE541 /* AppServices.swift */,
@@ -117,6 +122,7 @@
 				B3C17180F1199E37ED604EE1 /* BriturnCloudSettingsView.swift */,
 				11E100ACADA9A41A06DEDB9D /* BriturnColorWheel.swift */,
 				30AA2CA98B2FA5BEA1CEAD6E /* CarbonHotkeyRegistrar.swift */,
+				1333EAEEC3061CD7BBFC9BBB /* CastSpeakerCard.swift */,
 				1D898F519E81CDFABF41FADA /* CommandBarView.swift */,
 				3BE7DF252AF7843C9815291A /* DiagnosticLaunch.swift */,
 				D48416B1996D9F389EFCD501 /* HotkeyHUD.swift */,
@@ -221,12 +227,14 @@
 			buildActionMask = 2147483647;
 			files = (
 				6533B8F35024C8665581E932 /* AIModelsSettingsView.swift in Sources */,
+				DC2A82433ABB3E099B4370B9 /* AddCastSpeakerView.swift in Sources */,
 				E0403F76E01EC0B67DCF0812 /* AddKEFSpeakerView.swift in Sources */,
 				217CD027747DB3AFB632547E /* AppServices.swift in Sources */,
 				4F8744AFDAE40BB6354215C3 /* AssistantSettingsView.swift in Sources */,
 				49B2A8D834DCD088E2275FA6 /* BriturnCloudSettingsView.swift in Sources */,
 				6F20A2A652F39A19F38646B1 /* BriturnColorWheel.swift in Sources */,
 				4F212C0D1E8DB925728245E2 /* CarbonHotkeyRegistrar.swift in Sources */,
+				2B49520D4EAEFD2E65933483 /* CastSpeakerCard.swift in Sources */,
 				597F120642BE8E45A5416117 /* CommandBarView.swift in Sources */,
 				F317B7D65C3E75768462303A /* DeviceEntity.swift in Sources */,
 				646792CA2BA4E73F87349A4C /* DeviceIntents.swift in Sources */,
@@ -308,7 +316,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				MARKETING_VERSION = 1.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
@@ -370,7 +378,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				MARKETING_VERSION = 1.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;

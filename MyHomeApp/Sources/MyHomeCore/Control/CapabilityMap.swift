@@ -14,12 +14,15 @@ public struct DeviceProfile {
     public let isBriturn: Bool
     /// Non-nil only for KEF speakers: the last confirmed reading (possibly empty).
     public let kef: KEFState?
+    /// True for a Google Cast speaker (volume and mute only; no power or input).
+    public let isCast: Bool
 
-    public init(device: Device, state: DeviceState, isBriturn: Bool, kef: KEFState? = nil) {
+    public init(device: Device, state: DeviceState, isBriturn: Bool, kef: KEFState? = nil, isCast: Bool = false) {
         self.device = device
         self.state = state
         self.isBriturn = isBriturn
         self.kef = kef
+        self.isCast = isCast
     }
 
     public var isKEF: Bool { kef != nil }
@@ -36,6 +39,8 @@ public enum CapabilityMap {
         case briturn(on: Bool?, color: RGB?, brightness: Int?, cct: Int?)
         /// `DeviceStore.kefWrite`.
         case kef(KEFAction)
+        /// `DeviceStore.castWrite`.
+        case cast(CastAction)
     }
 
     /// What the store's published state must show for the write to count as
@@ -51,6 +56,7 @@ public enum CapabilityMap {
         /// CCT readback bytes vary with the temperature: never comparable.
         case briturnColorTemperature(Int)
         case kef(KEFAction)
+        case cast(CastAction)
         case accepted
     }
 
@@ -89,6 +95,7 @@ public enum CapabilityMap {
 
     public static func supported(for profile: DeviceProfile) -> Set<SemanticCapability> {
         if profile.isKEF { return [.power, .volume, .mute, .input] }
+        if profile.isCast { return [.volume, .mute] }
         if profile.isBriturn {
             return [.power, .level, .color, .colorTemperature]
         }
@@ -111,6 +118,7 @@ public enum CapabilityMap {
 
     public static func plan(_ command: DeviceCommand, for profile: DeviceProfile) -> Result<WritePlan, Rejection> {
         if profile.isKEF { return kefPlan(command, profile: profile) }
+        if profile.isCast { return castPlan(command) }
         if profile.isBriturn { return briturnPlan(command) }
         switch command {
         case .power(let on):
@@ -175,6 +183,8 @@ public enum CapabilityMap {
             return .dps(dpId: dpId, value: value)
         case .kef(let action):
             return .kef(action)
+        case .cast(let action):
+            return .cast(action)
         case .briturn(let on, let color, let brightness, let cct):
             if let cct { return .briturnColorTemperature(cct) }
             if let color { return .briturnColor(color) }
@@ -216,6 +226,28 @@ public enum CapabilityMap {
         case .volume: return .failure(.unsupported(.volume))
         case .mute: return .failure(.unsupported(.mute))
         case .input: return .failure(.unsupported(.input))
+        }
+    }
+
+    // MARK: - Cast speakers
+
+    /// Cast speakers expose receiver volume (0…100) and mute only.
+    private static func castPlan(_ command: DeviceCommand) -> Result<WritePlan, Rejection> {
+        switch command {
+        case .volume(let percent):
+            guard Percent.range.contains(percent) else {
+                return .failure(.outOfRange(.volume, lower: Percent.range.lowerBound, upper: Percent.range.upperBound))
+            }
+            return .success(.cast(.volume(percent)))
+        case .mute(let muted): return .success(.cast(.mute(muted)))
+        case .power: return .failure(.unsupported(.power))
+        case .input: return .failure(.unsupported(.input))
+        case .level: return .failure(.unsupported(.level))
+        case .color: return .failure(.unsupported(.color))
+        case .colorTemperature: return .failure(.unsupported(.colorTemperature))
+        case .mode: return .failure(.unsupported(.mode))
+        case .fanSpeed: return .failure(.unsupported(.fanSpeed))
+        case .cover: return .failure(.unsupported(.openClose))
         }
     }
 
@@ -407,7 +439,7 @@ public enum CapabilityMap {
 
     /// Current level as a percent, for summaries and the model's context.
     public static func levelPercent(_ profile: DeviceProfile, briturn: DeviceStore.BriturnState?) -> Int? {
-        if profile.isKEF { return nil }   // volume is not a level
+        if profile.isKEF || profile.isCast { return nil }   // volume is not a level
         if profile.isBriturn {
             guard let state = briturn else { return nil }
             let peak = Double(max(state.r, state.g, state.b, state.whiteLevel))

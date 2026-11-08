@@ -11,7 +11,7 @@ enum DeviceGroup: String, CaseIterable, Identifiable {
     /// kind-derived groups below must not claim those devices, so a source
     /// cannot double-appear. Categories NOT listed here keep the existing
     /// behaviour: classified by kind, falling through to Other.
-    static let sourceCategories: Set<String> = ["briturn", KEFProtocol.category]
+    static let sourceCategories: Set<String> = ["briturn", KEFProtocol.category, CastProtocol.category]
 
     var id: String { rawValue }
 
@@ -50,7 +50,7 @@ enum DeviceGroup: String, CaseIterable, Identifiable {
         case .plugs: return !isSourceOwned && device.kind == .plug
         case .climate: return !isSourceOwned && device.kind == .climate
         case .briturn: return device.category.lowercased() == "briturn"
-        case .speakers: return device.category == KEFProtocol.category
+        case .speakers: return device.category == KEFProtocol.category || device.category == CastProtocol.category
         case .other:
             return !isSourceOwned
                 && ![DeviceKind.fan, .curtain, .light, .plug, .climate].contains(device.kind)
@@ -120,6 +120,7 @@ struct DashboardView: View {
     @State private var group: DeviceGroup = DeviceGroup.allCases.first { ProcessInfo.processInfo.environment["MYHOME_GROUP"] == $0.title.lowercased() } ?? .fans
     @State private var selectedID: String?
     @State private var addingSpeaker = false
+    @State private var addingCastSpeaker = false
     // Which category's button started the current rescan (drives the spinner).
     // Local view state only; the working flag itself stays store.isWorking.
     @State private var rescanningGroup: DeviceGroup?
@@ -186,6 +187,7 @@ struct DashboardView: View {
     }
 
     private func onRank(_ device: Device) -> Int {
+        if store.isCast(device) { return store.reachability(for: device) == .offline ? 3 : 1 }
         if store.isKEF(device) {
             // Speakers: active, unknown, standby, then offline.
             if store.reachability(for: device) == .offline { return 3 }
@@ -276,7 +278,8 @@ struct DashboardView: View {
                         Text("No devices in \(selectedRoom ?? group.title).")
                             .foregroundStyle(.secondary)
                         if selectedRoom == nil && group == .speakers {
-                            Button("Add Speaker…") { addingSpeaker = true }
+                            Button("Add KEF Speaker…") { addingSpeaker = true }
+                            Button("Add Google Home…") { addingCastSpeaker = true }
                         }
                     }
                     .frame(maxWidth: .infinity)
@@ -287,7 +290,11 @@ struct DashboardView: View {
                         spacing: 14
                     ) {
                         ForEach(filtered) { device in
-                            if store.isKEF(device) {
+                            if store.isCast(device) {
+                                CastSpeakerCard(device: device, isSelected: selectedID == device.id) {
+                                    selectedID = device.id
+                                }
+                            } else if store.isKEF(device) {
                                 KEFSpeakerCard(device: device, isSelected: selectedID == device.id) {
                                     selectedID = device.id
                                 }
@@ -307,12 +314,23 @@ struct DashboardView: View {
             .frame(minWidth: 480, idealWidth: 580)
             .frame(maxWidth: .infinity)
             .navigationTitle(selectedRoom ?? group.title)
+            .toolbar {
+                if group == .speakers {
+                    ToolbarItem {
+                        Menu {
+                            Button("Add Google Home…") { addingCastSpeaker = true }
+                            Button("Add KEF Speaker…") { addingSpeaker = true }
+                        } label: { Label("Add Speaker", systemImage: "plus") }
+                    }
+                }
+            }
             .sheet(isPresented: $addingSpeaker) { AddKEFSpeakerView().environmentObject(store) }
+            .sheet(isPresented: $addingCastSpeaker) { AddCastSpeakerView().environmentObject(store) }
 
             if let device = selectedDevice {
                 detailResizeHandle
                 Group {
-                    if store.isKEF(device) { KEFSpeakerDetailView(device: device) } else { DeviceDetailView(device: device) }
+                    if store.isCast(device) { CastSpeakerDetailView(device: device) } else if store.isKEF(device) { KEFSpeakerDetailView(device: device) } else { DeviceDetailView(device: device) }
                 }
                 .frame(width: clampedDetailWidth)
             }

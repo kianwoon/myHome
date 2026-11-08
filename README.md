@@ -1160,7 +1160,7 @@ The `MyHomeApp/` Swift package is a menu-bar dashboard for the devices `bridge.p
 * **Siri / Shortcuts** — "Control my home with MyHome", "Set *device* power with MyHome", "Set *device* level with MyHome" (needs the Xcode-built bundle: `cd MyHomeApp && xcodegen generate && xcodebuild -project MyHome.xcodeproj -scheme MyHome build`).
 * **Natural language** — on macOS 26+ with Apple Intelligence, requests the grammar cannot parse are planned by the on-device model; the plan is shown and confirmed before anything runs. Everywhere else the direct commands still work.
 
-MyHome also controls a **KEF LS50 Wireless II** over the LAN (power, volume, mute, input) — see [docs/KEF.md](docs/KEF.md).
+MyHome also controls **Google Home / Nest Mini** speakers over the LAN via Google Cast (volume, mute, play/pause/stop) — see [docs/Cast.md](docs/Cast.md) — and a **KEF LS50 Wireless II** over the LAN (power, volume, mute, input) — see [docs/KEF.md](docs/KEF.md).
 
 Settings → Assistant holds the voice, planner and safety knobs. Architecture, verification semantics and the extension points (scene engine, MCP server, Matter) are in [docs/MyHomeAssistant.md](docs/MyHomeAssistant.md).
 

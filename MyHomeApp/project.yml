@@ -13,7 +13,7 @@ name: MyHome
 options:
   bundleIdPrefix: com.myhome
   deploymentTarget:
-    macOS: "13.0"
+    macOS: "14.0"
   createIntermediateGroups: true
   generateEmptyDirectories: false
   groupSortPosition: top

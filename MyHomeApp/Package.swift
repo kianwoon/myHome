@@ -6,7 +6,7 @@ import PackageDescription
 let package = Package(
     name: "MyHomeApp",
     platforms: [
-        .macOS(.v13)
+        .macOS(.v14)
     ],
     products: [
         .executable(name: "MyHomeApp", targets: ["MyHomeApp"]),
@@ -19,13 +19,17 @@ let package = Package(
         // sherpa-onnx's SwiftPM product (static macOS XCFramework + the
         // `SherpaOnnx` Swift wrapper) runs Qwen3-ASR, SenseVoice and Silero VAD.
         // PINNED exact: the binary target's checksum is version-specific.
-        .package(url: "https://github.com/k2-fsa/sherpa-onnx", exact: "1.13.8")
+        .package(url: "https://github.com/k2-fsa/sherpa-onnx", exact: "1.13.8"),
+        // Google Cast (Chromecast / Google Home Mini) sender, pure Swift on
+        // Network.framework. PINNED exact; requires macOS 14.
+        .package(url: "https://github.com/CreatureSurvive/SwiftCast.git", exact: "1.0.1")
     ],
     targets: [
         .target(
             name: "MyHomeCore",
             dependencies: [
-                .product(name: "sherpa-onnx", package: "sherpa-onnx")
+                .product(name: "sherpa-onnx", package: "sherpa-onnx"),
+                .product(name: "SwiftCast", package: "SwiftCast")
             ],
             path: "Sources/MyHomeCore"
         ),
@@ -51,6 +55,12 @@ let package = Package(
             name: "KEFProbe",
             dependencies: ["MyHomeCore"],
             path: "Sources/KEFProbe"
+        ),
+        // Read-only Cast qualification probe: `swift run CastProbe [seconds]`.
+        .executableTarget(
+            name: "CastProbe",
+            dependencies: ["MyHomeCore"],
+            path: "Sources/CastProbe"
         )
     ]
 )

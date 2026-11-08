@@ -52,9 +52,11 @@ extension DeviceStore {
     func pollCycle() async {
         async let briturn: Void = refreshBriturnStatuses(scope: "poll")
         async let speakers: Void = refreshKEFSpeakers()
+        async let castSpeakers: Void = refreshCastSpeakers()
         await refreshTuyaStatuses(scope: "poll")
         await briturn
         await speakers
+        await castSpeakers
     }
 
     /// Dashboard category/room/group switch. Cards already render the cached
@@ -63,6 +65,7 @@ extension DeviceStore {
     public func dashboardDidSwitch(scope: String, visible: [Device]) {
         let now = Date()
         setKEFVisible(visible)
+        setCastVisible(visible)
         let stale = visible.filter { device in
             guard !statusInFlight.contains(device.id), !device.isBLE,
                   device.hasAddress || briturnCloudDevices[device.id] != nil else { return false }
@@ -87,7 +90,7 @@ extension DeviceStore {
         // Briturn devices have no Tuya DPS surface; their status comes from
         // loadBriturnStatus instead. Requesting Tuya status only produces
         // error noise.
-        guard !isBriturn(device), !isKEF(device) else { return }
+        guard !isBriturn(device), !isKEF(device), !isCast(device) else { return }
         guard device.hasAddress else { return }
         guard !statusLoading.contains(device.id), !statusInFlight.contains(device.id) else { return }
         if !force && loadedStatus.contains(device.id) { return }
@@ -117,7 +120,7 @@ extension DeviceStore {
     /// offline device idles only its own slot.
     func refreshTuyaStatuses(limitingTo devices: [Device]? = nil, scope: String) async {
         let ids = (devices ?? self.devices)
-            .filter { $0.hasAddress && !isBriturn($0) && !isKEF($0) }
+            .filter { $0.hasAddress && !isBriturn($0) && !isKEF($0) && !isCast($0) }
             .filter { !statusLoading.contains($0.id) && !statusInFlight.contains($0.id) }
             .map(\.id)
         guard !ids.isEmpty else { return }

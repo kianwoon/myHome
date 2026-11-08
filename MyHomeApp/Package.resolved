@@ -17,6 +17,15 @@
         "revision" : "11afbd009a7f8c08f4bcf2fc1b265d0df4670fbf",
         "version" : "1.13.8"
       }
+    },
+    {
+      "identity" : "swiftcast",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/CreatureSurvive/SwiftCast.git",
+      "state" : {
+        "revision" : "187ece21e56f26d7c9bd97d39c57a03c60d283f3",
+        "version" : "1.0.1"
+      }
     }
   ],
   "version" : 2

@@ -52,6 +52,10 @@ public final class DeviceStore: ObservableObject {
     @Published var kef = KEFRegistry() {
         didSet { invalidateDerivedCaches() }
     }
+    /// Local Google Cast speakers (Google Home / Nest Mini). See DeviceStore+Cast.swift.
+    @Published var cast = CastRegistry() {
+        didSet { invalidateDerivedCaches() }
+    }
     var briturnCloudDevices: [String: BriturnCloudDevice] = [:] {
         didSet { invalidateDerivedCaches() }
     }
@@ -83,7 +87,7 @@ public final class DeviceStore: ObservableObject {
     /// have no roster entry to store it in).
     public var devices: [Device] {
         // Cloud is the base once synced: BLE is only a transport attached to cloud lights.
-        guard briturnCloudDevices.isEmpty else { return roster + kef.devices }
+        guard briturnCloudDevices.isEmpty else { return roster + kef.devices + cast.devices }
         // Read by every dashboard body (filters, counts, header): memoized,
         // rebuilt only when an input changes (see invalidateDerivedCaches).
         if let cached = derivedCaches.devices { return cached }
@@ -100,7 +104,7 @@ public final class DeviceStore: ObservableObject {
                           version: "BLE", category: "briturn",
                           group: bleGroups[light.id], online: true)
         }
-        return roster + bleOnlyDevices + kef.devices
+        return roster + bleOnlyDevices + kef.devices + cast.devices
     }
 
     /// Matches a BLE discovery to its canonical roster id, if it has one.
@@ -228,6 +232,11 @@ public final class DeviceStore: ObservableObject {
         kef.persistence = KEFConfigurationStore(defaults: defaults)
         kef.config = KEFConfig.fromDefaults(defaults)
         loadKEFSpeakers()
+        cast.persistence = CastConfigurationStore(defaults: defaults)
+        cast.config = CastConfig.fromDefaults(defaults)
+        let castTimeout = cast.config.requestTimeout
+        cast.makeClient = { try CastSwiftClient(record: $0, timeout: castTimeout) }
+        loadCastSpeakers()
         bindBLE()
         startPublishMeter()
     }
@@ -352,7 +361,7 @@ public final class DeviceStore: ObservableObject {
     /// from existing facts only. `.offline` means NO control path at the moment:
     /// no online LAN address, cloud not online, and no LIVE Bluetooth peripheral.
     public func reachability(for device: Device) -> Reachability {
-        if isKEF(device) { return device.online ? .wifi : .offline }
+        if isKEF(device) || isCast(device) { return device.online ? .wifi : .offline }
         let bleLive = isBLELive(for: device)
         let cloud = cloudOnline[device.id]
         let lan = device.hasAddress && device.online
@@ -378,6 +387,7 @@ public final class DeviceStore: ObservableObject {
     /// Mac is controllable over Bluetooth, so its UI must not be disabled.
     public func isControllable(for device: Device) -> Bool {
         if isKEF(device) { return kef.records[device.id] != nil }
+        if isCast(device) { return cast.records[device.id] != nil }
         return device.hasAddress || isBLEAvailable(for: device) || isBriturnCloudAvailable(for: device)
     }
 

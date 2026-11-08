@@ -183,7 +183,8 @@ public final class DeviceController: ObservableObject {
 
     public func profile(for device: Device) -> DeviceProfile {
         DeviceProfile(device: device, state: store.state(for: device), isBriturn: store.isBriturn(device),
-                      kef: store.isKEF(device) ? (store.kefState(for: device) ?? KEFState()) : nil)
+                      kef: store.isKEF(device) ? (store.kefState(for: device) ?? KEFState()) : nil,
+                      isCast: store.isCast(device))
     }
 
     public func supports(_ device: Device, _ capability: SemanticCapability) -> Bool {
@@ -211,6 +212,14 @@ public final class DeviceController: ObservableObject {
     }
 
     private func speakerSummary(for device: Device) -> DeviceSummary.SpeakerSummary? {
+        if store.isCast(device) {
+            let state = store.castState(for: device)
+            let last = store.castReading(for: device)?.lastSuccess
+            return DeviceSummary.SpeakerSummary(
+                volume: state?.volume, muted: state?.muted, inputLabel: nil,
+                isStale: store.castFreshness(for: device) != .fresh,
+                secondsSinceUpdate: last.map { Int(Date().timeIntervalSince($0)) })
+        }
         guard store.isKEF(device) else { return nil }
         let state = store.kefState(for: device)
         let last = store.kefReading(for: device)?.lastSuccess
@@ -252,6 +261,9 @@ public final class DeviceController: ObservableObject {
             if command.capability != .power, store.kefFreshness(for: device) == .fresh, store.kefPower(for: device) != true {
                 return .denied(.denied(store.kefPower(for: device) == false ? "is in standby; turn it on first" : "power state is unknown"))
             }
+        }
+        if store.isCast(device), store.reachability(for: device) == .offline {
+            return .denied(.denied("is offline (the speaker did not answer)"))
         }
         if store.isBriturn(device), store.reachability(for: device) == .offline {
             return .denied(.denied("is offline (no live WiFi, cloud or Bluetooth path)"))
@@ -430,6 +442,17 @@ public final class DeviceController: ObservableObject {
             case .mismatch, .unconfirmed:
                 return await verifyByReadBack(expectation, device: device, since: started)
             }
+        case .cast(let action):
+            switch await store.castWrite(device, action) {
+            case .failed(let error):
+                return finish(device, expectation: expectation, result: .rejected(error.message), evidence: "cast write failed")
+            case .superseded:
+                return finish(device, expectation: expectation, result: .unverified("replaced by a newer volume request"), evidence: "superseded")
+            case .confirmed:
+                return finish(device, expectation: expectation, result: .confirmed, evidence: "cast readback")
+            case .mismatch, .unconfirmed:
+                return await verifyByReadBack(expectation, device: device, since: started)
+            }
         case .briturn(let on, let color, let brightness, let cct):
             let ack = await store.setBriturn(device, on: on, color: color?.tuple, brightness: brightness, cct: cct)
             switch ack {
@@ -502,6 +525,11 @@ public final class DeviceController: ObservableObject {
         case (.kef(let action), .kef(let state)):
             guard let ok = action.matches(state) else { return .unavailable("the speaker did not report that value") }
             return ok ? .match : .mismatch("\(state)")
+        case (.cast(let action), .cast(let state)):
+            guard let ok = action.matches(state) else { return .unavailable("the speaker did not report that value") }
+            return ok ? .match : .mismatch("\(state)")
+        case (.cast, _), (_, .cast):
+            return .unavailable("a Cast expectation against another transport")
         case (.kef, _), (_, .kef):
             return .unavailable("a KEF expectation against another transport")
         case (.dps(let dpId, let value), .tuya(let dps, _)):

@@ -103,7 +103,7 @@ public enum DeviceKind: String, Equatable, Codable, Sendable {
         switch category.lowercased() {
         case "cl":
             return .curtain
-        case "kef":
+        case "kef", "cast":
             return .speaker
         case "dj", "xdd", "briturn":
             return .light

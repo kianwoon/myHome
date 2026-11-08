@@ -121,6 +121,10 @@ Recorded here so future work moves toward the target state rather than adding to
 
 The bridge picks the command family by bulb firmware (state frame byte 10, cached per device id from every status read). Firmware >= 10 uses the Briturn mobile-app packets over TCP 5577 (payload plus a sum-mod-256 checksum): power `3B 23|24 00*10`, HSV colour `3B A1 hue/2 sat val 00 00 00 00 1E 00 00`, brightness `3B 01 00 00 v 00 v 00*5`, white temperature `3B B1 00 00 00 cct bright 00 00 1E 00 00`. Firmware < 10, unknown firmware, or an explicit `w` in a colour request use the legacy commands (`71 23/24`, `31 r g b w F0 AA`). BLE is unchanged. See the `bridge.py` module docstring and `test_bridge.py`.
 
+## MyHome app: Cast speaker adapter
+
+`MyHomeCore/Cast` mirrors the KEF adapter for Google Cast speakers: SwiftCast (pinned `exact`, macOS 14 floor) behind `CastClientProtocol`, a UserDefaults record store keyed by the stable Cast device id, and `DeviceStore+Cast.swift` (refresh from the shared poll cycle, per-speaker serial gate, last-intent-wins volume, one bounded readback per write). Cast devices carry an empty `ip` like KEF. Capabilities are volume and mute only (no power or input exists on Cast); transport is store-level. See `docs/Cast.md`.
+
 ## MyHome app: KEF speaker adapter
 
 `MyHomeCore/KEF` is a native Swift adapter (typed models, an injected-transport `KEFClient`, a UserDefaults record store) with no Python bridge involvement. `DeviceStore+KEF.swift` merges speaker records into `devices` on every return path, refreshes from the existing poll cycle, and serialises writes per speaker. KEF devices carry an empty `ip` so Tuya/Briturn sweeps skip them; their reachability, state and readback branch explicitly. See `docs/KEF.md`.
