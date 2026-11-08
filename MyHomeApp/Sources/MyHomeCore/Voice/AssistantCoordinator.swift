@@ -85,6 +85,10 @@ public final class AssistantCoordinator: ObservableObject {
         let reply = await task.value
         replies.append(reply)
         AppLog.assistant.info("reply kind=\(String(describing: reply.kind), privacy: .public) source=\(reply.source, privacy: .public) text=\(reply.text, privacy: .public)")
+        if reply.kind == .error {
+            // Local os_log only: pairs what was heard with the failure, to see which names an accent breaks.
+            AppLog.assistant.info("unresolved heard=\(utterance, privacy: .private) origin=\(String(describing: origin), privacy: .public) error=\(reply.text, privacy: .public)")
+        }
         replySink?(reply, utterance, origin, reply.source == Self.housekeeperSource ? housekeeper?.lastTrace : nil)
         return reply
     }
