@@ -141,8 +141,10 @@ final class HousekeeperAgentTests: XCTestCase {
         XCTAssertTrue(transport.toolResults.first?.contains("CONFIRMED by read-back") == true)
     }
 
-    func testSystemPromptTellsTheModelToReplyInTheUsersLanguage() {
+    func testSystemPromptNamesTheUtterancesLanguage() {
         agent.persona = "custom persona"
+        XCTAssertTrue(agent.systemPrompt(replyingTo: "Study room light to forty percent.").contains("is in English"))
+        XCTAssertTrue(agent.systemPrompt(replyingTo: "把书房的灯调到百分之四十").contains("is in Chinese"))
         XCTAssertTrue(agent.systemPrompt().contains("reply in the language of the user's latest message"))
     }
 
