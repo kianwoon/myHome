@@ -8,6 +8,28 @@ extension DeviceStore {
     /// Default CCT brightness when a CCT set carries no brightness — mirrors
     /// bridge.py (BRITURN_CCT_MAX).
     static let briturnBLEDefaultCCTBrightness = 100
+    /// Full scale of one wire colour channel, and of a brightness percent.
+    static let briturnChannelMax = 255
+    static let briturnPercentMax = 100
+
+    /// Optimistic colour for a brightness-only write in colour mode: the bulb
+    /// (0x3B 0x01) rescales its colour so the PEAK channel lands on `percent`,
+    /// and every card derives brightness from that peak. Scaled per light from
+    /// its OWN peak, so group members all paint the same brightness.
+    static func briturnScaled(_ rgb: (r: Int, g: Int, b: Int), toPercent percent: Int) -> (r: Int, g: Int, b: Int) {
+        let peak = max(rgb.r, rgb.g, rgb.b, 1)
+        let target = Double(min(max(percent, 0), briturnPercentMax)) * Double(briturnChannelMax) / Double(briturnPercentMax)
+        let scale = target / Double(peak)
+        func channel(_ v: Int) -> Int { min(Int((Double(v) * scale).rounded()), briturnChannelMax) }
+        return (channel(rgb.r), channel(rgb.g), channel(rgb.b))
+    }
+
+    /// Stale-LAN rule for writes: a light with an address whose reachability
+    /// says Bluetooth (cloud offline + live advert) must not detour through the
+    /// bridge and the cloud first — every detour was 0.5-5 s per command.
+    func routesWriteOverBLEFirst(_ device: Device) -> Bool {
+        device.hasAddress && reachability(for: device) == .bluetooth && bleKey(for: device) != nil
+    }
 
     /// Returns false (and sends nothing) when no live peripheral exists for `key`.
     @discardableResult

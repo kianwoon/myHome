@@ -968,20 +968,15 @@ struct BriturnCardControls: View {
                 .frame(width: 38, alignment: .trailing)
         }
         .onAppear { syncFromStatus() }
-        .onChange(of: store.briturnStatus[device.id]) { newState in
+        .onChange(of: store.briturnStatus[device.id]) { _ in
             guard !isDragging else { return }
-            if let s = newState {
-                brightness = s.isWhiteMode ? Double(s.whiteLevel) * 100.0 / 255.0
-                    : Double(max(s.r, s.g, s.b)) * 100.0 / 255.0
-            }
+            syncFromStatus()
         }
     }
 
+    /// Off lights show their last ON level, the same on every transport.
     private func syncFromStatus() {
-        if let s = store.briturnStatus[device.id] {
-            brightness = s.isWhiteMode ? Double(s.whiteLevel) * 100.0 / 255.0
-                : Double(max(s.r, s.g, s.b)) * 100.0 / 255.0
-        }
+        if let level = store.briturnDisplayBrightness(device.id) { brightness = level }
     }
 }
 
@@ -1688,23 +1683,28 @@ struct BriturnGroupCard: View {
         // member (rgb all-zero with a warm level means white, powered or
         // not); only all-zero checks with no warm level are no-information,
         // where the user's persisted colour stays.
-        let statuses = members.compactMap { store.briturnStatus[$0.id] }
-        guard !statuses.isEmpty else { return }
-        let colored = statuses.first { $0.r > 0 || $0.g > 0 || $0.b > 0 }
-        let white = statuses.first {
-            $0.isWhiteMode || ($0.r == 0 && $0.g == 0 && $0.b == 0 && $0.w > 0)
+        let entries = members.compactMap { m in store.briturnStatus[m.id].map { (id: m.id, state: $0) } }
+        guard !entries.isEmpty else { return }
+        let colored = entries.first { $0.state.r > 0 || $0.state.g > 0 || $0.state.b > 0 }
+        let white = entries.first {
+            $0.state.isWhiteMode || ($0.state.r == 0 && $0.state.g == 0 && $0.state.b == 0 && $0.state.w > 0)
+        }
+        // Brightness follows the store's display rule (off = last ON level),
+        // so the chip agrees with the member cards on every transport.
+        func level(_ e: (id: String, state: DeviceStore.BriturnState)) -> Double {
+            store.briturnDisplayBrightness(e.id) ?? e.state.channelBrightnessPercent
         }
         isSyncingPicker = true
         if let colored = colored {
             color = Color(
-                red: Double(colored.r) / 255,
-                green: Double(colored.g) / 255,
-                blue: Double(colored.b) / 255
+                red: Double(colored.state.r) / 255,
+                green: Double(colored.state.g) / 255,
+                blue: Double(colored.state.b) / 255
             )
-            brightness = Double(max(colored.r, colored.g, colored.b)) * 100.0 / 255.0
+            brightness = level(colored)
         } else if let white = white {
             color = .white
-            brightness = Double(white.whiteLevel) * 100.0 / 255.0
+            brightness = level(white)
         } else {
             // No colour set on any reachable member: leave the picker alone
             // rather than paint black.
@@ -2198,6 +2198,8 @@ struct BriturnControlsView: View {
             // rgb all-zero while OFF means "no colour set" — syncing that
             // would paint the picker black for most of the roster. Leave the
             // picker where the user left it; the next real colour read wins.
+            // Brightness still shows the light's last ON level when known.
+            if let level = store.briturnDisplayBrightness(device.id), level > 0 { brightness = level }
             clearSyncFlagSoon()
             return
         } else {
@@ -2207,8 +2209,7 @@ struct BriturnControlsView: View {
                 blue: Double(state.b) / 255
             )
         }
-        brightness = state.isWhiteMode ? Double(state.whiteLevel) * 100.0 / 255.0
-            : Double(max(state.r, state.g, state.b)) * 100.0 / 255.0
+        brightness = store.briturnDisplayBrightness(device.id) ?? state.channelBrightnessPercent
         clearSyncFlagSoon()
     }
 

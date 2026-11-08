@@ -469,6 +469,8 @@ public final class DeviceStore: ObservableObject {
         guard mapped.count == devices.count, !mapped.isEmpty else { return false }
         AppLog.store.notice("MyHome: Briturn route=cloud devices=\(mapped.count, privacy: .public)")
         let ids = Set(devices.map(\.id))
+        // A poll that started before this write can only carry the old state.
+        for id in ids { lastUserWriteAt[id] = Date() }
         statusLoading.formUnion(ids)
         defer { statusLoading.subtract(ids) }
         do {
@@ -1005,7 +1007,11 @@ public final class DeviceStore: ObservableObject {
     }
 
     /// Latest wire-read state per briturn device id.
-    @Published public private(set) var briturnStatus: [String: BriturnState] = [:]
+    @Published public private(set) var briturnStatus: [String: BriturnState] = [:] {
+        didSet { rememberOnBrightness() }
+    }
+    /// Last brightness percent each light showed while ON (see briturnDisplayBrightness).
+    var lastOnBrightness: [String: Double] = [:]
 
     /// General rule: USER INTENT OUTRANKS A STALE WIRE READ. These bulbs apply
     /// power/colour with visible lag; a poll that lands mid-transition returns
@@ -1300,8 +1306,8 @@ public final class DeviceStore: ObservableObject {
             return await setBriturnCloudOrBLE(device, on: on, color: color, brightness: brightness, white: white, cct: cct)
         }
         // Transport routing: BLE-only lights, and dual-mode lights that lost
-        // WiFi (no IP), go over Bluetooth.
-        if device.isBLE || (bleFallbackIDs.contains(device.id) && !device.hasAddress) {
+        // WiFi (no IP or a stale IP per reachability), go over Bluetooth.
+        if device.isBLE || (bleFallbackIDs.contains(device.id) && !device.hasAddress) || routesWriteOverBLEFirst(device) {
             return await setBriturnViaBLE(device, on: on, color: color, brightness: brightness,
                                           white: white || cct != nil, cct: cct)
         }
@@ -1493,13 +1499,18 @@ public final class DeviceStore: ObservableObject {
         let paintedW = paintedWhite
             ? brightness.map { min(Int((Double($0) * 2.55).rounded()), 255) }
             : nil
+        // No readback over BLE (and dual-mode adverts only carry power), so a
+        // brightness-only colour write must paint the scaled colour itself or
+        // the card keeps the old peak forever.
+        var rgb = (r: color?.red ?? prev?.r ?? 255, g: color?.green ?? prev?.g ?? 255, b: color?.blue ?? prev?.b ?? 255)
+        if !paintedWhite, color == nil, let brightness { rgb = Self.briturnScaled(rgb, toPercent: brightness) }
         let painted = BriturnState(
             on: nextOn,
             rawPower: nextOn ? 0x23 : 0x24,
             mode: prev?.mode ?? 97,
-            r: paintedWhite ? 0 : (color?.red ?? prev?.r ?? 255),
-            g: paintedWhite ? 0 : (color?.green ?? prev?.g ?? 255),
-            b: paintedWhite ? 0 : (color?.blue ?? prev?.b ?? 255),
+            r: paintedWhite ? 0 : rgb.r,
+            g: paintedWhite ? 0 : rgb.g,
+            b: paintedWhite ? 0 : rgb.b,
             w: paintedW ?? prev?.w ?? 0
         )
         setBriturnStatus(device.id, painted)
@@ -1689,15 +1700,8 @@ public final class DeviceStore: ObservableObject {
         // Optimistic: paint EVERY member from the request plus its OWN prior
         // state — a member with no status yet must still show the group's new
         // state immediately, and a colour-only set must not clobber members'
-        // individual power states. Brightness scales each member's own colour.
-        var scale: Double = 1
-        if let brightness = brightness, color == nil, cct == nil {
-            scale = Double(brightness) * 2.55 / Double(
-                max(briturnStatus[memberIDs.first ?? ""]?.r ?? 255,
-                    briturnStatus[memberIDs.first ?? ""]?.g ?? 0,
-                    briturnStatus[memberIDs.first ?? ""]?.b ?? 0, 1)
-            )
-        }
+        // individual power states. Brightness scales each member's own colour
+        // from its OWN peak (one shared factor painted members apart).
         let previousStates = Dictionary(uniqueKeysWithValues: memberIDs.map { ($0, briturnStatus[$0]) })
         for id in memberIDs {
             let prev = briturnStatus[id]
@@ -1710,10 +1714,8 @@ public final class DeviceStore: ObservableObject {
             var r = paintedWhite && cct != nil ? 0 : (color?.red ?? prev?.r ?? 255)
             var g = paintedWhite && cct != nil ? 0 : (color?.green ?? prev?.g ?? 255)
             var b = paintedWhite && cct != nil ? 0 : (color?.blue ?? prev?.b ?? 255)
-            if color == nil, brightness != nil, cct == nil {
-                r = min(Int(Double(r) * scale), 255)
-                g = min(Int(Double(g) * scale), 255)
-                b = min(Int(Double(b) * scale), 255)
+            if color == nil, let brightness, cct == nil {
+                (r, g, b) = Self.briturnScaled((r, g, b), toPercent: brightness)
             }
             let painted = BriturnState(
                 on: nextOn,
