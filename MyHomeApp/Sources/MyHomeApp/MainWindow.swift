@@ -1780,10 +1780,14 @@ struct ScheduleEditorSection: View {
                 }
                 .controlSize(.small)
                 .disabled(timers.count >= 6 || !loaded || readOnly())
+                Button("Reload") { Task { await reload() } }
+                    .controlSize(.small)
+                    .disabled(loading || saving)
                 Button("Save") {
                     Task {
                         saving = true
-                        if await save(timers) { loaded = false }
+                        // Re-read from the light so the list shows what it actually holds.
+                        if await save(timers) { await reload() }
                         saving = false
                     }
                 }
@@ -1798,7 +1802,7 @@ struct ScheduleEditorSection: View {
             }
 
             if !loaded {
-                Text("Tap Refresh-less Add after the first load, or wait…")
+                Text("Loading schedule…")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             } else if timers.isEmpty {
@@ -1829,16 +1833,19 @@ struct ScheduleEditorSection: View {
                 }
             }
         }
-        .task {
-            loading = true
-            await load()
-            timers = initial()
-            loaded = true
-            loading = false
-        }
+        .task { await reload() }
         .sheet(item: $editingIndex) { index in
             BriturnTimerEditor(timer: $timers[index], dayNames: dayNames)
         }
+    }
+
+    /// Reads the schedule from the light and refreshes the editable list.
+    private func reload() async {
+        loading = true
+        await load()
+        timers = initial()
+        loaded = true
+        loading = false
     }
 
     private func actionLabel(_ timer: DeviceStore.BriturnTimer) -> String {
