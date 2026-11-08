@@ -7,7 +7,17 @@ Local control of Cast speakers through [SwiftCast](https://github.com/CreatureSu
 |---|---|
 | Volume 0–100 | Receiver volume (Cast 0.0–1.0). Voice: "set living room speaker volume to 30". |
 | Mute / unmute | Receiver mute. |
-| Play / pause / stop | On the **running** session only; nothing is launched. `stop` stops the app (Cast has no power state). |
+| Play / pause / resume / stop | Pause/resume/stop act on the running session. `stop` stops the app (Cast has no power state). Starting music: see below. |
+
+## Playing music
+Google's own "play music" (Spotify / YouTube Music through your Google account) is not reachable over Cast. MyHome instead plays:
+- **Radio presets** — saved stations (seeded with Radio Paradise, Radio Paradise Mellow, KEXP; add/remove in a speaker's detail panel).
+- **Any http(s) audio URL** — Play → Play URL…
+- **Files from this Mac** — Play → Play File…; served over the LAN by `CastFileServer` (only the picked file, behind an unguessable token, GET/HEAD with byte ranges). macOS may ask to allow incoming connections the first time.
+
+Voice/text: "play jazz on the study room speaker", "play music" (last station, else the first), "pause the living room speaker", "resume music in the study", "stop the music on the living room speaker".
+
+**The Mac keeps a connection open while playing**: the Default Media Receiver quits when its last sender disconnects (observed on Nest Mini), so quitting MyHome ends playback it started. Stop releases the connection.
 
 No power and no input: Cast has neither, so they are refused rather than faked.
 
@@ -21,6 +31,8 @@ Bonjour `_googlecast._tcp` (declared in `Xcode/Info.plist`; macOS asks for Local
 
 ## Qualification (2026-11-08, three Google Nest Mini)
 `swift run CastProbe` lists speakers and prints state (read-only). `CAST_QUALIFY_WRITE=<deviceID> swift run CastProbe` nudges volume by 1 and restores it: Study room 38 → 37 (read 37) → 38 (read 38). Idle speakers report no foreground app and no playback state; transport needs something playing.
+
+Playback qualification (2026-11-08, Study room Mini): `CAST_QUALIFY_PLAY=<deviceID> swift run CastProbe` plays Radio Paradise until the speaker reports playing, then stops it; with `CAST_QUALIFY_FILE=<audio file>` it serves that file from the Mac instead (AAC/m4a verified). Audible on that speaker.
 
 ## Requirements
 macOS 14+ (SwiftCast floor; the app target was raised from 13).

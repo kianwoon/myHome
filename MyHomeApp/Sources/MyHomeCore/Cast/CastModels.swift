@@ -66,6 +66,8 @@ public enum CastAction: Equatable, Hashable, Sendable {
     case mute(Bool)
     case play
     case pause
+    /// Loads and starts a stream/URL/file on the default media receiver.
+    case playMedia(CastMediaSource)
     /// Stops the running app (the closest honest equivalent of "off").
     case stop
 
@@ -73,7 +75,7 @@ public enum CastAction: Equatable, Hashable, Sendable {
         switch self {
         case .volume: return .volume
         case .mute: return .mute
-        case .play, .pause, .stop: return .transport
+        case .play, .pause, .stop, .playMedia: return .transport
         }
     }
 
@@ -82,7 +84,7 @@ public enum CastAction: Equatable, Hashable, Sendable {
         switch self {
         case .volume(let value): return state.volume.map { abs($0 - value) <= 1 }
         case .mute(let value): return state.muted.map { $0 == value }
-        case .play: return state.playback.map { $0 == .playing || $0 == .buffering }
+        case .play, .playMedia: return state.playback.map { $0 == .playing || $0 == .buffering }
         case .pause: return state.playback.map { $0 == .paused }
         case .stop: return state.appName == nil || state.playback == .idle
         }
@@ -96,6 +98,7 @@ public enum CastError: Error, Equatable, Sendable {
     case timeout
     case invalidAddress
     case noActiveSession
+    case unplayableSource
     case volumeOutOfRange(ClosedRange<Int>)
     case malformedResponse
 
@@ -105,6 +108,7 @@ public enum CastError: Error, Equatable, Sendable {
         case .timeout: return "the speaker did not answer in time"
         case .invalidAddress: return "that is not a valid IPv4 address"
         case .noActiveSession: return "nothing is playing on the speaker"
+        case .unplayableSource: return "that is not a playable http(s) audio address"
         case .volumeOutOfRange(let range): return "volume must be \(range.lowerBound)–\(range.upperBound)"
         case .malformedResponse: return "the speaker sent an unexpected reply"
         }
@@ -123,11 +127,19 @@ public struct CastConfig: Equatable, Sendable {
     public var discoveryTimeout: TimeInterval
     /// Keyboard/accessibility volume changes commit after this quiet period.
     public var commitDebounce: TimeInterval
+    /// A started stream takes a few seconds to buffer: readback polls this long.
+    public var playSettleTimeout: TimeInterval
+    /// Launching the media receiver and loading a stream takes far longer than a state read.
+    public var playTimeout: TimeInterval
+    /// Playback state is read through a second channel; bounded separately from the volume read.
+    public var mediaStatusTimeout: TimeInterval
+    public var playSettleInterval: TimeInterval
 
     public static let defaults = CastConfig(
         requestTimeout: 6, visibleRefreshInterval: 20, backgroundRefreshInterval: 120,
         backoffSchedule: [30, 60, 120], backoffCap: 300, volumeStep: 5,
-        volumeRange: 0...100, readbackDelay: 0.5, discoveryTimeout: 4, commitDebounce: 0.4)
+        volumeRange: 0...100, readbackDelay: 0.5, discoveryTimeout: 4, commitDebounce: 0.4,
+        playSettleTimeout: 10, playTimeout: 30, mediaStatusTimeout: 3, playSettleInterval: 1)
 
     public static let requestTimeoutKey = "castRequestTimeoutSeconds"
     public static let visibleRefreshKey = "castVisibleRefreshSeconds"

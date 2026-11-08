@@ -4,6 +4,7 @@
 // store directly (play/pause/stop are not part of the shared command set).
 import SwiftUI
 import MyHomeCore
+import AppKit
 
 struct CastControls: View {
     @EnvironmentObject private var store: DeviceStore
@@ -13,6 +14,8 @@ struct CastControls: View {
     @State private var preview: Double?
     @State private var dragging = false
     @State private var commitTask: Task<Void, Never>?
+    @State private var askingURL = false
+    @State private var urlText = ""
 
     private var state: CastState? { store.castState(for: device) }
     private var reading: CastReading? { store.castReading(for: device) }
@@ -29,6 +32,36 @@ struct CastControls: View {
         Task {
             if case .failed(let error) = await store.castWrite(device, action) { transportError = error.message } else { transportError = nil }
         }
+    }
+
+    private func play(_ source: CastMediaSource) { transport(.playMedia(source)) }
+
+    private func playFile() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.audio]
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose an audio file to play on \(device.name)"
+        guard panel.runModal() == .OK, let file = panel.url else { return }
+        Task {
+            do {
+                let url = try await CastFileServer.shared.register(file)
+                play(CastMediaSource(title: file.deletingPathExtension().lastPathComponent, url: url,
+                                     contentType: CastFileServer.contentType(for: file)))
+            } catch { transportError = (error as? CastError)?.message ?? "could not share that file" }
+        }
+    }
+
+    private var musicMenu: some View {
+        Menu {
+            ForEach(store.castPresets) { preset in
+                Button(preset.name) { Task { _ = await store.castPlay(device, preset: preset) } }
+            }
+            if !store.castPresets.isEmpty { Divider() }
+            Button("Play URL…") { urlText = ""; askingURL = true }
+            Button("Play File from this Mac…", action: playFile)
+        } label: { Label("Play", systemImage: "music.note") }
+            .menuStyle(.borderlessButton).fixedSize()
+            .accessibilityLabel("Play music")
     }
 
     var body: some View {
@@ -70,15 +103,73 @@ struct CastControls: View {
             }
             .disabled(!writable)
             HStack {
-                Button { transport(.play) } label: { Image(systemName: "play.fill") }.accessibilityLabel("Play")
-                Button { transport(.pause) } label: { Image(systemName: "pause.fill") }.accessibilityLabel("Pause")
-                Button { transport(.stop) } label: { Image(systemName: "stop.fill") }.accessibilityLabel("Stop")
+                musicMenu.disabled(!writable)
+                Group {
+                    Button { transport(.play) } label: { Image(systemName: "play.fill") }.accessibilityLabel("Resume")
+                    Button { transport(.pause) } label: { Image(systemName: "pause.fill") }.accessibilityLabel("Pause")
+                    Button { transport(.stop) } label: { Image(systemName: "stop.fill") }.accessibilityLabel("Stop")
+                }
+                .disabled(!writable || state?.appName == nil)
                 Spacer()
                 if let app = state?.appName { Text(app).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
             }
-            .disabled(!writable || state?.appName == nil)
+            .sheet(isPresented: $askingURL) { CastPlayURLSheet(text: $urlText) { text in
+                if let url = URL(string: text.trimmingCharacters(in: .whitespaces)) {
+                    play(CastMediaSource(title: url.host ?? "Stream", url: url, isLive: false))
+                }
+            } }
             if let error = runner.error ?? transportError ?? reading?.lastError?.message {
                 Label(error, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(.red).lineLimit(2)
+            }
+        }
+    }
+}
+
+struct CastPlayURLSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Binding var text: String
+    let onPlay: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Play an audio URL").font(.headline)
+            TextField("https://…/stream.mp3", text: $text).textFieldStyle(.roundedBorder).frame(width: 360)
+            Text("Only http(s) audio streams or files. The speaker fetches it directly.").font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                Button("Play") { onPlay(text); dismiss() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(CastMediaSource(title: "", url: URL(string: text.trimmingCharacters(in: .whitespaces)) ?? URL(fileURLWithPath: "/")).isPlayable == false)
+            }
+        }
+        .padding(16)
+    }
+}
+
+/// Add / remove saved radio stations (used by voice: "play jazz on the study speaker").
+struct CastPresetEditor: View {
+    @EnvironmentObject private var store: DeviceStore
+    @State private var name = ""
+    @State private var url = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Radio stations").font(.headline)
+            ForEach(store.castPresets) { preset in
+                HStack {
+                    Text(preset.name).lineLimit(1)
+                    Spacer()
+                    Button { store.removeCastPreset(id: preset.id) } label: { Image(systemName: "minus.circle") }
+                        .buttonStyle(.borderless).accessibilityLabel("Remove \(preset.name)")
+                }
+            }
+            HStack {
+                TextField("Name", text: $name).frame(width: 110)
+                TextField("Stream URL", text: $url)
+                Button("Add") {
+                    if store.addCastPreset(name: name, url: url) != nil { name = ""; url = "" }
+                }.disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || url.isEmpty)
             }
         }
     }
@@ -165,6 +256,9 @@ struct CastSpeakerDetailView: View {
                     TextField("Name", text: $name).onSubmit { store.updateCastSpeaker(id: record.id, name: name) }
                     TextField("Room", text: $room).onSubmit { store.updateCastSpeaker(id: record.id, room: room) }
                 }
+                Divider()
+                CastPresetEditor()
+                Divider()
                 HStack {
                     Button("Refresh") {
                         refreshing = true

@@ -2,6 +2,7 @@
 // Lists every Cast speaker on the LAN and prints its receiver state. Writes nothing.
 import Foundation
 import MyHomeCore
+setvbuf(stdout, nil, _IOLBF, 0)
 
 let seconds = CommandLine.arguments.dropFirst().first.flatMap(Double.init) ?? CastConfig.defaults.discoveryTimeout
 let found = await CastSpeakerDiscovery.discover(timeout: seconds)
@@ -29,4 +30,31 @@ if let target = ProcessInfo.processInfo.environment["CAST_QUALIFY_WRITE"], let s
     try await Task.sleep(nanoseconds: UInt64(CastConfig.defaults.readbackDelay * 1_000_000_000))
     let restored = try await client.fetchState().volume
     print("qualify \(speaker.name): \(original) → \(nudged) read \(String(describing: seen)) → restored \(String(describing: restored))")
+}
+
+// Opt-in playback qualification: CAST_QUALIFY_PLAY=<deviceID> [CAST_QUALIFY_FILE=<audio file>]
+// plays the first radio preset (or the file, served from this Mac) until the
+// speaker reports playing, then stops it. Audible on that speaker.
+if let target = ProcessInfo.processInfo.environment["CAST_QUALIFY_PLAY"], let speaker = found.first(where: { $0.deviceID == target }) {
+    let client = try CastSwiftClient(record: speaker.record())
+    var source: CastMediaSource
+    if let path = ProcessInfo.processInfo.environment["CAST_QUALIFY_FILE"] {
+        let file = URL(fileURLWithPath: path)
+        source = CastMediaSource(title: file.lastPathComponent, url: try await CastFileServer.shared.register(file), contentType: CastFileServer.contentType(for: file))
+        print("serving \(source.url)")
+    } else {
+        source = CastRadioPreset.seed[0].source!
+    }
+    try await client.play(source)
+    let deadline = Date().addingTimeInterval(CastConfig.defaults.playSettleTimeout)
+    var state = try await client.fetchState()
+    while state.playback != .playing, Date() < deadline {
+        try await Task.sleep(nanoseconds: UInt64(CastConfig.defaults.playSettleInterval * 1_000_000_000))
+        state = try await client.fetchState()
+    }
+    print("play \(source.title): \(state)")
+    try await Task.sleep(nanoseconds: UInt64(CastConfig.defaults.playSettleInterval * 2_000_000_000))
+    try await client.transport(.stop)
+    try await Task.sleep(nanoseconds: UInt64(CastConfig.defaults.readbackDelay * 1_000_000_000))
+    print("after stop: \(try await client.fetchState())")
 }

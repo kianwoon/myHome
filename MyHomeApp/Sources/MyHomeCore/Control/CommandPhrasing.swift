@@ -16,6 +16,8 @@ public enum CommandPhrasing {
         case .mode(let mode): return "Set \(target) to \(mode) mode"
         case .fanSpeed(let gear): return "Set \(target) to speed \(gear)"
         case .cover(let action): return "\(action.rawValue.capitalized) \(target)"
+        case .play(let name): return CastRadioPreset.genericWords.contains(name.lowercased()) ? "Play music on \(target)" : "Play \(name) on \(target)"
+        case .playback(let action): return "\(action.rawValue.capitalized) \(target)"
         case .volume(let percent): return "Set \(target) volume to \(percent)%"
         case .mute(let muted): return "\(muted ? "Mute" : "Unmute") \(target)"
         case .input(let name): return "Switch \(target) to \(name)"

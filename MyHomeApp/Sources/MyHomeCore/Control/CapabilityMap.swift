@@ -16,13 +16,19 @@ public struct DeviceProfile {
     public let kef: KEFState?
     /// True for a Google Cast speaker (volume and mute only; no power or input).
     public let isCast: Bool
+    /// Saved radio stations and the last one played (Cast speakers only).
+    public let castPresets: [CastRadioPreset]
+    public let castLastPlayed: String?
 
-    public init(device: Device, state: DeviceState, isBriturn: Bool, kef: KEFState? = nil, isCast: Bool = false) {
+    public init(device: Device, state: DeviceState, isBriturn: Bool, kef: KEFState? = nil, isCast: Bool = false,
+                castPresets: [CastRadioPreset] = [], castLastPlayed: String? = nil) {
         self.device = device
         self.state = state
         self.isBriturn = isBriturn
         self.kef = kef
         self.isCast = isCast
+        self.castPresets = castPresets
+        self.castLastPlayed = castLastPlayed
     }
 
     public var isKEF: Bool { kef != nil }
@@ -95,7 +101,7 @@ public enum CapabilityMap {
 
     public static func supported(for profile: DeviceProfile) -> Set<SemanticCapability> {
         if profile.isKEF { return [.power, .volume, .mute, .input] }
-        if profile.isCast { return [.volume, .mute] }
+        if profile.isCast { return [.volume, .mute, .media] }
         if profile.isBriturn {
             return [.power, .level, .color, .colorTemperature]
         }
@@ -118,7 +124,7 @@ public enum CapabilityMap {
 
     public static func plan(_ command: DeviceCommand, for profile: DeviceProfile) -> Result<WritePlan, Rejection> {
         if profile.isKEF { return kefPlan(command, profile: profile) }
-        if profile.isCast { return castPlan(command) }
+        if profile.isCast { return castPlan(command, profile: profile) }
         if profile.isBriturn { return briturnPlan(command) }
         switch command {
         case .power(let on):
@@ -167,6 +173,7 @@ public enum CapabilityMap {
         case .volume: return .failure(.unsupported(.volume))
         case .mute: return .failure(.unsupported(.mute))
         case .input: return .failure(.unsupported(.input))
+        case .play, .playback: return .failure(.unsupported(.media))
 
         case .color:
             // Tuya colour_data is a vendor-specific HSV encoding the dashboard
@@ -223,6 +230,8 @@ public enum CapabilityMap {
             return .failure(.unsupported(.fanSpeed))
         case .cover:
             return .failure(.unsupported(.openClose))
+        case .play, .playback:
+            return .failure(.unsupported(.media))
         case .volume: return .failure(.unsupported(.volume))
         case .mute: return .failure(.unsupported(.mute))
         case .input: return .failure(.unsupported(.input))
@@ -232,7 +241,7 @@ public enum CapabilityMap {
     // MARK: - Cast speakers
 
     /// Cast speakers expose receiver volume (0…100) and mute only.
-    private static func castPlan(_ command: DeviceCommand) -> Result<WritePlan, Rejection> {
+    private static func castPlan(_ command: DeviceCommand, profile: DeviceProfile) -> Result<WritePlan, Rejection> {
         switch command {
         case .volume(let percent):
             guard Percent.range.contains(percent) else {
@@ -248,6 +257,17 @@ public enum CapabilityMap {
         case .mode: return .failure(.unsupported(.mode))
         case .fanSpeed: return .failure(.unsupported(.fanSpeed))
         case .cover: return .failure(.unsupported(.openClose))
+        case .play(let spoken):
+            guard let preset = CastRadioPreset.resolve(spoken, in: profile.castPresets, lastPlayed: profile.castLastPlayed), let source = preset.source else {
+                return .failure(.unknownMode(spoken, options: profile.castPresets.map(\.name)))
+            }
+            return .success(.cast(.playMedia(source)))
+        case .playback(let action):
+            switch action {
+            case .pause: return .success(.cast(.pause))
+            case .resume: return .success(.cast(.play))
+            case .stop: return .success(.cast(.stop))
+            }
         }
     }
 
@@ -279,6 +299,7 @@ public enum CapabilityMap {
         case .mode: return .failure(.unsupported(.mode))
         case .fanSpeed: return .failure(.unsupported(.fanSpeed))
         case .cover: return .failure(.unsupported(.openClose))
+        case .play, .playback: return .failure(.unsupported(.media))
         }
     }
 

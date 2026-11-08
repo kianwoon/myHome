@@ -21,6 +21,11 @@ final class FakeCastSpeaker: CastClientProtocol, @unchecked Sendable {
     }
     func setVolume(_ percent: Int) async throws { log("volume:\(percent)"); if !ignoreWrites { state.volume = percent } }
     func setMuted(_ muted: Bool) async throws { log("mute:\(muted)"); if !ignoreWrites { state.muted = muted } }
+    func play(_ source: CastMediaSource) async throws {
+        log("play:\(source.title)")
+        guard source.isPlayable else { throw CastError.unplayableSource }
+        if !ignoreWrites { state.appName = "Default Media Receiver"; state.playback = .playing }
+    }
     func transport(_ action: CastAction) async throws {
         log("transport:\(action)")
         guard state.appName != nil else { throw CastError.noActiveSession }
@@ -128,7 +133,7 @@ final class CastControlTests: XCTestCase {
     func testCapabilitiesAreVolumeAndMuteOnly() {
         let device = Device(id: "cast:x", name: "Mini", ip: "", version: nil, category: CastProtocol.category, online: true)
         let profile = DeviceProfile(device: device, state: DeviceState(dps: [:]), isBriturn: false, isCast: true)
-        XCTAssertEqual(CapabilityMap.supported(for: profile), [.volume, .mute])
+        XCTAssertEqual(CapabilityMap.supported(for: profile), [.volume, .mute, .media])
         guard case .success(.cast(.volume(30))) = CapabilityMap.plan(.volume(30), for: profile) else { return XCTFail() }
         guard case .failure = CapabilityMap.plan(.power(true), for: profile) else { return XCTFail("no power on a Cast speaker") }
         guard case .failure = CapabilityMap.plan(.volume(120), for: profile) else { return XCTFail() }

@@ -20,11 +20,17 @@ public enum SemanticCapability: String, CaseIterable, Codable, Hashable, Sendabl
     /// Gear 1…max (numeric fans) or small/middle/large (string fans).
     case fanSpeed
     case openClose
+    /// Start/stop audio on a speaker (radio, URL, file) and pause/resume it.
+    case media
     /// Speaker volume percent (KEF native 0…100). Never a light brightness.
     case volume
     case mute
     /// Speaker source selection (Wi-Fi, TV, Optical …).
     case input
+}
+
+public enum PlaybackAction: String, CaseIterable, Codable, Hashable, Sendable {
+    case pause, resume, stop
 }
 
 public enum CoverAction: String, CaseIterable, Codable, Hashable, Sendable {
@@ -54,6 +60,9 @@ public enum DeviceCommand: Equatable, Hashable, Sendable {
     case mode(String)
     case fanSpeed(Int)
     case cover(CoverAction)
+    /// Spoken station name ("jazz"); empty or generic ("music") = last played / first preset.
+    case play(String)
+    case playback(PlaybackAction)
     case volume(Int)
     case mute(Bool)
     /// Spoken/wire input name, validated by CapabilityMap against the speaker's sources.
@@ -68,6 +77,7 @@ public enum DeviceCommand: Equatable, Hashable, Sendable {
         case .mode: return .mode
         case .fanSpeed: return .fanSpeed
         case .cover: return .openClose
+        case .play, .playback: return .media
         case .volume: return .volume
         case .mute: return .mute
         case .input: return .input

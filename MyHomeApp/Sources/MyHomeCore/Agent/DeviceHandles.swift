@@ -137,6 +137,7 @@ public enum HousekeeperSnapshot {
             case .fanSpeed: return "fan_speed(gear)"
             case .colorTemperature: return "color_temperature(0 warm-100 cool)"
             case .openClose: return "open/close/stop"
+            case .media: return "play(station name or 'music')/pause/resume/stop"
             case .volume: return "volume(0-100)"
             case .mute: return "mute/unmute"
             case .input: return "input(wifi, bluetooth, tv, optical, aux, usb)"

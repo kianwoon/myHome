@@ -205,6 +205,7 @@ public struct VoiceCommandParser {
             return .status(query(from: rest))
         }
 
+        if let intent = parsePlayback(tokens) { return intent }
         if let intent = parseSpeaker(tokens) { return intent }
         if let intent = parsePower(tokens) { return intent }
         if let intent = parseCover(tokens) { return intent }
@@ -375,6 +376,41 @@ public struct VoiceCommandParser {
             }
         }
         return nil
+    }
+
+    // MARK: - Playback (speakers)
+
+    private static let playVerbs: Set<String> = ["play"]
+    private static let pauseVerbs: Set<String> = ["pause"]
+    private static let resumeVerbs: Set<String> = ["resume", "unpause", "continue"]
+    private static let mediaNouns: Set<String> = ["music", "radio", "song", "songs", "playback", "audio"]
+    /// A bare "stop the study room speaker" is audio, not a curtain.
+    private static let speakerNouns: Set<String> = ["speaker", "speakers"]
+    private static let targetPrepositions: Set<String> = ["on", "in", "at"]
+
+    /// "play jazz on the study room speaker", "play music", "pause the living
+    /// room speaker", "resume music in the study", "stop the music".
+    private func parsePlayback(_ tokens: [String]) -> ParsedIntent? {
+        let verb = tokens[0]
+        let rest = Array(tokens.dropFirst())
+        if Self.playVerbs.contains(verb) {
+            var source = rest
+            var target: [String] = []
+            if let at = rest.lastIndex(where: { Self.targetPrepositions.contains($0) }), at < rest.count - 1 {
+                source = Array(rest[..<at])
+                target = Array(rest[(at + 1)...])
+            }
+            let name = source.filter { !vocabulary.stopWords.contains($0) }.joined(separator: " ")
+            return .command(query(from: target), .play(name))
+        }
+        let action: PlaybackAction
+        if Self.pauseVerbs.contains(verb) { action = .pause }
+        else if Self.resumeVerbs.contains(verb) { action = .resume }
+        else if grammar.stopVerbs.contains(verb), rest.contains(where: { Self.mediaNouns.contains($0) || Self.speakerNouns.contains($0) }) { action = .stop }
+        else { return nil }
+        var target = rest.filter { !Self.mediaNouns.contains($0) }
+        if let first = target.first, Self.targetPrepositions.contains(first) { target.removeFirst() }
+        return .command(query(from: target), .playback(action))
     }
 
     // MARK: - Covers

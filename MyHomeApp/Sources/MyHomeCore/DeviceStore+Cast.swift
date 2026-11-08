@@ -69,6 +69,37 @@ extension DeviceStore {
         cast.persistence.save(Array(cast.records.values))
     }
 
+    // MARK: - Radio presets
+
+    public var castPresets: [CastRadioPreset] { cast.presets }
+    public var castLastPlayed: String? { cast.radio.lastPlayed }
+
+    @discardableResult
+    public func addCastPreset(name: String, url: String, contentType: String = CastMediaSource.fallbackContentType) -> CastRadioPreset? {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        let preset = CastRadioPreset(name: trimmed, url: url.trimmingCharacters(in: .whitespaces), contentType: contentType)
+        guard !trimmed.isEmpty, preset.source != nil else { return nil }
+        cast.presets.append(preset)
+        cast.radio.save(cast.presets)
+        return preset
+    }
+
+    public func removeCastPreset(id: String) {
+        cast.presets.removeAll { $0.id == id }
+        cast.radio.save(cast.presets)
+    }
+
+    /// Plays a preset (remembered as the target of a bare "play music").
+    public func castPlay(_ device: Device, preset: CastRadioPreset) async -> CastWriteOutcome {
+        guard let source = preset.source else { return .failed(.unplayableSource) }
+        return await castWrite(device, .playMedia(source))
+    }
+
+    /// Resolves a spoken/typed station name against the saved presets.
+    public func castPreset(matching spoken: String) -> CastRadioPreset? {
+        CastRadioPreset.resolve(spoken, in: cast.presets, lastPlayed: cast.radio.lastPlayed)
+    }
+
     // MARK: - Test seams
 
     func setCastClientFactoryForTest(_ factory: @escaping (CastSpeakerRecord) throws -> any CastClientProtocol) { cast.makeClient = factory }
@@ -160,6 +191,9 @@ extension DeviceStore {
             let range = cast.config.volumeRange
             guard range.contains(value) else { return .failed(.volumeOutOfRange(range)) }
         }
+        if case .playMedia(let source) = action, let preset = cast.presets.first(where: { $0.url == source.url.absoluteString }) {
+            cast.radio.lastPlayed = preset.id
+        }
         let client: any CastClientProtocol
         do { client = try cast.makeClient(record) } catch { return .failed((error as? CastError) ?? .invalidAddress) }
         let gate = cast.gates[id] ?? KEFSerialGate()
@@ -188,8 +222,16 @@ extension DeviceStore {
         guard sent else { return .superseded }
 
         try? await Task.sleep(nanoseconds: UInt64(cast.config.readbackDelay * 1_000_000_000))
+        // A started stream needs a few seconds to buffer: poll (bounded) until the readback matches.
+        var isPlay = false
+        if case .playMedia = action { isPlay = true }
+        let deadline = Date().addingTimeInterval(isPlay ? cast.config.playSettleTimeout : 0)
         do {
-            let state = try await gate.run { try await client.fetchState() }
+            var state = try await gate.run { try await client.fetchState() }
+            while isPlay, action.matches(state) != true, Date() < deadline, cast.readings[id]?.generation == generation {
+                try? await Task.sleep(nanoseconds: UInt64(cast.config.playSettleInterval * 1_000_000_000))
+                state = try await gate.run { try await client.fetchState() }
+            }
             applyCastRead(id, state: state, generation: generation)
             if cast.readings[id]?.generation != generation { return .superseded }
             switch action.matches(state) {
@@ -207,6 +249,7 @@ extension DeviceStore {
         case .volume(let value): try await client.setVolume(value)
         case .mute(let value): try await client.setMuted(value)
         case .play, .pause, .stop: try await client.transport(action)
+        case .playMedia(let source): try await client.play(source)
         }
     }
 }

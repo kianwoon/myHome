@@ -81,7 +81,8 @@ final class VoiceCommandParserTests: XCTestCase {
         XCTAssertEqual(parser.parse("no, cancel"), .cancel)
         XCTAssertEqual(parser.parse("never mind"), .cancel)
         XCTAssertEqual(parser.parse("what is the meaning of life"), .status(DeviceQuery(text: "meaning life")))
-        XCTAssertEqual(parser.parse("play some music"), .unknown("play some music"))
+        // Playback is now a speaker command ("play some music" = last/first station).
+        XCTAssertEqual(parser.parse("play some music"), .command(DeviceQuery(text: ""), .play("some music")))
         XCTAssertEqual(parser.parse("   "), .unknown("   "))
     }
 }

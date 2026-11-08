@@ -44,6 +44,8 @@ public struct CastRegistry {
     var visible: Set<String> = []
     var config: CastConfig = .fromDefaults()
     var persistence = CastConfigurationStore()
+    var radio = CastRadioStore()
+    public var presets: [CastRadioPreset] = CastRadioStore().load()
 
     /// Roster-shaped devices. `ip` stays EMPTY so no Tuya/Briturn path adopts them.
     public var devices: [Device] {

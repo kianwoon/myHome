@@ -255,7 +255,7 @@ phrases. The intents run in-process and reach the app's single `DeviceStore` thr
 
 ## Speakers (Google Home / Nest Mini via Cast)
 
-Cast speakers are `DeviceStore` records (`cast:<id>`, `Device.ip` empty). The controller reuses `volume` and `mute`; `CapabilityMap` plans them as `WritePlan.cast`, `DeviceStore.castWrite` sends and does one readback. No power or input. Speech: "set living room speaker volume to 30", "mute the study room speaker". Play/pause/stop are UI/store-level only (not yet voice-reachable). Details: [Cast.md](Cast.md).
+Cast speakers are `DeviceStore` records (`cast:<id>`, `Device.ip` empty). The controller reuses `volume` and `mute`; `CapabilityMap` plans them as `WritePlan.cast`, `DeviceStore.castWrite` sends and does one readback. No power or input. Speech: "set living room speaker volume to 30", "mute the study room speaker". Playback: "play jazz on the study room speaker", "pause/resume/stop the music on …" (`DeviceCommand.play` / `.playback`, capability `media`). Details: [Cast.md](Cast.md).
 
 ## Speakers (KEF LS50 Wireless II)
 

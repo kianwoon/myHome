@@ -235,7 +235,10 @@ public final class DeviceStore: ObservableObject {
         cast.persistence = CastConfigurationStore(defaults: defaults)
         cast.config = CastConfig.fromDefaults(defaults)
         let castTimeout = cast.config.requestTimeout
-        cast.makeClient = { try CastSwiftClient(record: $0, timeout: castTimeout) }
+        let castPlayTimeout = cast.config.playTimeout
+        cast.makeClient = { try CastSwiftClient(record: $0, timeout: castTimeout, playTimeout: castPlayTimeout) }
+        cast.radio = CastRadioStore(defaults: defaults)
+        cast.presets = cast.radio.load()
         loadCastSpeakers()
         bindBLE()
         startPublishMeter()

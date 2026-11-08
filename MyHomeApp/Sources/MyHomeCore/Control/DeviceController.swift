@@ -184,7 +184,9 @@ public final class DeviceController: ObservableObject {
     public func profile(for device: Device) -> DeviceProfile {
         DeviceProfile(device: device, state: store.state(for: device), isBriturn: store.isBriturn(device),
                       kef: store.isKEF(device) ? (store.kefState(for: device) ?? KEFState()) : nil,
-                      isCast: store.isCast(device))
+                      isCast: store.isCast(device),
+                      castPresets: store.isCast(device) ? store.castPresets : [],
+                      castLastPlayed: store.castLastPlayed)
     }
 
     public func supports(_ device: Device, _ capability: SemanticCapability) -> Bool {
