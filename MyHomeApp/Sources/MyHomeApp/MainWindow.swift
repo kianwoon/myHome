@@ -1360,6 +1360,7 @@ struct DeviceDetailView: View {
 
                 if device.category.lowercased() == "briturn" {
                     BriturnControlsView(device: device)
+                        .id(device.id)  // fresh @State per light, or schedules leak between lights
                 } else {
                     ScheduleSection(device: device)
                 }
@@ -2138,6 +2139,7 @@ struct BriturnControlsView: View {
                     save: { timers in await store.saveBriturnTimers(device, timers: timers) },
                     readOnly: { store.briturnTimersReadOnly.contains(device.id) }
                 )
+                .id(device.id)
             }
         }
         .onAppear { syncPicker(from: store.briturnStatus[device.id]) }
