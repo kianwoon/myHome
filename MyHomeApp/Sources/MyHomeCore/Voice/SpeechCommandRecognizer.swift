@@ -239,12 +239,15 @@ public final class SpeechCommandRecognizer: ObservableObject {
         let hotwords = AppSettings.speechHotwordBias(from: defaults) ? (contextualStrings?() ?? []) : []
         let profile = AppSettings.speechVADProfile(from: defaults)
         let locale = AppSettings.voiceLocale(from: defaults).identifier
+        let pinLanguage = defaults.object(forKey: AppSettings.speechQwenPinLanguageKey) as? Bool
+            ?? AppSettings.defaultSpeechQwenPinLanguage
         let loadTimeout = AppSettings.speechModelLoadTimeout(from: defaults)
         for kind in order {
             guard current == generation, let model = installedModels[kind] else { return }
             status = .loadingModel(kind.label)
             let request = SherpaTranscriberFactory.Request(model: model, profile: profile, hotwords: hotwords,
-                                                           localeIdentifier: locale)
+                                                           localeIdentifier: locale,
+                                                           pinQwenLanguage: pinLanguage)
             let callbacks = Self.makeCallbacks(owner: self, generation: current, kind: kind)
             let built = await Deadline.run(seconds: loadTimeout) {
                 await Self.buildOffMain(request, callbacks: callbacks)

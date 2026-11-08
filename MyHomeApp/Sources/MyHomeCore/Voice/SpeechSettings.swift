@@ -34,6 +34,11 @@ public extension AppSettings {
     static let defaultSpeechQwenAsrEnabled = true
     static let speechSenseVoiceEnabledKey = "speechSenseVoiceEnabled"
     static let defaultSpeechSenseVoiceEnabled = true
+    /// Tell Qwen3-ASR which language to expect (the voice locale's). Without it
+    /// the engine auto-detects, and short accented clips can come back as
+    /// another language. Turn off to speak several languages.
+    static let speechQwenPinLanguageKey = "speechQwenPinLanguage"
+    static let defaultSpeechQwenPinLanguage = true
     /// Pass device and room names to Qwen3-ASR as hotwords.
     static let speechHotwordBiasKey = "speechHotwordBias"
     /// Off by default: with a long device list Qwen3-ASR echoes the list back

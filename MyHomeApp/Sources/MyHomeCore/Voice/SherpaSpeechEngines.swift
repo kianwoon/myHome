@@ -301,10 +301,22 @@ final class SherpaRecognizerCache: @unchecked Sendable {
 
 final class SherpaDecoder: OfflineSpeechDecoder {
     private let recognizer: SherpaOnnxOfflineRecognizer
-    init(_ recognizer: SherpaOnnxOfflineRecognizer) { self.recognizer = recognizer }
+    /// Qwen3-ASR per-stream language name ("English"); empty = auto-detect.
+    private let streamLanguage: String
+    init(_ recognizer: SherpaOnnxOfflineRecognizer, streamLanguage: String = "") {
+        self.recognizer = recognizer
+        self.streamLanguage = streamLanguage
+    }
 
     func decode(_ samples: [Float], sampleRate: Int) -> String {
-        recognizer.decode(samples: samples, sampleRate: sampleRate).text
+        guard !streamLanguage.isEmpty else {
+            return recognizer.decode(samples: samples, sampleRate: sampleRate).text
+        }
+        let stream = recognizer.createStream()
+        stream.setOption(key: "language", value: streamLanguage)
+        stream.acceptWaveform(samples: samples, sampleRate: sampleRate)
+        recognizer.decode(stream: stream)
+        return recognizer.getResult(stream: stream).text
     }
 }
 
@@ -377,6 +389,7 @@ public enum SherpaTranscriberFactory {
         public let profile: VADProfile
         public let hotwords: [String]
         public let localeIdentifier: String
+        public var pinQwenLanguage = AppSettings.defaultSpeechQwenPinLanguage
     }
 
     static func make(_ request: Request,
@@ -389,11 +402,13 @@ public enum SherpaTranscriberFactory {
         let echoWords = request.hotwords
         let hotwords = request.model.kind == .qwenAsr ? HotwordList.format(request.hotwords) : ""
         let language = request.model.kind == .senseVoice ? SenseVoiceLanguage.pin(for: request.localeIdentifier) : ""
+        let qwenLanguage = request.model.kind == .qwenAsr && request.pinQwenLanguage
+            ? QwenLanguage.name(for: request.localeIdentifier) : ""
         let recognizer = cache.queue.sync {
             cache.recognizer(kind: request.model.kind, directory: dir, hotwords: hotwords, language: language)
         }
         let segmenter = SileroSegmenter(vadPath: SpeechModelStore.vadURL(dir).path, profile: request.profile)
-        return SegmentingTranscriber(segmenter: segmenter, decoder: SherpaDecoder(recognizer),
+        return SegmentingTranscriber(segmenter: segmenter, decoder: SherpaDecoder(recognizer, streamLanguage: qwenLanguage),
                                      sampleRate: SpeechModelSpec.sampleRate,
                                      preRollSeconds: request.profile.preRollSeconds,
                                      queue: cache.queue, onSegment: onSegment, onActivity: onActivity,
@@ -435,5 +450,14 @@ public enum SenseVoiceLanguage {
     public static func pin(for localeIdentifier: String) -> String {
         let code = Locale(identifier: localeIdentifier).language.languageCode?.identifier ?? ""
         return supported.contains(code) ? code : fallback
+    }
+}
+
+/// Qwen3-ASR's per-stream language, as the English language name its prompt
+/// expects ("English"). Empty (auto-detect) when the locale has no language.
+public enum QwenLanguage {
+    public static func name(for localeIdentifier: String) -> String {
+        guard let code = Locale(identifier: localeIdentifier).language.languageCode?.identifier else { return "" }
+        return Locale(identifier: "en").localizedString(forLanguageCode: code) ?? ""
     }
 }

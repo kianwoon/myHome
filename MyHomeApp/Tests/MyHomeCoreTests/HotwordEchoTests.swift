@@ -35,3 +35,10 @@ final class HotwordEchoTests: XCTestCase {
         XCTAssertLessThanOrEqual(AppSettings.speechMaxHotwords, 20)
     }
 }
+
+final class QwenLanguageTests: XCTestCase {
+    func testLocaleMapsToQwenLanguageName() {
+        XCTAssertEqual(QwenLanguage.name(for: "en-GB"), "English")
+        XCTAssertEqual(QwenLanguage.name(for: "zh-Hans"), "Chinese")
+    }
+}

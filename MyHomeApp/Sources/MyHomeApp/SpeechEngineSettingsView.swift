@@ -12,6 +12,7 @@ struct SpeechEngineSettingsSection: View {
     @AppStorage(AppSettings.speechUsePopModelsKey) private var usePop = AppSettings.defaultSpeechUsePopModels
     @AppStorage(AppSettings.speechHotwordBiasKey) private var hotwords = AppSettings.defaultSpeechHotwordBias
 
+    @AppStorage(AppSettings.speechQwenPinLanguageKey) private var pinLanguage = AppSettings.defaultSpeechQwenPinLanguage
     @AppStorage(AppSettings.fuzzyMatchKey) private var fuzzy = AppSettings.defaultFuzzyMatch
 
     var body: some View {
@@ -25,6 +26,7 @@ struct SpeechEngineSettingsSection: View {
             ForEach(SpeechEngineKind.allCases) { modelRow($0) }
             Toggle("Use models installed by Pop", isOn: $usePop)
             Toggle("Bias recognition toward device and room names", isOn: $hotwords)
+            Toggle("Pin Qwen3-ASR to the voice language", isOn: $pinLanguage)
             Toggle("Fuzzy: suggest near-miss device names", isOn: $fuzzy)
         } header: {
             Text("Speech engine")
@@ -32,6 +34,7 @@ struct SpeechEngineSettingsSection: View {
             Text("Speech runs on this Mac with offline models (sherpa-onnx), the same ones the Pop app uses. "
                  + "Qwen3-ASR is tried first; SenseVoice takes over if it is missing or stops responding. "
                  + "Name biasing applies to Qwen3-ASR and is off by default: a long device list can make the engine echo the list back instead of what you said. "
+                 + "Pinning the language stops short accented clips being heard as another language; turn it off if you speak several. "
                  + "Fuzzy helps with accents: if no device matches a name you spoke, close-sounding names are offered for you to confirm, never acted on directly.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -41,6 +44,7 @@ struct SpeechEngineSettingsSection: View {
         .onChange(of: qwenEnabled) { _ in speech.refreshSupport() }
         .onChange(of: senseVoiceEnabled) { _ in speech.refreshSupport() }
         .onChange(of: usePop) { _ in speech.refreshSupport() }
+        .onChange(of: pinLanguage) { _ in speech.refreshSupport() }
     }
 
     @ViewBuilder
