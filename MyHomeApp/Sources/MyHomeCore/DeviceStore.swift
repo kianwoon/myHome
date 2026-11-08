@@ -678,6 +678,8 @@ public final class DeviceStore: ObservableObject {
 
     @Published public private(set) var briturnTimers: [String: [BriturnTimer]] = [:]
     @Published public private(set) var briturnTimersLoading: Set<String> = []
+    /// Lights whose schedule is in the firmware-10 "E0" format: shown, never rewritten.
+    @Published public private(set) var briturnTimersReadOnly: Set<String> = []
 
     public func loadBriturnTimers(for device: Device) async {
         guard isBriturn(device), !device.isBLE, device.hasAddress else { return }
@@ -700,6 +702,11 @@ public final class DeviceStore: ObservableObject {
                                     b: entry["b"] as? Int ?? 0)
             }
             briturnTimers[device.id] = timers
+            if reply["readonly"] as? Bool == true {
+                briturnTimersReadOnly.insert(device.id)
+            } else {
+                briturnTimersReadOnly.remove(device.id)
+            }
             statusErrors[device.id] = nil
         } catch {
             // Quiet-stale like status: schedules stay on the bulb regardless.
