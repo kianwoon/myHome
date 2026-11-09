@@ -390,6 +390,9 @@ public enum SherpaTranscriberFactory {
         public let hotwords: [String]
         public let localeIdentifier: String
         public var pinQwenLanguage = AppSettings.defaultSpeechQwenPinLanguage
+        public var qwenBackend = AppSettings.defaultSpeechQwenBackend
+        /// Directory of the installed MLX model when that backend is usable.
+        public var mlxDirectory: URL?
     }
 
     static func make(_ request: Request,
@@ -404,11 +407,25 @@ public enum SherpaTranscriberFactory {
         let language = request.model.kind == .senseVoice ? SenseVoiceLanguage.pin(for: request.localeIdentifier) : ""
         let qwenLanguage = request.model.kind == .qwenAsr && request.pinQwenLanguage
             ? QwenLanguage.name(for: request.localeIdentifier) : ""
-        let recognizer = cache.queue.sync {
-            cache.recognizer(kind: request.model.kind, directory: dir, hotwords: hotwords, language: language)
+        // MLX backend: only for Qwen3-ASR, only when selected AND loadable;
+        // otherwise the sherpa-onnx decoder below is used.
+        var decoder: OfflineSpeechDecoder?
+        if request.model.kind == .qwenAsr, request.qwenBackend == AppSettings.speechBackendMlx,
+           let mlxDir = request.mlxDirectory {
+            decoder = cache.queue.sync {
+                MlxQwenDecoder(directory: mlxDir, hotwords: Array(request.hotwords.prefix(AppSettings.speechMaxHotwords)))
+            }
+        }
+        let backendName = decoder == nil ? AppSettings.speechBackendOnnx : AppSettings.speechBackendMlx
+        AppLog.assistant.info("qwen asr backend requested=\(request.qwenBackend, privacy: .public) active=\(backendName, privacy: .public)")
+        if decoder == nil {
+            let recognizer = cache.queue.sync {
+                cache.recognizer(kind: request.model.kind, directory: dir, hotwords: hotwords, language: language)
+            }
+            decoder = SherpaDecoder(recognizer, streamLanguage: qwenLanguage)
         }
         let segmenter = SileroSegmenter(vadPath: SpeechModelStore.vadURL(dir).path, profile: request.profile)
-        return SegmentingTranscriber(segmenter: segmenter, decoder: SherpaDecoder(recognizer, streamLanguage: qwenLanguage),
+        return SegmentingTranscriber(segmenter: segmenter, decoder: decoder!,
                                      sampleRate: SpeechModelSpec.sampleRate,
                                      preRollSeconds: request.profile.preRollSeconds,
                                      queue: cache.queue, onSegment: onSegment, onActivity: onActivity,

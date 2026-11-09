@@ -30,6 +30,12 @@ public extension AppSettings {
     /// an ineligible pinned engine falls back to the chain.
     static let speechPreferredEngineKey = "speechPreferredEngine"
     static let defaultSpeechPreferredEngine = SpeechEngineKind.qwenAsr.rawValue
+    /// Qwen3-ASR decode backend: "mlx" (Apple GPU, default) or "onnx" (sherpa-onnx INT8, CPU); (Apple
+    /// GPU, needs the MLX model installed; any failure falls back to "onnx").
+    static let speechQwenBackendKey = "speechQwenBackend"
+    static let speechBackendOnnx = "onnx"
+    static let speechBackendMlx = "mlx"
+    static let defaultSpeechQwenBackend = speechBackendMlx
     static let speechQwenAsrEnabledKey = "speechQwenAsrEnabled"
     static let defaultSpeechQwenAsrEnabled = true
     static let speechSenseVoiceEnabledKey = "speechSenseVoiceEnabled"
@@ -130,6 +136,11 @@ public extension AppSettings {
         case .qwenAsr: return defaults.object(forKey: speechQwenAsrEnabledKey) as? Bool ?? defaultSpeechQwenAsrEnabled
         case .senseVoice: return defaults.object(forKey: speechSenseVoiceEnabledKey) as? Bool ?? defaultSpeechSenseVoiceEnabled
         }
+    }
+
+    static func speechQwenBackend(from defaults: UserDefaults = .standard) -> String {
+        let value = defaults.string(forKey: speechQwenBackendKey) ?? defaultSpeechQwenBackend
+        return value == speechBackendOnnx ? speechBackendOnnx : speechBackendMlx
     }
 
     static func speechHotwordBias(from defaults: UserDefaults = .standard) -> Bool {

@@ -22,14 +22,20 @@ let package = Package(
         .package(url: "https://github.com/k2-fsa/sherpa-onnx", exact: "1.13.8"),
         // Google Cast (Chromecast / Google Home Mini) sender, pure Swift on
         // Network.framework. PINNED exact; requires macOS 14.
-        .package(url: "https://github.com/CreatureSurvive/SwiftCast.git", exact: "1.0.1")
+        .package(url: "https://github.com/CreatureSurvive/SwiftCast.git", exact: "1.0.1"),
+        // Qwen3-ASR on MLX (Apple-silicon GPU), optional decode backend. Community
+        // Swift port, the same revision Pop pins; PINNED (a moving branch would
+        // change the build under us).
+        .package(url: "https://github.com/Neywa-Labs/mlx-audio-swift.git", revision: "0e03fee81e87e6d6a186fb72610589bd92fc87cd")
     ],
     targets: [
         .target(
             name: "MyHomeCore",
             dependencies: [
                 .product(name: "sherpa-onnx", package: "sherpa-onnx"),
-                .product(name: "SwiftCast", package: "SwiftCast")
+                .product(name: "SwiftCast", package: "SwiftCast"),
+                .product(name: "MLXAudioSTT", package: "mlx-audio-swift"),
+                .product(name: "MLXAudioCore", package: "mlx-audio-swift")
             ],
             path: "Sources/MyHomeCore"
         ),

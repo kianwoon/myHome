@@ -61,6 +61,11 @@ trap 'rm -rf "$STAGE"' EXIT
 mkdir -p "$STAGE/MyHome.app/Contents/MacOS" \
          "$STAGE/MyHome.app/Contents/Resources/bridge"
 cp "$BIN_DIR/MyHomeApp" "$STAGE/MyHome.app/Contents/MacOS/MyHome"
+# MLX loads its compiled Metal kernels from this SwiftPM resource bundle; without
+# it the MLX speech backend aborts at first use.
+MLX_BUNDLE="$BIN_DIR/mlx-swift_Cmlx.bundle"
+[ -d "$MLX_BUNDLE" ] || { echo "missing $MLX_BUNDLE (MLX backend would abort)" >&2; exit 1; }
+cp -R "$MLX_BUNDLE" "$STAGE/MyHome.app/Contents/Resources/mlx-swift_Cmlx.bundle"
 cp "$APP_DIR/AppIcon.icns" "$STAGE/MyHome.app/Contents/Resources/AppIcon.icns"
 
 cp "$REPO_ROOT/bridge.py" "$REPO_ROOT/google_home.py" "$REPO_ROOT/appapi.py" \

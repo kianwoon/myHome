@@ -119,6 +119,28 @@ public final class SpeechCommandRecognizer: ObservableObject {
         }
     }
 
+    @Published public private(set) var installingMlx = false
+
+    /// True when an MLX model is usable (own folder, or Pop's when allowed).
+    public var mlxModelInstalled: Bool {
+        MlxQwenStore.locate(usePop: AppSettings.speechUsePopModels(from: defaults)) != nil
+    }
+
+    /// Downloads the MLX Qwen3-ASR model into MyHome's own directory.
+    public func installMlxModel() {
+        guard !installingMlx else { return }
+        installingMlx = true
+        lastError = nil
+        Task { @MainActor in
+            do { try await MlxQwenStore.install() } catch {
+                lastError = "MLX model install failed: \(error)"
+                AppLog.assistant.error("mlx speech model install failed")
+            }
+            installingMlx = false
+            refreshSupport()
+        }
+    }
+
     // MARK: Authorization (Pop: AVAudioApplication, macOS 14+)
 
     public func requestAuthorization() async -> Authorization {
@@ -242,12 +264,16 @@ public final class SpeechCommandRecognizer: ObservableObject {
         let pinLanguage = defaults.object(forKey: AppSettings.speechQwenPinLanguageKey) as? Bool
             ?? AppSettings.defaultSpeechQwenPinLanguage
         let loadTimeout = AppSettings.speechModelLoadTimeout(from: defaults)
+        let backend = AppSettings.speechQwenBackend(from: defaults)
+        let mlxDirectory = backend == AppSettings.speechBackendMlx
+            ? MlxQwenStore.locate(usePop: AppSettings.speechUsePopModels(from: defaults)) : nil
         for kind in order {
             guard current == generation, let model = installedModels[kind] else { return }
             status = .loadingModel(kind.label)
             let request = SherpaTranscriberFactory.Request(model: model, profile: profile, hotwords: hotwords,
                                                            localeIdentifier: locale,
-                                                           pinQwenLanguage: pinLanguage)
+                                                           pinQwenLanguage: pinLanguage,
+                                                           qwenBackend: backend, mlxDirectory: mlxDirectory)
             let callbacks = Self.makeCallbacks(owner: self, generation: current, kind: kind)
             let built = await Deadline.run(seconds: loadTimeout) {
                 await Self.buildOffMain(request, callbacks: callbacks)

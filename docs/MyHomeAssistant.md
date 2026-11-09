@@ -186,6 +186,15 @@ Apple's `SFSpeechRecognizer` is no longer used (the Speech framework is not link
   `SpeechEngineChain` (`SpeechEngine.swift`): membership = enabled AND installed, an
   optional pin (`speechPreferredEngine`), the last engine that produced text leads, and an
   engine that loads but stays silent is marked dead for the process and sorts last.
+* **MLX backend (optional)**: `speechQwenBackend` = `mlx` (default) or `onnx`, picked in
+  Settings → Assistant → Speech engine. `mlx` swaps only the per-segment decode for
+  Qwen3-ASR-1.7B-8bit on the Apple GPU (`MlxQwenAsr.swift`, mlx-audio-swift pinned to the
+  revision Pop uses); VAD, endpointing and the echo guard are unchanged. The MLX model is
+  looked up in `MyHome/speech/qwenasr-mlx-8bit`, then Pop's `qwenasr-mlx-8bit` (read-only), and
+  **Install** downloads ~2.4 GB from Hugging Face. A missing model or a load failure falls
+  back to the sherpa-onnx decoder. Measured here: ~6 s one-time load, 0.28 s to decode a 1.3 s
+  command. The language pin does not apply to MLX; hotwords go in the decoder prompt. A
+  bundled app must ship `mlx-swift_Cmlx.bundle` (Metal kernels) next to the binary.
 * **Models** are looked up in `~/Library/Application Support/MyHome/speech/{qwenasr,sensevoice}`
   first, then (read-only, `speechUsePopModels`) in Pop's
   `~/Library/Application Support/Pop/{qwenasr,sensevoice}`. A usability gate (size floors,
