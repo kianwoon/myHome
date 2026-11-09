@@ -61,6 +61,13 @@ trap 'rm -rf "$STAGE"' EXIT
 mkdir -p "$STAGE/MyHome.app/Contents/MacOS" \
          "$STAGE/MyHome.app/Contents/Resources/bridge"
 cp "$BIN_DIR/MyHomeApp" "$STAGE/MyHome.app/Contents/MacOS/MyHome"
+# MLX links the Swift back-deployment runtime lib libswiftCompatibilitySpan; it is
+# in /usr/lib/swift only on new macOS, so ship it next to the binary (@loader_path
+# is on the binary's rpath) to keep the app running on the macOS 14 floor.
+SWIFT_COMPAT_LIB="$(dirname "$(xcrun --find swiftc)")/../lib/swift-6.2/macosx/libswiftCompatibilitySpan.dylib"
+[ -f "$SWIFT_COMPAT_LIB" ] || SWIFT_COMPAT_LIB="$(dirname "$(xcrun --find swiftc)")/../lib/swift/macosx/libswiftCompatibilitySpan.dylib"
+[ -f "$SWIFT_COMPAT_LIB" ] || { echo "missing libswiftCompatibilitySpan.dylib" >&2; exit 1; }
+cp "$SWIFT_COMPAT_LIB" "$STAGE/MyHome.app/Contents/MacOS/"
 # MLX loads its compiled Metal kernels from this SwiftPM resource bundle; without
 # it the MLX speech backend aborts at first use.
 MLX_BUNDLE="$BIN_DIR/mlx-swift_Cmlx.bundle"
