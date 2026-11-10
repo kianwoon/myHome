@@ -180,6 +180,18 @@ final class UtteranceEndpointerTests: XCTestCase {
         XCTAssertEqual(e.evaluate(at: 4.8), .endpoint)
     }
 
+    func testUnfinishedTailWaitsLonger() {
+        let p = EndpointPolicy(hangover: 1.2, noSpeechTimeout: 8, maxUtterance: 30, incompleteExtension: 1)
+        var e = UtteranceEndpointer(policy: p, startedAt: 0)
+        e.speechActivity(true, at: 1)
+        e.speechActivity(false, at: 3)
+        e.segmentDecoded(text: "turn on the lights and", at: 3.1)
+        XCTAssertEqual(e.evaluate(at: 4.5), .keepListening)
+        XCTAssertEqual(e.evaluate(at: 5.4), .endpoint)
+        XCTAssertFalse(UtteranceEndpointer.looksIncomplete("Turn off the lights."))
+        XCTAssertTrue(UtteranceEndpointer.looksIncomplete("Set the fan,"))
+    }
+
     func testEmptySegmentDoesNotEndpoint() {
         var e = UtteranceEndpointer(policy: policy, startedAt: 0)
         e.speechActivity(true, at: 1)

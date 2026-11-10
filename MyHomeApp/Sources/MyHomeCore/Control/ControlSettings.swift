@@ -99,7 +99,7 @@ public extension AppSettings {
     static let speechSilenceTimeoutRange: ClosedRange<TimeInterval> = 0.5...10
     /// Hard cap on one listening session.
     static let speechMaxUtteranceKey = "speechMaxUtteranceSeconds"
-    static let defaultSpeechMaxUtterance: TimeInterval = 15
+    static let defaultSpeechMaxUtterance: TimeInterval = 30
     static let speechMaxUtteranceRange: ClosedRange<TimeInterval> = 3...60
     /// After the audio ends, how long to wait for the recogniser's FINAL (often
     /// corrected) transcript before delivering the latest partial.

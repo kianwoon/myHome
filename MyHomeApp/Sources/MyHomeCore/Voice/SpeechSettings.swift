@@ -95,8 +95,12 @@ public extension AppSettings {
     /// After a segment is transcribed, end the utterance once no new speech
     /// starts within this window (push-to-talk dictation endpoint).
     static let speechEndpointHangoverKey = "speechEndpointHangoverSeconds"
-    static let defaultSpeechEndpointHangover: Double = 0.6
+    static let defaultSpeechEndpointHangover: Double = 1.2
     static let speechEndpointHangoverRange: ClosedRange<Double> = 0...5
+    /// Extra wait when the last words look unfinished ("...and", trailing comma).
+    static let speechIncompleteExtensionKey = "speechIncompleteExtensionSeconds"
+    static let defaultSpeechIncompleteExtension: Double = 1.0
+    static let speechIncompleteExtensionRange: ClosedRange<Double> = 0...5
 
     /// End a session in which no speech was ever detected.
     static let speechNoSpeechTimeoutKey = "speechNoSpeechTimeoutSeconds"
@@ -165,7 +169,8 @@ public extension AppSettings {
         EndpointPolicy(
             hangover: speechClamp(defaults, speechEndpointHangoverKey, defaultSpeechEndpointHangover, speechEndpointHangoverRange),
             noSpeechTimeout: speechClamp(defaults, speechNoSpeechTimeoutKey, defaultSpeechNoSpeechTimeout, speechNoSpeechTimeoutRange),
-            maxUtterance: speechMaxUtterance(from: defaults)
+            maxUtterance: speechMaxUtterance(from: defaults),
+            incompleteExtension: speechClamp(defaults, speechIncompleteExtensionKey, defaultSpeechIncompleteExtension, speechIncompleteExtensionRange)
         )
     }
 

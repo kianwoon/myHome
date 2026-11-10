@@ -36,11 +36,16 @@ public struct EndpointPolicy: Sendable, Equatable {
     public var noSpeechTimeout: TimeInterval
     /// Hard cap on one session.
     public var maxUtterance: TimeInterval
+    /// Extra quiet time required when the last segment reads as unfinished
+    /// (trailing comma/connective), so a mid-sentence pause is not an endpoint.
+    public var incompleteExtension: TimeInterval
 
-    public init(hangover: TimeInterval, noSpeechTimeout: TimeInterval, maxUtterance: TimeInterval) {
+    public init(hangover: TimeInterval, noSpeechTimeout: TimeInterval, maxUtterance: TimeInterval,
+                incompleteExtension: TimeInterval = 0) {
         self.hangover = hangover
         self.noSpeechTimeout = noSpeechTimeout
         self.maxUtterance = maxUtterance
+        self.incompleteExtension = incompleteExtension
     }
 }
 
@@ -63,6 +68,7 @@ public struct UtteranceEndpointer: Sendable {
     public private(set) var lastSpeechEnd: TimeInterval?
     public private(set) var lastSegmentAt: TimeInterval?
     public private(set) var hasText = false
+    public private(set) var lastText = ""
 
     public init(policy: EndpointPolicy, startedAt: TimeInterval) {
         self.policy = policy
@@ -77,7 +83,25 @@ public struct UtteranceEndpointer: Sendable {
     public mutating func segmentDecoded(text: String, at time: TimeInterval) {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         hasText = true
+        lastText = text
         lastSegmentAt = time
+    }
+
+    /// Words/marks after which a speaker is almost certainly mid-sentence.
+    static let continuationTails: Set<String> = [
+        "and", "then", "to", "the", "a", "an", "of", "in", "on", "at", "with", "for", "but", "or",
+        "also", "after", "before", "when", "if", "my", "by",
+        "和", "然后", "还有", "并且", "把", "的", "在"
+    ]
+
+    /// True when the last decoded text looks like it stops mid-sentence.
+    public static func looksIncomplete(_ text: String) -> Bool {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let last = t.last else { return false }
+        if ",;:，、；：-–—".contains(last) { return true }
+        if ".?!。？！".contains(last) { return false }
+        let word = t.split(whereSeparator: { $0.isWhitespace }).last.map { String($0).lowercased() } ?? ""
+        return continuationTails.contains(word) || continuationTails.contains(String(last))
     }
 
     public func evaluate(at now: TimeInterval) -> Decision {
@@ -85,7 +109,8 @@ public struct UtteranceEndpointer: Sendable {
         if speechActive { return .keepListening }
         if hasText {
             let quietSince = max(lastSegmentAt ?? startedAt, lastSpeechEnd ?? startedAt)
-            return now - quietSince >= policy.hangover ? .endpoint : .keepListening
+            let extra = Self.looksIncomplete(lastText) ? policy.incompleteExtension : 0
+            return now - quietSince >= policy.hangover + extra ? .endpoint : .keepListening
         }
         let quietSince = lastSpeechEnd ?? startedAt
         return now - quietSince >= policy.noSpeechTimeout ? .noSpeech : .keepListening
