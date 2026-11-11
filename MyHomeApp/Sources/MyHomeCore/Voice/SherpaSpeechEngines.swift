@@ -33,11 +33,11 @@ public enum SpeechModelStore {
             .appendingPathComponent(SpeechModelSpec.directoryName(kind), isDirectory: true)
     }
 
-    /// Where the Pop app installs the same model (read-only to MyHome).
-    public static func popDirectory(_ kind: SpeechEngineKind) -> URL {
-        applicationSupport
-            .appendingPathComponent(SpeechModelSpec.popAppSupportFolder, isDirectory: true)
-            .appendingPathComponent(SpeechModelSpec.directoryName(kind), isDirectory: true)
+    /// Where the Pop app installs the same model (read-only to MyHome), best
+    /// candidate first.
+    public static func popDirectories(_ kind: SpeechEngineKind) -> [URL] {
+        let root = applicationSupport.appendingPathComponent(SpeechModelSpec.popAppSupportFolder, isDirectory: true)
+        return SpeechModelSpec.popDirectoryNames(kind).map { root.appendingPathComponent($0, isDirectory: true) }
     }
 
     /// The first usable install: MyHome's own, then Pop's (when allowed).
@@ -47,8 +47,9 @@ public enum SpeechModelStore {
         if isInstalled(kind, at: ownDirectory(kind), deep: false) {
             return InstalledSpeechModel(kind: kind, directory: ownDirectory(kind), source: .myHome)
         }
-        if usePop, isInstalled(kind, at: popDirectory(kind), deep: false) {
-            return InstalledSpeechModel(kind: kind, directory: popDirectory(kind), source: .pop)
+        guard usePop else { return nil }
+        for dir in popDirectories(kind) where isInstalled(kind, at: dir, deep: false) {
+            return InstalledSpeechModel(kind: kind, directory: dir, source: .pop)
         }
         return nil
     }
@@ -413,11 +414,17 @@ public enum SherpaTranscriberFactory {
         if request.model.kind == .qwenAsr, request.qwenBackend == AppSettings.speechBackendMlx,
            let mlxDir = request.mlxDirectory {
             decoder = cache.queue.sync {
-                MlxQwenDecoder(directory: mlxDir, hotwords: Array(request.hotwords.prefix(AppSettings.speechMaxHotwords)))
+                MlxQwenDecoder(directory: mlxDir, hotwords: Array(request.hotwords.prefix(AppSettings.speechMaxHotwords)),
+                                language: qwenLanguage)
             }
         }
-        let backendName = decoder == nil ? AppSettings.speechBackendOnnx : AppSettings.speechBackendMlx
-        AppLog.assistant.info("qwen asr backend requested=\(request.qwenBackend, privacy: .public) active=\(backendName, privacy: .public)")
+        if request.model.kind == .qwenAsr, request.qwenBackend == AppSettings.speechBackendMlx, decoder == nil {
+            AppLog.assistant.error("mlx decoder unavailable: directory=\(request.mlxDirectory?.path ?? "none", privacy: .public) (nil = model not found; else the model failed to load)")
+        }
+        if request.model.kind == .qwenAsr {
+            let backendName = decoder == nil ? AppSettings.speechBackendOnnx : AppSettings.speechBackendMlx
+            AppLog.assistant.info("qwen asr backend requested=\(request.qwenBackend, privacy: .public) active=\(backendName, privacy: .public) model=\(dir.lastPathComponent, privacy: .public)")
+        }
         if decoder == nil {
             let recognizer = cache.queue.sync {
                 cache.recognizer(kind: request.model.kind, directory: dir, hotwords: hotwords, language: language)

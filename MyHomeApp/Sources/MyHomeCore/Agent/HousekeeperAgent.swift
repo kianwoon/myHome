@@ -85,10 +85,8 @@ public final class HousekeeperAgent {
     /// English name of the utterance's dominant language ("English"), nil when it cannot be told.
     static func languageName(of utterance: String?) -> String? {
         guard let utterance, !utterance.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-        let recognizer = NLLanguageRecognizer()
-        recognizer.processString(utterance)
-        guard let language = recognizer.dominantLanguage, language != .undetermined else { return nil }
-        return Locale(identifier: "en").localizedString(forLanguageCode: language.rawValue)
+        guard let code = SpeechResponder.dominantLanguage(of: utterance) else { return nil }
+        return Locale(identifier: "en").localizedString(forLanguageCode: code)
     }
 
     // allow-hardcode: model prompt text (prompt-injection guard).

@@ -228,6 +228,16 @@ public enum SpeechModelSpec {
         }
     }
 
+    /// Pop's install directory names, best first. Pop moved Qwen3-ASR to the
+    /// 1.7B model in a dedicated `qwenasr-1.7b` directory; `qwenasr` is a
+    /// legacy 0.6B install.
+    public static func popDirectoryNames(_ kind: SpeechEngineKind) -> [String] {
+        switch kind {
+        case .qwenAsr: return ["qwenasr-1.7b", directoryName(kind)]
+        case .senseVoice: return [directoryName(kind)]
+        }
+    }
+
     public static func archiveName(_ kind: SpeechEngineKind) -> String {
         switch kind {
         case .qwenAsr: return qwenAsrArchiveName

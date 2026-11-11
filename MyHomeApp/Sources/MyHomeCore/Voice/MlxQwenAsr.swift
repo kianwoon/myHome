@@ -117,16 +117,19 @@ final class MlxQwenDecoder: OfflineSpeechDecoder, @unchecked Sendable {
     private let model: Qwen3ASRModel
     /// Hotwords go in the decoder's system prompt (space-joined, like Pop).
     private let context: String
+    /// Forced decode language ("English"); nil = auto-detect (mislabels short English clips).
+    private let language: String?
 
-    init?(directory: URL, hotwords: [String]) {
+    init?(directory: URL, hotwords: [String], language: String? = nil) {
         guard MlxQwenStore.isInstalled(at: directory),
               let model = MlxQwenContext.shared.model(directory: directory) else { return nil }
         self.model = model
         self.context = hotwords.joined(separator: " ")
+        self.language = (language?.isEmpty ?? true) ? nil : language
     }
 
     func decode(_ samples: [Float], sampleRate: Int) -> String {
-        model.generate(audio: MLXArray(samples), context: context).text
+        model.generate(audio: MLXArray(samples), context: context, language: language).text
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

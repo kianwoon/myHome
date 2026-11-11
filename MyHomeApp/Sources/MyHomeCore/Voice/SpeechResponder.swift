@@ -55,8 +55,21 @@ public final class SpeechResponder: ObservableObject {
         return runs.isEmpty ? [(text, dominantLanguage(of: text))] : runs
     }
 
-    nonisolated static func dominantLanguage(of text: String) -> String? {
+    /// Languages the speech stack can actually hear (SenseVoice/Qwen: zh, en, ja, ko, yue) plus
+    /// the owner's voice locale. Anything else is a misdetection of a short, garbled phrase
+    /// ("De study role like to 40%" reads as Dutch) and must not pick the reply language.
+    nonisolated static func plausibleLanguages(voiceLocale: Locale) -> [NLLanguage] {
+        var languages: [NLLanguage] = [.english, .simplifiedChinese, .traditionalChinese, .japanese, .korean]
+        if let code = voiceLocale.language.languageCode?.identifier {
+            let own = NLLanguage(rawValue: code)
+            if !languages.contains(own) { languages.append(own) }
+        }
+        return languages
+    }
+
+    nonisolated static func dominantLanguage(of text: String, voiceLocale: Locale = AppSettings.voiceLocale()) -> String? {
         let recognizer = NLLanguageRecognizer()
+        recognizer.languageConstraints = plausibleLanguages(voiceLocale: voiceLocale)
         recognizer.processString(text)
         guard let language = recognizer.dominantLanguage, language != .undetermined else { return nil }
         return language.rawValue
