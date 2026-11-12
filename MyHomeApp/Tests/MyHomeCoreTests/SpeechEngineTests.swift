@@ -192,6 +192,16 @@ final class UtteranceEndpointerTests: XCTestCase {
         XCTAssertTrue(UtteranceEndpointer.looksIncomplete("Set the fan,"))
     }
 
+    func testHeldOpenIgnoresPausesUntilCap() {
+        var e = UtteranceEndpointer(policy: policy, startedAt: 0, heldOpen: true)
+        e.speechActivity(true, at: 1)
+        e.speechActivity(false, at: 2)
+        e.segmentDecoded(text: "turn off study room fan.", at: 2.1)
+        XCTAssertEqual(e.evaluate(at: 6), .keepListening, "a pause while the key is held is not an endpoint")
+        XCTAssertEqual(e.evaluate(at: 14), .keepListening, "silence while held is not no-speech")
+        XCTAssertEqual(e.evaluate(at: 15), .maxDuration)
+    }
+
     func testEmptySegmentDoesNotEndpoint() {
         var e = UtteranceEndpointer(policy: policy, startedAt: 0)
         e.speechActivity(true, at: 1)

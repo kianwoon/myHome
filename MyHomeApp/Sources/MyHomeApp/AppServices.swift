@@ -157,7 +157,7 @@ final class AppServices {
     private func hotkeyPressed() {
         responder.stop()
         hud.begin()
-        speech.startListening()
+        speech.startListening(heldByUser: true)
     }
 
     private func hotkeyReleased() {

@@ -71,6 +71,8 @@ public final class SpeechCommandRecognizer: ObservableObject {
     /// When the user asked to listen (hold-to-talk key-down / mic click);
     /// the gap to a live tap is speech that was never recorded.
     private var requestedAt: TimeInterval?
+    /// Session started by hold-to-talk: it ends on key release, not on a pause.
+    private var heldOpen = false
 
     public init(defaults: UserDefaults = .standard, bundle: Bundle = .main, chain: SpeechEngineChain = SpeechEngineChain()) {
         self.defaults = defaults
@@ -185,8 +187,11 @@ public final class SpeechCommandRecognizer: ObservableObject {
 
     // MARK: Listening
 
-    public func startListening() {
+    /// `heldByUser`: hold-to-talk — the session ends on `stopListening()` (key
+    /// release) or the max-duration cap, never on a mid-request pause.
+    public func startListening(heldByUser: Bool = false) {
         guard !isListening, !starting, !finalizing else { return }
+        heldOpen = heldByUser
         refreshSupport()
         lastError = nil
         guard Self.usageDescriptionsPresent(in: bundle) else {
@@ -369,7 +374,8 @@ public final class SpeechCommandRecognizer: ObservableObject {
             transcript = ""
             delivered = false
             endpointer = UtteranceEndpointer(policy: AppSettings.speechEndpointPolicy(from: defaults),
-                                             startedAt: ProcessInfo.processInfo.systemUptime)
+                                             startedAt: ProcessInfo.processInfo.systemUptime,
+                                             heldOpen: heldOpen)
             startTicking(generation: current)
         }
         isListening = true

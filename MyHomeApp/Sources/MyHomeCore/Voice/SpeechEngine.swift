@@ -69,10 +69,14 @@ public struct UtteranceEndpointer: Sendable {
     public private(set) var lastSegmentAt: TimeInterval?
     public private(set) var hasText = false
     public private(set) var lastText = ""
+    /// Hold-to-talk: the key release ends the session, so pauses and silence
+    /// never do; only the `maxUtterance` cap still applies.
+    public let heldOpen: Bool
 
-    public init(policy: EndpointPolicy, startedAt: TimeInterval) {
+    public init(policy: EndpointPolicy, startedAt: TimeInterval, heldOpen: Bool = false) {
         self.policy = policy
         self.startedAt = startedAt
+        self.heldOpen = heldOpen
     }
 
     public mutating func speechActivity(_ active: Bool, at time: TimeInterval) {
@@ -106,7 +110,7 @@ public struct UtteranceEndpointer: Sendable {
 
     public func evaluate(at now: TimeInterval) -> Decision {
         if now - startedAt >= policy.maxUtterance { return .maxDuration }
-        if speechActive { return .keepListening }
+        if heldOpen || speechActive { return .keepListening }
         if hasText {
             let quietSince = max(lastSegmentAt ?? startedAt, lastSpeechEnd ?? startedAt)
             let extra = Self.looksIncomplete(lastText) ? policy.incompleteExtension : 0
