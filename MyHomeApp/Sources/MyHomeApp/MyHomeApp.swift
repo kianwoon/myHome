@@ -23,7 +23,7 @@ struct MyHomeApp: App {
                 .frame(width: 380, height: 520)
         } label: {
             ZStack {
-                Image(systemName: "house")
+                Image(nsImage: MenuBarIcon.image)
                 // General rule: a GUI defect in the main window needs a
                 // click-free repro path; this diagnostic opens the dashboard
                 // on launch when MYHOME_AUTOOPEN=1 and is inert otherwise.
@@ -52,7 +52,14 @@ struct MyHomeApp: App {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        // The launch Apple event is only readable during the launch callbacks,
+        // so capture it here before any scene (LaunchWarmup) asks for it.
+        LaunchContext.capture(stage: "willFinishLaunching")
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        LaunchContext.capture(stage: "didFinishLaunching")
         // Menu-bar only: no Dock icon, no app switcher entry.
         NSApp.setActivationPolicy(.accessory)
         // Global hold-to-talk shortcut (Settings → Assistant); a no-op until set.
@@ -78,7 +85,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 /// label is built at launch, whereas the panel and dashboard contents only
 /// exist once opened, so without this the bridge and device data stay idle
 /// until the user clicks. Polling still starts and stops with the views. Also
-/// opens the dashboard so a launch from /Applications visibly starts the app.
+/// opens the dashboard so a launch from /Applications visibly starts the app —
+/// except a launch at login, which stays silent in the menu bar.
 struct LaunchWarmup: View {
     @ObservedObject var store: DeviceStore
     @Environment(\.openWindow) private var openWindow
@@ -87,8 +95,10 @@ struct LaunchWarmup: View {
         Color.clear
             .frame(width: 0, height: 0)
             .task {
-                openWindow(id: "dashboard")
-                NSApp.activate(ignoringOtherApps: true)
+                if !LaunchContext.launchedAsLoginItem {
+                    openWindow(id: "dashboard")
+                    NSApp.activate(ignoringOtherApps: true)
+                }
                 await store.refresh()
                 await store.loadAllStatuses()
                 await store.runAutoScanLoop()
@@ -184,4 +194,32 @@ struct AutoOpenTrigger: View {
         }
         try? data.write(to: URL(fileURLWithPath: path))
     }
+}
+
+/// Menu-bar glyph, rendered once at an explicit point size: SwiftUI
+/// font/frame modifiers on a MenuBarExtra label are ignored when the label is
+/// rasterised into the status item. MYHOME_MENUBAR_ICON_PT overrides the size;
+/// the size is stepped down until the rendered glyph fits the menu bar.
+enum MenuBarIcon {
+    static let symbolName = "house"
+    static let defaultPointSize: CGFloat = 16
+    static let minimumPointSize: CGFloat = 10
+    /// Vertical breathing room kept between the glyph and the bar edges.
+    static let barInset: CGFloat = 3
+
+    static let image: NSImage = {
+        let environment = ProcessInfo.processInfo.environment
+        var pointSize = environment["MYHOME_MENUBAR_ICON_PT"].flatMap(Double.init).map { CGFloat($0) }
+            ?? defaultPointSize
+        let maxHeight = NSStatusBar.system.thickness - barInset
+        let base = NSImage(systemSymbolName: symbolName, accessibilityDescription: "MyHome") ?? NSImage()
+        var sized = base
+        repeat {
+            let configuration = NSImage.SymbolConfiguration(pointSize: pointSize, weight: .medium)
+            sized = base.withSymbolConfiguration(configuration) ?? base
+            pointSize -= 1
+        } while sized.size.height > maxHeight && pointSize >= minimumPointSize
+        sized.isTemplate = true
+        return sized
+    }()
 }
