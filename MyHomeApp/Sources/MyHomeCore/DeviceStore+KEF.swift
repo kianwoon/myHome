@@ -108,6 +108,7 @@ extension DeviceStore {
     func setKEFConfigForTest(_ config: KEFConfig) { kef.config = config }
     func applyKEFReadForTest(_ id: String, state: KEFState, generation: Int) { applyKEFRead(id, state: state, generation: generation) }
     func setKEFPersistenceForTest(_ store: KEFConfigurationStore) { kef.persistence = store }
+    func setKEFDiscoverForTest(_ discover: @escaping @Sendable () async -> [KEFDiscoveredSpeaker]) { kef.discover = discover }
 
     // MARK: - Refresh
 
@@ -131,8 +132,9 @@ extension DeviceStore {
 
     /// Reads one speaker. `manual` bypasses back-off once. Read-only transient
     /// failures retry once; a stale response never overwrites a newer write.
+    /// `userInitiated` (the Refresh button) also bypasses the re-scan cooldown.
     @discardableResult
-    public func refreshKEF(_ id: String, manual: Bool = false) async -> Bool {
+    public func refreshKEF(_ id: String, manual: Bool = false, userInitiated: Bool = false) async -> Bool {
         guard let record = kef.records[id] else { return false }
         var reading = kef.readings[id] ?? KEFReading()
         let now = Date()
@@ -147,8 +149,51 @@ extension DeviceStore {
             return true
         } catch {
             recordKEFFailure(id, error: error, generation: generation)
+            // Any failure: the old IP may now belong to a device that answers
+            // HTTP (404/401/HTML). The move itself still needs a MAC match.
+            startKEFRediscovery(id, failedAddress: record.address, manual: userInitiated)
             return false
         }
+    }
+
+    // MARK: - Rediscovery
+
+    /// The speaker stopped answering at its saved address — usually a new DHCP
+    /// lease. Detached so the shared poll cycle never waits on a Bonjour browse.
+    /// A running scan is joined; otherwise one starts at most once per
+    /// `rediscoveryCooldown` (`manual` — a user Refresh — bypasses it).
+    @discardableResult
+    func startKEFRediscovery(_ id: String, failedAddress: String, manual: Bool) -> Task<Void, Never>? {
+        let scan: Task<[KEFDiscoveredSpeaker], Never>
+        if let running = kef.rediscovery {
+            scan = running
+        } else {
+            let now = Date()
+            if !manual, let last = kef.lastRediscovery, now.timeIntervalSince(last) < kef.config.rediscoveryCooldown { return nil }
+            kef.lastRediscovery = now
+            let discover = kef.discover
+            scan = Task { [weak self] in
+                let found = await discover()
+                self?.kef.rediscovery = nil
+                return found
+            }
+            kef.rediscovery = scan
+        }
+        return Task { [weak self] in
+            let found = await scan.value
+            await self?.applyKEFRediscovery(id, failedAddress: failedAddress, found: found)
+        }
+    }
+
+    /// Moves the record only when the SAME speaker (MAC-verified by discovery)
+    /// now answers elsewhere and nothing changed the record meanwhile; then reads once.
+    private func applyKEFRediscovery(_ id: String, failedAddress: String, found: [KEFDiscoveredSpeaker]) async {
+        guard let record = kef.records[id], record.address == failedAddress,
+              let match = found.first(where: { $0.id == id }), match.address != failedAddress else { return }
+        AppLog.store.info("KEF \(record.name, privacy: .public) moved to a new address; updating")
+        updateKEFSpeaker(id: id, address: match.address)
+        kef.readings[id]?.nextAttempt = nil
+        await refreshKEF(id)
     }
 
     private func readKEF(_ record: KEFSpeakerRecord) async throws -> KEFState {
