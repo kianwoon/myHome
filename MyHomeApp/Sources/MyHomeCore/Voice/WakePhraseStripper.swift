@@ -16,6 +16,18 @@ public extension AppSettings {
     static let wakeNoSpeechTimeoutKey = "wakeNoSpeechTimeoutSeconds"
     static let defaultWakeNoSpeechTimeout: Double = 10
     static let wakeNoSpeechTimeoutRange: ClosedRange<Double> = 2...30
+    /// Once the user has started talking after a wake, this much quiet ends
+    /// the utterance (the timer is off while they speak and restarts at each
+    /// pause). Longer than hold-to-talk's hangover so a thinking pause
+    /// mid-sentence does not cut the command.
+    static let wakeHangoverKey = "wakeHangoverSeconds"
+    static let defaultWakeHangover: Double = 3
+    static let wakeHangoverRange: ClosedRange<Double> = 0.5...10
+
+    static func wakeHangover(from defaults: UserDefaults = .standard) -> TimeInterval {
+        speechClamp(defaults, wakeHangoverKey, defaultWakeHangover, wakeHangoverRange)
+    }
+
     /// A whole utterance that is one of these ends the session silently instead
     /// of reaching the assistant (normalised: lowercase, letters/digits only).
     static let voiceDismissWordsKey = "voiceDismissWords"

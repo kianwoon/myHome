@@ -65,3 +65,33 @@ final class VoiceDismissTests: XCTestCase {
         XCTAssertEqual(AppSettings.wakeNoSpeechTimeout(from: UserDefaults(suiteName: UUID().uuidString)!), 10)
     }
 }
+
+final class WakeEndpointTests: XCTestCase {
+    /// Wake policy: 10 s to start, then 3 s of quiet ends it; talking pauses the clock.
+    private func endpointer() -> UtteranceEndpointer {
+        UtteranceEndpointer(policy: EndpointPolicy(hangover: 3, noSpeechTimeout: 10, maxUtterance: 30), startedAt: 0)
+    }
+
+    func testWaitsTenSecondsForSpeechToStart() {
+        let e = endpointer()
+        XCTAssertEqual(e.evaluate(at: 9.9), .keepListening)
+        XCTAssertEqual(e.evaluate(at: 10), .noSpeech)
+    }
+
+    func testNoTimerWhileTalkingAndThreeSecondsAfter() {
+        var e = endpointer()
+        e.speechActivity(true, at: 8)          // starts talking just before the 10 s
+        XCTAssertEqual(e.evaluate(at: 15), .keepListening)
+        e.speechActivity(false, at: 15)
+        e.segmentDecoded(text: "turn off the study fan", at: 15.3)
+        XCTAssertEqual(e.evaluate(at: 17.5), .keepListening)   // a 2 s thinking pause is fine
+        e.speechActivity(true, at: 17.5)
+        e.speechActivity(false, at: 18)
+        XCTAssertEqual(e.evaluate(at: 20.9), .keepListening)   // clock restarted at 18
+        XCTAssertEqual(e.evaluate(at: 21), .endpoint)
+    }
+
+    func testWakeHangoverDefault() {
+        XCTAssertEqual(AppSettings.wakeHangover(from: UserDefaults(suiteName: UUID().uuidString)!), 3)
+    }
+}

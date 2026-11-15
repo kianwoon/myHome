@@ -254,7 +254,8 @@ final class AppServices {
         if !chime.isEmpty { NSSound(named: NSSound.Name(chime))?.play() }
         hud.begin()
         wakeSession = true
-        speech.startListening(heldByUser: false, noSpeechTimeout: AppSettings.wakeNoSpeechTimeout())
+        speech.startListening(heldByUser: false, noSpeechTimeout: AppSettings.wakeNoSpeechTimeout(),
+                             hangover: AppSettings.wakeHangover())
         // The recogniser refused to start (no model, busy): re-arm now.
         // An unavailable status stays on the HUD (it says why); anything else hides it.
         if !speech.isListening && !Self.speechBusy(speech.status) {

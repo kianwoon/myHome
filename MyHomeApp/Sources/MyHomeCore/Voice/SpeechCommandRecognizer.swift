@@ -48,6 +48,7 @@ public final class SpeechCommandRecognizer: ObservableObject {
     /// recognised words (released too early, silence, no-speech timeout).
     public var onNothingHeard: (() -> Void)?
     private var noSpeechOverride: TimeInterval?
+    private var hangoverOverride: TimeInterval?
     /// Phrases to favour (device and room names), passed to Qwen3-ASR as
     /// hotwords; asked at the start of each session so renames are picked up.
     public var contextualStrings: (@MainActor () -> [String])?
@@ -190,12 +191,15 @@ public final class SpeechCommandRecognizer: ObservableObject {
 
     /// `heldByUser`: hold-to-talk — the session ends on `stopListening()` (key
     /// release) or the max-duration cap, never on a mid-request pause.
-    /// `noSpeechTimeout`: a shorter give-up for sessions nobody may be
-    /// talking to (a false wake), instead of the Settings value.
-    public func startListening(heldByUser: Bool = false, noSpeechTimeout: TimeInterval? = nil) {
+    /// `noSpeechTimeout`: how long to wait for speech to start; `hangover`:
+    /// quiet time after speech before the utterance ends. Both default to the
+    /// Settings values (the wake word passes its own).
+    public func startListening(heldByUser: Bool = false, noSpeechTimeout: TimeInterval? = nil,
+                               hangover: TimeInterval? = nil) {
         guard !isListening, !starting, !finalizing else { return }
         heldOpen = heldByUser
         noSpeechOverride = noSpeechTimeout
+        hangoverOverride = hangover
         refreshSupport()
         lastError = nil
         guard Self.usageDescriptionsPresent(in: bundle) else {
@@ -379,6 +383,7 @@ public final class SpeechCommandRecognizer: ObservableObject {
             delivered = false
             var policy = AppSettings.speechEndpointPolicy(from: defaults)
             if let noSpeechOverride { policy.noSpeechTimeout = noSpeechOverride }
+            if let hangoverOverride { policy.hangover = hangoverOverride }
             endpointer = UtteranceEndpointer(policy: policy,
                                              startedAt: ProcessInfo.processInfo.systemUptime,
                                              heldOpen: heldOpen)
