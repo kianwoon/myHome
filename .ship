@@ -1,0 +1,5 @@
+# ship config - run `ship` from anywhere in this repo (see ~/.claude/bin/ship --help)
+build    = MyHomeApp/scripts/build-standalone.sh
+artifact = MyHomeApp/build/standalone/MyHome.app
+verify   = test "$(defaults read "$PWD/MyHomeApp/build/standalone/MyHome.app/Contents/Info" MyHomeGitCommit)" = "$SHIP_COMMIT" && codesign --verify --deep --strict MyHomeApp/build/standalone/MyHome.app
+install  = /Applications/MyHome.app
