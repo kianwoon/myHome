@@ -222,16 +222,20 @@ public struct KEFConfig: Equatable, Sendable {
     /// Wake/standby take 3–6 s to show in speakerStatus (observed): power readback polls this long.
     public var powerSettleTimeout: TimeInterval
     public var powerSettleInterval: TimeInterval
+    /// Minimum gap between automatic Bonjour re-scans for a speaker that stopped answering at its saved address.
+    public var rediscoveryCooldown: TimeInterval
 
     public static let defaults = KEFConfig(
         requestTimeout: 3, visibleRefreshInterval: 15, backgroundRefreshInterval: 60,
         backoffSchedule: [30, 60, 120], backoffCap: 300, port: 80, volumeStep: 5,
-        volumeRange: 0...100, readbackDelay: 0.6, commitDebounce: 0.4, powerSettleTimeout: 12, powerSettleInterval: 1)
+        volumeRange: 0...100, readbackDelay: 0.6, commitDebounce: 0.4, powerSettleTimeout: 12, powerSettleInterval: 1,
+        rediscoveryCooldown: 120)
 
     public static let requestTimeoutKey = "kefRequestTimeoutSeconds"
     public static let visibleRefreshKey = "kefVisibleRefreshSeconds"
     public static let backgroundRefreshKey = "kefBackgroundRefreshSeconds"
     public static let volumeStepKey = "kefVolumeStep"
+    public static let rediscoveryCooldownKey = "kefRediscoveryCooldownSeconds"
 
     public static func fromDefaults(_ store: UserDefaults = .standard) -> KEFConfig {
         var config = defaults
@@ -242,6 +246,7 @@ public struct KEFConfig: Equatable, Sendable {
         config.visibleRefreshInterval = seconds(visibleRefreshKey, defaults.visibleRefreshInterval, 5...300)
         config.backgroundRefreshInterval = max(seconds(backgroundRefreshKey, defaults.backgroundRefreshInterval, 30...900),
                                                defaults.backgroundRefreshInterval)
+        config.rediscoveryCooldown = seconds(rediscoveryCooldownKey, defaults.rediscoveryCooldown, 30...3600)
         config.volumeStep = min(max(store.object(forKey: volumeStepKey) as? Int ?? defaults.volumeStep, 1), 20)
         return config
     }

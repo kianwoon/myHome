@@ -33,7 +33,7 @@ struct KEFSpeakerDetailView: View {
                 HStack {
                     Button(refreshing ? "Refreshing…" : "Refresh") {
                         refreshing = true
-                        Task { await store.refreshKEF(device.id, manual: true); refreshing = false }
+                        Task { await store.refreshKEF(device.id, manual: true, userInitiated: true); refreshing = false }
                     }.disabled(refreshing)
                     Button("Edit Connection") { editing = record }
                     Spacer()

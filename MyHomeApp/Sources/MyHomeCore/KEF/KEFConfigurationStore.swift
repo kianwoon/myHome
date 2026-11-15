@@ -52,6 +52,11 @@ public struct KEFRegistry {
     var visible: Set<String> = []
     var config: KEFConfig = .fromDefaults()
     var persistence = KEFConfigurationStore()
+    /// Bonjour scan used to find a saved speaker whose DHCP address changed.
+    var discover: @Sendable () async -> [KEFDiscoveredSpeaker] = { await KEFDiscovery.discover() }
+    /// One shared in-flight re-scan for every speaker that stopped answering.
+    var rediscovery: Task<[KEFDiscoveredSpeaker], Never>?
+    var lastRediscovery: Date?
 
     /// Roster-shaped devices. `ip` stays EMPTY on purpose: every Tuya/Briturn
     /// path keys off `hasAddress`, and a KEF speaker must never enter them.

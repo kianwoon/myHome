@@ -59,10 +59,11 @@ cd MyHomeApp && swift run KEFProbe <speaker-ip>
 * Refresh rides the existing poll cycle: 15 s for speakers on screen, ≥ 60 s otherwise; 3 s request timeout; one exchange per speaker; failures back off 30/60/120 s capped at 300 s; manual Refresh bypasses once. Defaults are `KEFConfig` (UserDefaults overrides, clamped).
 * Writes are never replayed. After a write one readback decides the outcome; HTTP 200 alone is never "confirmed". Rapid volume changes coalesce (last intent wins) and stay ordered around power/input.
 * A stale reading is labelled **stale**, never shown as current. Offline ≠ standby.
+* **Address changes heal themselves**: when a refresh fails (unreachable, or another device now answers at that IP), MyHome runs one shared Bonjour scan (detached from the poll cycle; at most once per `KEFConfig.rediscoveryCooldown`, 120 s, UserDefaults `kefRediscoveryCooldownSeconds` clamped 30…3600; the detail panel's Refresh button bypasses). If the same speaker — discovery verifies its MAC — answers at a different address, the record's address is updated (name/room kept) and it is read once. A record edited or removed during the scan is left alone.
 * Assistant: "turn on the living room speakers", "set KEF volume to 30 percent", "mute the speakers" / "unmute KEF", "switch KEF to TV", "what volume are the speakers at?".
 
 ## Troubleshooting
 
 * *Needs Setup*: the speaker answered 401/403 — authentication is not implemented yet; record the response here and file the finding.
-* *Offline*: address changed (re-add by address — name/room are kept) or speaker unreachable on the LAN.
+* *Offline*: speaker unreachable on the LAN. A changed DHCP address is picked up automatically within one scan (see Behaviour); if mDNS is blocked between the Mac and the speaker, re-add it by address — name/room are kept. A DHCP reservation for the speaker avoids the move entirely.
 * *Unsupported model*: only LS50 Wireless II is in scope.

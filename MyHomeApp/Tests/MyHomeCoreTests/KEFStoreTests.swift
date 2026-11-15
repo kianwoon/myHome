@@ -58,6 +58,7 @@ final class KEFStoreTests: XCTestCase {
         store.setKEFConfigForTest(config)
         store.setKEFPersistenceForTest(KEFConfigurationStore(defaults: defaults))
         store.setKEFClientFactoryForTest { [speaker] _ in speaker! }
+        store.setKEFDiscoverForTest { [] }  // never a real Bonjour browse in tests
         store.addKEFSpeaker(identity: Self.identity, address: "192.0.2.10", name: "Living Room KEF", room: "Living Room")
         await store.refreshKEF(device.id)
     }

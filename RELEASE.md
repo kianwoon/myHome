@@ -8,6 +8,7 @@
 * New: "play jazz music on the study room speaker" — with no saved station, the phrase searches YouTube (unofficial, anonymous) and plays the first regular video.
 * New: YouTube links as saved stations or via Play URL on Google Home / Nest speakers, through the YouTube receiver (unofficial lounge API; regular videos play, 24/7 live streams are refused by the speaker).
 * New: KEF LS50 Wireless II support — a native LAN adapter (`MyHomeCore/KEF`), a Speakers category with card, detail panel and menu controls, and power/volume/mute/input in the unified control layer, voice grammar and assistant. Protocol shapes are reference-derived and pending hardware qualification; see [docs/KEF.md](docs/KEF.md).
+* Fix: a KEF speaker showed **Offline** after its router gave it a new IP address. When a saved speaker stops answering (or another device answers at its old IP), MyHome now re-scans Bonjour (at most every 2 min, `kefRediscoveryCooldownSeconds`; the speaker Refresh button bypasses), and if the same speaker — matched by MAC — answers elsewhere, updates the saved address and keeps its name and room.
 
 ## v1.20.0 - Monitor Reliability, Security & Bug Fixes
 
