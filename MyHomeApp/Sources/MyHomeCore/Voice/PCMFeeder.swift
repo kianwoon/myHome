@@ -3,11 +3,18 @@
 import AVFoundation
 import Foundation
 
+/// Receives converted 16 kHz mono samples (on the audio thread).
+protocol PCMSampleSink: AnyObject {
+    func append(samples: [Float])
+}
+
+extension SegmentingTranscriber: PCMSampleSink {}
+
 final class PCMFeeder: @unchecked Sendable {
     private let converter: AVAudioConverter
     private let outputFormat: AVAudioFormat
     private let ratio: Double
-    private let sink: SegmentingTranscriber
+    private let sink: PCMSampleSink
     private let audiblePeak: Float
     private let lock = NSLock()
     private var stopped = false
@@ -16,7 +23,7 @@ final class PCMFeeder: @unchecked Sendable {
 
     var onFailure: (@Sendable (String) -> Void)?
 
-    init?(tapFormat: AVAudioFormat, sink: SegmentingTranscriber,
+    init?(tapFormat: AVAudioFormat, sink: PCMSampleSink,
           audiblePeak: Float = AppSettings.speechAudiblePeakThreshold) {
         guard let outputFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32,
                                                sampleRate: Double(SpeechModelSpec.sampleRate),

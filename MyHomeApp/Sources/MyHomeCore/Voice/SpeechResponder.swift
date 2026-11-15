@@ -10,6 +10,11 @@ public final class SpeechResponder: ObservableObject {
     private let defaults: UserDefaults
     private let synthesizer = AVSpeechSynthesizer()
     private let speechDelegate = Delegate()
+    /// Utterances queued and not yet finished/cancelled. `isSpeaking` follows
+    /// this set, NOT `synthesizer.isSpeaking`, which can still read true inside
+    /// the last utterance's didFinish — leaving `isSpeaking` stuck on (the
+    /// wake word stays paused on it).
+    private var pending = Set<ObjectIdentifier>()
 
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -27,12 +32,15 @@ public final class SpeechResponder: ObservableObject {
         for part in Self.segments(of: trimmed) {
             let utterance = AVSpeechUtterance(string: part.text)
             utterance.voice = part.language.flatMap { AVSpeechSynthesisVoice(language: $0) } ?? localeVoice()
+            pending.insert(ObjectIdentifier(utterance))
             synthesizer.speak(utterance)
         }
+        if pending.isEmpty { isSpeaking = false }
     }
 
     public func stop() {
         synthesizer.stopSpeaking(at: .immediate)
+        pending.removeAll()
         isSpeaking = false
     }
 
@@ -84,23 +92,22 @@ public final class SpeechResponder: ObservableObject {
         return nil
     }
 
-    fileprivate func speakingChanged(_ speaking: Bool) { isSpeaking = speaking }
+    fileprivate func utteranceEnded(_ id: ObjectIdentifier) {
+        pending.remove(id)
+        if pending.isEmpty, isSpeaking { isSpeaking = false }
+    }
 
     private final class Delegate: NSObject, AVSpeechSynthesizerDelegate {
         nonisolated(unsafe) weak var owner: SpeechResponder?
 
         func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-            let stillSpeaking = synthesizer.isSpeaking
-            Task { @MainActor in
-                if let owner, !stillSpeaking { owner.speakingChanged(false) }
-            }
+            let id = ObjectIdentifier(utterance)
+            Task { @MainActor [weak owner] in owner?.utteranceEnded(id) }
         }
 
         func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-            let stillSpeaking = synthesizer.isSpeaking
-            Task { @MainActor in
-                if let owner, !stillSpeaking { owner.speakingChanged(false) }
-            }
+            let id = ObjectIdentifier(utterance)
+            Task { @MainActor [weak owner] in owner?.utteranceEnded(id) }
         }
     }
 }

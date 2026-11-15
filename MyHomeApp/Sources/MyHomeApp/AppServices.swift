@@ -23,10 +23,15 @@ final class AppServices {
     let secrets: SecretStore = KeychainSecretStore()
     let hotkey: HotkeyController
     let hud: HotkeyHUD
+    /// Hands-free twin of the hotkey ("Hey Home"); opt-in, off by default.
+    let wake: WakeWordListener
     /// Mutes / ducks the speakers while the mic is open (both listening paths).
     let outputGate: ListeningOutputGate
     private var outputHeld = false
     private var outputCancellables = Set<AnyCancellable>()
+    private var wakeCancellables = Set<AnyCancellable>()
+    /// The current recogniser session was started by the wake word.
+    private var wakeSession = false
 
     private init() {
         // Before anything reads the provider: a pre-split "jev" provider
@@ -57,24 +62,45 @@ final class AppServices {
                 .filter { !$0.isEmpty && seen.insert($0).inserted }
         }
         hotkey = HotkeyController(registrar: CarbonHotkeyRegistrar())
+        wake = WakeWordListener(capture: MicrophoneWakeCapture())
         hud = HotkeyHUD(speech: speech, assistant: assistant)
         outputGate = ListeningOutputGate(controller: CoreAudioOutputController())
 
         // ONE utterance path for the command bar mic AND the global hotkey, so
         // voice works with the main window closed. The command bar only renders.
         speech.onUtterance = { [weak self] utterance in
-            self?.hud.utteranceReceived()
-            Task { @MainActor in await self?.runVoice(utterance) }
+            guard let self else { return }
+            var text = utterance
+            if self.wakeSession {
+                self.wakeSession = false
+                text = WakePhraseStripper.command(from: utterance)
+                // Only the wake phrase again (or a false wake): nothing to run, say nothing.
+                guard !text.isEmpty else {
+                    AppLog.assistant.info("wake session: wake phrase only, ignored")
+                    self.hud.abandon()
+                    return
+                }
+            }
+            self.hud.utteranceReceived()
+            Task { @MainActor in await self.runVoice(text) }
         }
         speech.onNothingHeard = { [weak self] in
             guard let self else { return }
+            // A wake with no command after it is most likely a false wake: end silently.
+            if self.wakeSession {
+                self.wakeSession = false
+                self.hud.abandon()
+                return
+            }
             self.hud.show(self.assistant.noteNothingHeard())
         }
         hud.onConfirm = { [weak self] in Task { @MainActor in await self?.confirmPending() } }
         hud.onDeny = { [weak self] in self?.denyPending() }
         hotkey.onPress = { [weak self] in self?.hotkeyPressed() }
         hotkey.onRelease = { [weak self] in self?.hotkeyReleased() }
+        wake.onWake = { [weak self] in self?.wakeDetected() }
         bindOutputGate()
+        bindWakeWord()
         reloadHousekeeper()
     }
 
@@ -119,19 +145,26 @@ final class AppServices {
     /// app has finished launching.
     func startHotkey() {
         hotkey.start()
+        wake.start()
         // A key-up can be lost across sleep; treat it as a release.
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
+                self?.wake.setPaused(.sleep, true)
                 self?.hotkey.cancelHeld()
                 self?.speech.cancel()
                 self?.restoreAudioOutput()
             }
+        }
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.wake.setPaused(.sleep, false) }
         }
     }
 
     // MARK: Voice (shared by the command bar and the hotkey)
 
     private func runVoice(_ utterance: String) async {
+        wake.setPaused(.assistant, true)
+        defer { wake.setPaused(.assistant, false) }
         let reply = await assistant.handle(utterance, origin: .voice)
         outputGate.settle()   // the spoken reply must be audible
         responder.speak(reply.text)
@@ -155,6 +188,7 @@ final class AppServices {
 
     /// Press only starts listening; policy checks and confirmations are unchanged.
     private func hotkeyPressed() {
+        wakeSession = false
         responder.stop()
         hud.begin()
         speech.startListening(heldByUser: true)
@@ -169,6 +203,49 @@ final class AppServices {
             // recogniser to start listening with nobody holding the key.
             speech.cancel()
             hud.abandon()
+        }
+    }
+
+    // MARK: Wake word
+
+    /// The wake listener's mic is released whenever the recogniser, a spoken
+    /// reply or the hotkey could be using the microphone or the speakers.
+    private func bindWakeWord() {
+        Publishers.CombineLatest(speech.$status, speech.$isListening)
+            .sink { [weak self] status, listening in
+                self?.wake.setPaused(.recognizer, listening || Self.speechBusy(status))
+            }
+            .store(in: &wakeCancellables)
+        responder.$isSpeaking
+            .sink { [weak self] speaking in self?.wake.setPaused(.speaking, speaking) }
+            .store(in: &wakeCancellables)
+        hotkey.$isHeld
+            .sink { [weak self] held in self?.wake.setPaused(.hotkey, held) }
+            .store(in: &wakeCancellables)
+    }
+
+    private static func speechBusy(_ status: SpeechCommandRecognizer.Status) -> Bool {
+        switch status {
+        case .requestingPermission, .loadingModel, .listening, .transcribing: return true
+        case .idle, .unavailable: return false
+        }
+    }
+
+    /// Same path as a hotkey press, but the recogniser ends the utterance on
+    /// its own endpointer (no key release). The chime tells the user to speak.
+    private func wakeDetected() {
+        responder.stop()
+        let chime = AppSettings.wakeWordChime()
+        if !chime.isEmpty { NSSound(named: NSSound.Name(chime))?.play() }
+        hud.begin()
+        wakeSession = true
+        speech.startListening(heldByUser: false, noSpeechTimeout: AppSettings.wakeNoSpeechTimeout())
+        // The recogniser refused to start (no model, busy): re-arm now.
+        // An unavailable status stays on the HUD (it says why); anything else hides it.
+        if !speech.isListening && !Self.speechBusy(speech.status) {
+            if case .unavailable = speech.status {} else { hud.abandon() }
+            wakeSession = false
+            wake.setPaused(.recognizer, false)
         }
     }
 
