@@ -61,7 +61,7 @@ struct SpeechSettingsView: View {
     }
 }
 
-/// Hotkey tab: hold-to-talk shortcut and the while-listening output mute.
+/// Hotkey tab: hold-to-talk shortcut, the wake word and the while-listening output mute.
 struct HotkeySettingsView: View {
     private let services: AppServices
 
@@ -72,6 +72,7 @@ struct HotkeySettingsView: View {
     var body: some View {
         Form {
             HotkeySettingsSection(hotkey: services.hotkey)
+            WakeWordSettingsSection(wake: services.wake)
             OutputMuteSettingsSection(gate: services.outputGate)
         }
         .formStyle(.grouped)

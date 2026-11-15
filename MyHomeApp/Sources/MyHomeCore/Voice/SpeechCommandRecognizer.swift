@@ -47,6 +47,7 @@ public final class SpeechCommandRecognizer: ObservableObject {
     /// Called once when a session that should have delivered ended with no
     /// recognised words (released too early, silence, no-speech timeout).
     public var onNothingHeard: (() -> Void)?
+    private var noSpeechOverride: TimeInterval?
     /// Phrases to favour (device and room names), passed to Qwen3-ASR as
     /// hotwords; asked at the start of each session so renames are picked up.
     public var contextualStrings: (@MainActor () -> [String])?
@@ -189,9 +190,12 @@ public final class SpeechCommandRecognizer: ObservableObject {
 
     /// `heldByUser`: hold-to-talk — the session ends on `stopListening()` (key
     /// release) or the max-duration cap, never on a mid-request pause.
-    public func startListening(heldByUser: Bool = false) {
+    /// `noSpeechTimeout`: a shorter give-up for sessions nobody may be
+    /// talking to (a false wake), instead of the Settings value.
+    public func startListening(heldByUser: Bool = false, noSpeechTimeout: TimeInterval? = nil) {
         guard !isListening, !starting, !finalizing else { return }
         heldOpen = heldByUser
+        noSpeechOverride = noSpeechTimeout
         refreshSupport()
         lastError = nil
         guard Self.usageDescriptionsPresent(in: bundle) else {
@@ -373,7 +377,9 @@ public final class SpeechCommandRecognizer: ObservableObject {
             segments = []
             transcript = ""
             delivered = false
-            endpointer = UtteranceEndpointer(policy: AppSettings.speechEndpointPolicy(from: defaults),
+            var policy = AppSettings.speechEndpointPolicy(from: defaults)
+            if let noSpeechOverride { policy.noSpeechTimeout = noSpeechOverride }
+            endpointer = UtteranceEndpointer(policy: policy,
                                              startedAt: ProcessInfo.processInfo.systemUptime,
                                              heldOpen: heldOpen)
             startTicking(generation: current)
