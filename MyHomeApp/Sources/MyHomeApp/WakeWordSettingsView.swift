@@ -6,6 +6,8 @@ import SwiftUI
 struct WakeWordSettingsSection: View {
     @ObservedObject var wake: WakeWordListener
     @AppStorage(AppSettings.wakeWordThresholdKey) private var threshold = AppSettings.defaultWakeWordThreshold
+    @State private var draft = ""
+    @State private var phraseProblem: String?
 
     var body: some View {
         Section {
@@ -14,6 +16,7 @@ struct WakeWordSettingsSection: View {
                 set: { wake.setEnabled($0) }))
             if wake.enabled {
                 stateRow
+                phraseRow
                 VStack(alignment: .leading) {
                     Slider(value: $threshold, in: AppSettings.wakeWordThresholdRange) {
                         Text("Strictness")
@@ -35,6 +38,31 @@ struct WakeWordSettingsSection: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    @ViewBuilder private var phraseRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                TextField("Wake phrase", text: $draft, prompt: Text(AppSettings.defaultWakeWordPhrase.capitalized))
+                    .onSubmit(savePhrase)
+                Button("Save", action: savePhrase)
+                    .disabled(draft.trimmingCharacters(in: .whitespaces).isEmpty || draft == wake.phrase)
+                Button("Reset") { draft = AppSettings.defaultWakeWordPhrase; savePhrase() }
+                    .disabled(wake.phrase == AppSettings.defaultWakeWordPhrase)
+            }
+            if let phraseProblem {
+                Label(phraseProblem, systemImage: "xmark.octagon").font(.caption).foregroundStyle(.red)
+            } else {
+                Text("English words, Chinese characters, or pinyin for a character with several readings (hēi / hei1). Two to four words work best; very short phrases wake by mistake more often.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .onAppear { draft = wake.phrase }
+    }
+
+    private func savePhrase() {
+        phraseProblem = wake.setPhrase(draft)
+        if phraseProblem == nil { draft = wake.phrase }
     }
 
     @ViewBuilder private var stateRow: some View {

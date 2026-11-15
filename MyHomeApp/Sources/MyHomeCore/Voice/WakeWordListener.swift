@@ -48,6 +48,7 @@ public final class WakeWordListener: ObservableObject {
     private let makeSpotter: @Sendable () throws -> WakeWordSpotting
     private let installModel: @Sendable () async throws -> Void
     private let authorizeMic: @Sendable () async -> WakeMicAccess
+    private let validatePhrase: (String) -> String?
     private var micGranted = false
     private let queue = DispatchQueue(label: "myhome.wake.spotter", qos: .userInitiated)
     private let now: () -> TimeInterval
@@ -68,12 +69,14 @@ public final class WakeWordListener: ObservableObject {
                 makeSpotter: (@Sendable () throws -> WakeWordSpotting)? = nil,
                 installModel: @escaping @Sendable () async throws -> Void = { try await WakeWordModelInstaller.shared.install() },
                 authorizeMic: @escaping @Sendable () async -> WakeMicAccess = { await WakeWordListener.systemMicAccess() },
+                validatePhrase: @escaping (String) -> String? = { WakeWordPhraseEncoder.validate($0) },
                 now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
         self.defaults = defaults
         self.capture = capture
         self.modelInstalled = modelInstalled
         self.installModel = installModel
         self.authorizeMic = authorizeMic
+        self.validatePhrase = validatePhrase
         self.now = now
         self.enabled = AppSettings.wakeWordEnabled(from: defaults)
         self.makeSpotter = makeSpotter ?? {
@@ -118,6 +121,20 @@ public final class WakeWordListener: ObservableObject {
         enabled = on
         if !on { spotter = nil }
         reconcile()
+    }
+
+    /// Validates against the installed model, persists and rebuilds. Returns
+    /// the reason when the phrase cannot be used (nothing changes then).
+    @discardableResult
+    public func setPhrase(_ phrase: String) -> String? {
+        let trimmed = phrase.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return WakeWordPhraseError.empty.description }
+        if let problem = validatePhrase(trimmed) { return problem }
+        defaults.set(trimmed, forKey: AppSettings.wakeWordPhraseKey)
+        objectWillChange.send()
+        AppLog.assistant.info("wake phrase changed to \(trimmed, privacy: .public)")
+        reload()
+        return nil
     }
 
     /// Settings changed (phrase, threshold): rebuild the spotter.

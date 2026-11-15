@@ -97,42 +97,94 @@ public enum WakeWordPhraseError: Error, Equatable, CustomStringConvertible {
     case empty
     case unknownWord(String)
     case unknownToken(String)
+    case unknownSyllable(String)
     case unreadable
 
     public var description: String {
         switch self {
         case .empty: return "The wake phrase is empty."
-        case .unknownWord(let word): return "\"\(word)\" is not in the wake-word dictionary. Use common English words."
+        case .unknownWord(let word): return "\"\(word)\" is not in the wake-word dictionary. Use common English words, Chinese characters or pinyin (hēi / hei1)."
         case .unknownToken(let token): return "The wake-word model does not know the sound \"\(token)\"."
+        case .unknownSyllable(let syllable): return "\"\(syllable)\" is not a pinyin syllable the model knows. Type the pinyin with its tone, e.g. hēi or hei1."
         case .unreadable: return "The wake-word model files could not be read."
         }
     }
 }
 
 public enum WakeWordPhraseEncoder {
-    /// "hey home" → `HH EY1 HH OW1 M`, every word looked up in `lexicon`
-    /// (`WORD PH1 PH2 …` per line, first pronunciation wins) and every phone
-    /// checked against `tokens` (sherpa-onnx crashes on an unknown token).
-    public static func encode(_ phrase: String, lexicon: [String: [String]], tokens: Set<String>) throws -> [String] {
-        let words = phrase.uppercased().split(whereSeparator: { $0.isWhitespace })
-            .map { $0.trimmingCharacters(in: .punctuationCharacters.subtracting(CharacterSet(charactersIn: "'"))) }
-            .filter { !$0.isEmpty }
-        guard !words.isEmpty else { throw WakeWordPhraseError.empty }
-        var phones: [String] = []
-        for word in words {
-            guard let pronunciation = lexicon[word] else { throw WakeWordPhraseError.unknownWord(word) }
-            phones += pronunciation
-        }
-        if let bad = phones.first(where: { !tokens.contains($0) }) { throw WakeWordPhraseError.unknownToken(bad) }
-        return phones
+    /// One piece of a phrase: an English word (lexicon lookup) or a pinyin
+    /// syllable (from a Chinese character or typed by the user).
+    public enum Segment: Equatable {
+        case english(String)
+        case pinyin(String)
     }
 
-    /// Only the words of `phrase` are kept (the lexicon has ~126k lines).
+    /// "Hey 小家", "hēi hǒu", "hei1 hou3", "嘿home" — whitespace-separated words,
+    /// each split further into Chinese-character runs and the rest.
+    public static func segments(of phrase: String) -> [Segment] {
+        var out: [Segment] = []
+        let keepApostrophe = CharacterSet.punctuationCharacters.subtracting(CharacterSet(charactersIn: "'"))
+        func flushLatin(_ text: String) {
+            let word = text.trimmingCharacters(in: keepApostrophe)
+            guard !word.isEmpty else { return }
+            if WakeWordPinyin.looksLikePinyin(word) {
+                out.append(.pinyin(WakeWordPinyin.applyToneNumber(word)))
+            } else {
+                out.append(.english(word.uppercased()))
+            }
+        }
+        var latin = "", han = ""
+        func flush() {
+            flushLatin(latin); latin = ""
+            if !han.isEmpty { out += WakeWordPinyin.syllables(ofHan: han).map(Segment.pinyin); han = "" }
+        }
+        for c in phrase {
+            if WakeWordPinyin.isHan(c) {
+                if !latin.isEmpty { flush() }
+                han.append(c)
+            } else if c.isWhitespace || (c.isPunctuation && c != "'") {
+                flush()   // separators, incl. Chinese punctuation
+            } else {
+                if !han.isEmpty { flush() }
+                latin.append(c)
+            }
+        }
+        flush()
+        return out
+    }
+
+    /// Model units for `phrase`: English words through `lexicon` (`WORD PH1
+    /// PH2 …`, first pronunciation wins), pinyin as initial + tone-marked
+    /// final; every unit checked against `tokens` (sherpa-onnx crashes on an
+    /// unknown token).
+    public static func encode(_ phrase: String, lexicon: [String: [String]], tokens: Set<String>) throws -> [String] {
+        let parts = segments(of: phrase)
+        guard !parts.isEmpty else { throw WakeWordPhraseError.empty }
+        var units: [String] = []
+        for part in parts {
+            switch part {
+            case .english(let word):
+                guard let pronunciation = lexicon[word] else { throw WakeWordPhraseError.unknownWord(word) }
+                if let bad = pronunciation.first(where: { !tokens.contains($0) }) { throw WakeWordPhraseError.unknownToken(bad) }
+                units += pronunciation
+            case .pinyin(let syllable):
+                let pieces = WakeWordPinyin.units(ofSyllable: syllable)
+                guard pieces.allSatisfy(tokens.contains) else { throw WakeWordPhraseError.unknownSyllable(syllable) }
+                units += pieces
+            }
+        }
+        return units
+    }
+
+    /// Only the English words of `phrase` are kept (the lexicon has ~126k lines).
     public static func loadLexicon(at url: URL, for phrase: String) throws -> [String: [String]] {
         guard let text = try? String(contentsOf: url, encoding: .utf8) else { throw WakeWordPhraseError.unreadable }
-        let wanted = Set(phrase.uppercased().split(whereSeparator: { $0.isWhitespace })
-            .map { $0.trimmingCharacters(in: .punctuationCharacters.subtracting(CharacterSet(charactersIn: "'"))) })
+        let wanted = Set(segments(of: phrase).compactMap { segment -> String? in
+            if case .english(let word) = segment { return word }
+            return nil
+        })
         var lexicon: [String: [String]] = [:]
+        guard !wanted.isEmpty else { return lexicon }
         for line in text.split(whereSeparator: \.isNewline) {
             let parts = line.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
             guard parts.count >= 2, wanted.contains(parts[0]), lexicon[parts[0]] == nil else { continue }
@@ -144,6 +196,19 @@ public enum WakeWordPhraseEncoder {
     public static func loadTokens(at url: URL) throws -> Set<String> {
         guard let text = try? String(contentsOf: url, encoding: .utf8) else { throw WakeWordPhraseError.unreadable }
         return Set(text.split(whereSeparator: \.isNewline).compactMap { $0.split(separator: " ").first.map(String.init) })
+    }
+
+    /// Validates `phrase` against the installed model; nil when usable.
+    public static func validate(_ phrase: String, directory: URL = WakeWordModelStore.directory) -> String? {
+        guard WakeWordModelStore.isInstalled(at: directory) else { return nil }   // checked again on install
+        do {
+            let lexicon = try loadLexicon(at: WakeWordModelStore.url(WakeWordModelSpec.lexiconFile, in: directory), for: phrase)
+            _ = try encode(phrase, lexicon: lexicon,
+                           tokens: loadTokens(at: WakeWordModelStore.url(WakeWordModelSpec.tokensFile, in: directory)))
+            return nil
+        } catch {
+            return (error as? CustomStringConvertible)?.description ?? error.localizedDescription
+        }
     }
 
     /// One sherpa-onnx keywords line: tokens, `:boost`, `#threshold`, `@tag`.

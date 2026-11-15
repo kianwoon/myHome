@@ -73,7 +73,7 @@ final class AppServices {
             var text = utterance
             if self.wakeSession {
                 self.wakeSession = false
-                text = WakePhraseStripper.command(from: utterance)
+                text = WakePhraseStripper.command(from: utterance, spellings: self.wakeSpellings)
                 // Only the wake phrase again (or a false wake): nothing to run, say nothing.
                 guard !text.isEmpty else {
                     AppLog.assistant.info("wake session: wake phrase only, ignored")
@@ -222,6 +222,15 @@ final class AppServices {
         hotkey.$isHeld
             .sink { [weak self] held in self?.wake.setPaused(.hotkey, held) }
             .store(in: &wakeCancellables)
+    }
+
+    /// The typed phrase itself, plus (for the default "Hey Home") the ASR
+    /// spellings measured on a real voice.
+    private var wakeSpellings: [String] {
+        let phrase = wake.phrase
+        var spellings = [phrase]
+        if phrase.uppercased() == AppSettings.defaultWakeWordPhrase { spellings += AppSettings.wakePhraseSpellings() }
+        return spellings
     }
 
     private static func speechBusy(_ status: SpeechCommandRecognizer.Status) -> Bool {

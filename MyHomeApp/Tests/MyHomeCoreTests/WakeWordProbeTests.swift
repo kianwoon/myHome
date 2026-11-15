@@ -24,7 +24,7 @@ final class WakeWordProbeTests: XCTestCase {
         }
         let spotter = try SherpaWakeWordSpotter(
             directory: URL(fileURLWithPath: modelDir),
-            config: .init(phrase: AppSettings.defaultWakeWordPhrase,
+            config: .init(phrase: env["MYHOME_KWS_PHRASE"] ?? AppSettings.defaultWakeWordPhrase,
                           boost: env["MYHOME_KWS_BOOST"].flatMap(Double.init) ?? AppSettings.defaultWakeWordBoost,
                           threshold: env["MYHOME_KWS_THRESHOLD"].flatMap(Double.init) ?? AppSettings.defaultWakeWordThreshold,
                           keywordsOverride: env["MYHOME_KWS_KEYWORDS"]?.replacingOccurrences(of: "|", with: "\n"),

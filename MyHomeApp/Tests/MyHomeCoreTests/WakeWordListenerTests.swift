@@ -217,3 +217,36 @@ private final class WatchdogSpotter: WakeWordSpotting {
     func accept(_ samples: [Float]) -> Bool { false }
     func reset() {}
 }
+
+final class WakeWordChineseEncoderTests: XCTestCase {
+    private let tokens: Set<String> = ["HH", "EY1", "OW1", "M", "x", "iǎo", "j", "iā", "h", "ēi", "ǒu", "n", "ǚ", "ér", "zh", "ōu"]
+    private let lexicon = ["HEY": ["HH", "EY1"], "HOME": ["HH", "OW1", "M"]]
+
+    func testChineseCharactersBecomeInitialPlusFinal() throws {
+        XCTAssertEqual(try WakeWordPhraseEncoder.encode("小家小家", lexicon: [:], tokens: tokens),
+                       ["x", "iǎo", "j", "iā", "x", "iǎo", "j", "iā"])
+        XCTAssertEqual(try WakeWordPhraseEncoder.encode("女儿", lexicon: [:], tokens: tokens), ["n", "ǚ", "ér"])
+    }
+
+    func testTypedPinyinMarkedOrNumbered() throws {
+        XCTAssertEqual(try WakeWordPhraseEncoder.encode("hēi hǒu", lexicon: [:], tokens: tokens), ["h", "ēi", "h", "ǒu"])
+        XCTAssertEqual(try WakeWordPhraseEncoder.encode("hei1 hou3", lexicon: [:], tokens: tokens), ["h", "ēi", "h", "ǒu"])
+        XCTAssertEqual(WakeWordPinyin.applyToneNumber("lv4"), "lǜ")
+        XCTAssertEqual(WakeWordPinyin.applyToneNumber("zhou1"), "zhōu")
+        XCTAssertEqual(WakeWordPinyin.applyToneNumber("jia5"), "jia")
+    }
+
+    func testMixedEnglishAndChinese() throws {
+        XCTAssertEqual(try WakeWordPhraseEncoder.encode("Hey 小家", lexicon: lexicon, tokens: tokens),
+                       ["HH", "EY1", "x", "iǎo", "j", "iā"])
+        XCTAssertEqual(try WakeWordPhraseEncoder.encode("嘿，home", lexicon: lexicon, tokens: tokens),
+                       ["h", "ēi", "HH", "OW1", "M"])
+        XCTAssertEqual(WakeWordPhraseEncoder.segments(of: "hey home"), [.english("HEY"), .english("HOME")])
+    }
+
+    func testUnknownSyllableIsReported() {
+        XCTAssertThrowsError(try WakeWordPhraseEncoder.encode("管家", lexicon: [:], tokens: tokens)) {
+            XCTAssertEqual($0 as? WakeWordPhraseError, .unknownSyllable("guǎn"))
+        }
+    }
+}
