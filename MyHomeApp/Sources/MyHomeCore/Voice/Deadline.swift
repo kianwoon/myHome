@@ -10,10 +10,20 @@ private final class DeadlineBox<T: Sendable>: @unchecked Sendable {
     private var finished = false
     private var tasks: [Task<Void, Never>] = []
 
-    func install(_ continuation: CheckedContinuation<T?, Never>) {
+    /// False when the box already finished (the caller was cancelled before
+    /// the wait began): the continuation is resumed with nil at once instead
+    /// of being stored where nothing would ever resume it.
+    @discardableResult
+    func install(_ continuation: CheckedContinuation<T?, Never>) -> Bool {
         lock.lock()
-        defer { lock.unlock() }
+        guard !finished else {
+            lock.unlock()
+            continuation.resume(returning: nil)
+            return false
+        }
         self.continuation = continuation
+        lock.unlock()
+        return true
     }
 
     func add(_ task: Task<Void, Never>) {
@@ -41,7 +51,7 @@ public enum Deadline {
         let box = DeadlineBox<T>()
         return await withTaskCancellationHandler {
             await withCheckedContinuation { (continuation: CheckedContinuation<T?, Never>) in
-                box.install(continuation)
+                guard box.install(continuation) else { return }
                 box.add(Task { box.finish(await operation()) })
                 box.add(Task {
                     try? await Task.sleep(nanoseconds: UInt64(max(seconds, 0) * 1_000_000_000))

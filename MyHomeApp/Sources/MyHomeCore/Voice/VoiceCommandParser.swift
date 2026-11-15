@@ -34,6 +34,9 @@ public struct SpeakerGrammar: Sendable {
 /// house-specific phrasings can be supplied without touching the parser.
 public struct CommandGrammar: Sendable {
     public var fillerPrefix: [String]
+    /// Words that join two commands in one sentence ("turn off the fan AND open the curtain").
+    // allow-hardcode: spoken conjunctions of the grammar vocabulary.
+    public var clauseSeparators: Set<String> = ["and", "then"]
     public var powerVerbs: Set<String>
     public var onWords: Set<String>
     public var offWords: Set<String>
@@ -211,6 +214,27 @@ public struct VoiceCommandParser {
         if let intent = parseCover(tokens) { return intent }
         if let intent = parseSetting(tokens) { return intent }
         return .unknown(utterance)
+    }
+
+    /// "turn off the fan and open the curtain" → both commands, in order.
+    /// Only when the sentence splits at a conjunction into two or more clauses
+    /// that EACH parse as a command on their own; anything else ("play rock and
+    /// roll", "turn on the fan and light") returns nil and stays one request.
+    public func splitCommands(_ utterance: String) -> [(query: DeviceQuery, command: DeviceCommand)]? {
+        let spaced = utterance.replacingOccurrences(of: "%", with: " percent ")
+        let tokens = TextNormalizer.rawTokens(spaced)
+        var clauses: [[String]] = [[]]
+        for token in tokens {
+            if grammar.clauseSeparators.contains(token) { clauses.append([]) } else { clauses[clauses.count - 1].append(token) }
+        }
+        clauses.removeAll { $0.isEmpty }
+        guard clauses.count > 1 else { return nil }
+        var commands: [(query: DeviceQuery, command: DeviceCommand)] = []
+        for clause in clauses {
+            guard case .command(let query, let command) = parse(clause.joined(separator: " ")) else { return nil }
+            commands.append((query, command))
+        }
+        return commands
     }
 
     /// The numeric value a request carries ("to 40", "speed two", "50%"), read

@@ -279,4 +279,22 @@ final class AssistantCoordinatorTests: XCTestCase {
         let planner = PlannerFactory.makePlanner(controller: controller, defaults: UserDefaults(suiteName: "PlannerFactory-\(UUID())")!)
         XCTAssertNil(planner, "no model is contacted unless the user picks a provider")
     }
+
+    func testTwoCommandsInOneSentenceBothRun() async {
+        let curtain = ControlFixtures.device("curtain-study", name: "Study Curtain", category: "cl", room: "Study", spec: ControlFixtures.curtainSpec)
+        store.setRosterForTest([fan, lamp, lamp2, curtain])
+        store.applyStatus(fan.id, decoded: ["1": .bool(true), "3": .number(2)])
+        let reply = await assistant.handle("turn off study fan and open study curtain", origin: .voice)
+        XCTAssertEqual(reply.kind, .executed, reply.text)
+        XCTAssertEqual(store.power(for: fan), false)
+        XCTAssertTrue(reply.text.contains("Study Fan") && reply.text.contains("Study Curtain"), reply.text)
+    }
+
+    func testSplitCommandsOnlyWhenEveryClauseIsACommand() {
+        let parser = VoiceCommandParser()
+        XCTAssertEqual(parser.splitCommands("turn off study fan and open study curtain")?.count, 2)
+        XCTAssertNil(parser.splitCommands("play rock and roll on the study speaker"))
+        XCTAssertNil(parser.splitCommands("turn on the fan and light"))
+        XCTAssertNil(parser.splitCommands("turn off the study fan"))
+    }
 }

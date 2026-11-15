@@ -321,8 +321,8 @@ public final class HousekeeperTools {
             switch outcome.status {
             case .confirmed: return "\(handle) \(outcome.device.name): CONFIRMED by read-back\(note) — \(now)"
             case .unverified(let text): return "\(handle) \(outcome.device.name): SENT, NOT CONFIRMED — \(text)"
-            case .uncertain(let text): return "\(handle) \(outcome.device.name): UNCERTAIN — \(text)"
-            case .rejected(let text): return "\(handle) \(outcome.device.name): FAILED — \(text)"
+            case .uncertain: return "\(handle) \(outcome.device.name): UNCERTAIN — \(CommandPhrasing.reason(for: outcome))"
+            case .rejected: return "\(handle) \(outcome.device.name): FAILED — \(CommandPhrasing.reason(for: outcome))"
             case .denied(let text): return "\(handle) \(outcome.device.name): REFUSED — \(text)"
             case .unsupported(let text): return "\(handle) \(outcome.device.name): UNSUPPORTED — \(text)"
             }

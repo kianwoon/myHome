@@ -1147,6 +1147,8 @@ class TestBridgeCloudFallback(unittest.TestCase):
 
         self.assertFalse(result['ok'], result)
         self.assertIn('no cloud code for dp 1', result['error'])
+        # The local failure leads, so the app can tell a timeout from a rejection.
+        self.assertFalse(result['error'].startswith('no cloud code'), result)
         self.cloud.sendcommand.assert_not_called()
 
     def test_partial_codes_map_sends_mapped_and_reports_rest(self):
@@ -1329,6 +1331,11 @@ class TestBridgeAppApiFallback(unittest.TestCase):
         self.directory = tempfile.mkdtemp()
         self.old_path = bridge.DEVICES_PATH
         bridge.DEVICES_PATH = os.path.join(self.directory, 'devices.json')
+        # Isolate from a real tinytuya.json / app session in the checkout.
+        self.old_credentials = bridge.CREDENTIALS_PATH
+        self.old_session = bridge.APAPI_SESSION_PATH
+        bridge.CREDENTIALS_PATH = os.path.join(self.directory, 'tinytuya.json')
+        bridge.APAPI_SESSION_PATH = os.path.join(self.directory, 'appapi-session.json')
         with open(bridge.DEVICES_PATH, 'w', encoding='utf-8') as handle:
             json.dump([
                 {'id': 'lan1', 'name': 'Plug', 'ip': '10.0.0.2', 'version': 3.1,
@@ -1351,6 +1358,8 @@ class TestBridgeAppApiFallback(unittest.TestCase):
 
     def tearDown(self):
         self.bridge.DEVICES_PATH = self.old_path
+        self.bridge.CREDENTIALS_PATH = self.old_credentials
+        self.bridge.APAPI_SESSION_PATH = self.old_session
         self.bridge.make_cloud = self.old_make_cloud
         self.bridge.make_appapi = self.old_make_appapi
         self.bridge.start_autoheal = self.old_start_autoheal

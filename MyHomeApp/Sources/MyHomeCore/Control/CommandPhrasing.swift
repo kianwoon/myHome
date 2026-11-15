@@ -87,12 +87,12 @@ public enum CommandPhrasing {
             parts.append("Sent \(lowercasedVerb(action(result.command, target: targetPhrase(pending.map(\.device), scope: result.scope))))")
         }
         if !pending.isEmpty {
-            let names = list(pending.map { "\($0.device.name) \($0.status.reason)" }, conjunction: "and")
+            let names = list(pending.map { "\($0.device.name) \(reason(for: $0))" }, conjunction: "and")
             parts.append(good.isEmpty ? "\(names)" : names)
         }
         if !bad.isEmpty {
             if good.isEmpty, pending.isEmpty {
-                if bad.count == 1 { return "Couldn't \(lowercasedVerb(action(result.command, target: bad[0].device.name))): \(bad[0].status.reason)." }
+                if bad.count == 1 { return "Couldn't \(lowercasedVerb(action(result.command, target: bad[0].device.name))): \(reason(for: bad[0]))." }
                 return "Couldn't \(lowercasedVerb(action(result.command, target: targetPhrase(bad.map(\.device), scope: result.scope)))): \(failures(bad))."
             }
             parts.append(failures(bad))
@@ -101,7 +101,13 @@ public enum CommandPhrasing {
     }
 
     private static func failures(_ outcomes: [DeviceOutcome]) -> String {
-        list(outcomes.map { "\($0.device.name) \($0.status.reason)" }, conjunction: "and")
+        list(outcomes.map { "\($0.device.name) \(reason(for: $0))" }, conjunction: "and")
+    }
+
+    /// The status reason, plus how many writes were sent when a retry ran
+    /// ("… it may not have changed (tried 2 times)").
+    public static func reason(for outcome: DeviceOutcome) -> String {
+        outcome.attempts > 1 ? "\(outcome.status.reason) (tried \(outcome.attempts) times)" : outcome.status.reason
     }
 
     public static func list(_ items: [String], conjunction: String) -> String {

@@ -27,7 +27,7 @@ public final class DeviceStore: ObservableObject {
     /// speed after the wall switch or Tuya app changes it.
     ///
     /// One full cycle every 10s, round-robin, with a small pause between
-    /// requests because the bridge is serial.
+    /// requests to keep the poll gentle on consumer firmware.
     public static let statusPollInterval: TimeInterval = 10
     public static let statusPollPacing: TimeInterval = 0.15
 
@@ -2216,17 +2216,14 @@ public final class DeviceStore: ObservableObject {
         }
     }
 
-    /// Sends an arbitrary DPS patch, optionally painting the expected values
-    /// first. On success the reply's confirmed dps is applied immediately; the
-    /// device wins over the optimistic value. On failure the previous map is
-    /// restored.
-    @discardableResult
-    public func setDps(
+    /// Sends a DPS patch, optionally painting first; the reply's dps wins. Only a definite
+    /// rejection restores the previous map. The result carries this call's own outcome.
+    public func setDpsReporting(
         _ device: Device,
         _ values: [String: Any],
         optimistic: [String: DPSValue] = [:]
-    ) async -> Bool {
-        guard device.hasAddress else { return false }
+    ) async -> SetDpsResult {
+        guard device.hasAddress else { return .noAddress(bluetoothOnly: isBLEAvailable(for: device)) }
         let previousDps = dpsById[device.id]
         let previousOn = isOn[device.id]
         lastSetRejected.remove(device.id)
@@ -2252,9 +2249,9 @@ public final class DeviceStore: ObservableObject {
                 "dps": values
             ])
             if reply["ok"] as? Bool == true {
-                try applyConfirmedReply(device.id, reply: reply)
+                let echo = try applyConfirmedReply(device.id, reply: reply)
                 errorText = nil
-                return true
+                return .applied(echo: echo)
             }
             // Reversion rule (invariant): an UNKNOWN outcome is not evidence
             // of failure. Only a definite rejection may undo the user's paint
@@ -2270,11 +2267,11 @@ public final class DeviceStore: ObservableObject {
                 lastSetRejected.insert(device.id)
             }
             errorText = message
-            return false
+            return .failed(message, definite: Self.isDefiniteRejection(message))
         } catch {
             // Unknown outcome: keep optimistic dps and intent in place.
             errorText = error.localizedDescription
-            return false
+            return .failed(error.localizedDescription, definite: false)
         }
     }
 
@@ -2283,7 +2280,7 @@ public final class DeviceStore: ObservableObject {
     /// connection resets -- means the device may have applied the set, so it
     /// must not be treated as a rejection. Any unrecognized text is treated as
     /// ambiguous on purpose: the safe default is to keep the paint.
-    private static func isDefiniteRejection(_ message: String) -> Bool {
+    nonisolated static func isDefiniteRejection(_ message: String) -> Bool {
         let text = message.lowercased()
         let ambiguous = [
             "902", "914", "timeout", "timed out", "time out", "connection",
@@ -2296,11 +2293,13 @@ public final class DeviceStore: ObservableObject {
 
     /// Applies the dps the bridge confirmed from the device after a set. If the
     /// reply carries no dps the optimistic value is left in place.
-    private func applyConfirmedReply(_ id: String, reply: [String: Any]) throws {
-        guard let raw = reply["dps"] else { return }
+    @discardableResult
+    private func applyConfirmedReply(_ id: String, reply: [String: Any]) throws -> [String: DPSValue]? {
+        guard let raw = reply["dps"] else { return nil }
         let decoded = try Self.decodeDps(raw)
         lastSetReply[id] = (decoded, Date())
         applyStatus(id, decoded: decoded, viaCloud: Self.isRemoteVia(reply["via"]))
+        return decoded
     }
 
     private func revert(device: Device, isOn previousOn: Bool, dps previousDps: [String: DPSValue]?) {

@@ -456,7 +456,12 @@ def handle_set(device_id, dps):
     # same route the official app uses). Only dps the codes map can name travel
     # upstream; if the cloud is unavailable the ORIGINAL local error is kept.
     try:
-        return cloud_set_dps(config, dps)
+        reply = cloud_set_dps(config, dps)
+        if reply.get("ok") is False:
+            # Nothing went upstream: the LOCAL error decides whether the
+            # outcome is unknown (timeout) or a rejection, so it leads.
+            reply["error"] = local_error + " (" + str(reply.get("error")) + ")"
+        return reply
     except _FallbackMiss as exc:
         reply = {"ok": False, "error": local_error}
         if exc.hint:

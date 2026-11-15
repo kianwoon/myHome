@@ -245,11 +245,13 @@ public final class AssistantCoordinator: ObservableObject {
             return AssistantReply(kind: .status, text: DeviceQueryAnswerer.answer(query, devices: controller.summaries(), listMax: stateQueryListMax),
                                   source: Self.grammarSource)
         case .command(let query, let command):
+            if let reply = await compoundReply(utterance, origin: origin) { return reply }
             // A new command supersedes anything still waiting for a yes.
             pending = []
             pendingChoice = nil
             let controller = self.controller
-            guard let result = await Deadline.run(seconds: timeouts.command, { @MainActor in
+            let seconds = commandDeadline(forDevices: max(controller.resolve(query).devices.count, 1))
+            guard let result = await Deadline.run(seconds: seconds, { @MainActor in
                 await controller.perform(command, on: query, origin: origin)
             }) else { return timeoutReply() }
             // The grammar understood the command but not the device: Jev picks
@@ -330,8 +332,17 @@ public final class AssistantCoordinator: ObservableObject {
 
     func boundedPerform(_ request: CommandRequest) async -> CommandResult? {
         let controller = self.controller
-        let seconds = timeouts.command(forDevices: request.resolution.devices.count)
+        let seconds = commandDeadline(forDevices: request.resolution.devices.count)
         return await Deadline.run(seconds: seconds) { @MainActor in await controller.perform(request) }
+    }
+
+    /// The outer deadline for a command over `count` devices: never shorter
+    /// than the controller's own worst case (pre-check, write, retry and
+    /// read-back per device, run in parallel batches) plus a grace, so the
+    /// controller's per-device report wins the race against "took too long".
+    func commandDeadline(forDevices count: Int) -> TimeInterval {
+        max(timeouts.command(forDevices: count),
+            controller.config.executionBudget(forDevices: count) + AppSettings.defaultControlReplyGrace)
     }
 
     func timeoutReply() -> AssistantReply {

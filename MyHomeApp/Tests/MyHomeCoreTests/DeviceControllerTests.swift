@@ -38,7 +38,8 @@ final class DeviceControllerTests: XCTestCase {
         store.applyStatus(fan.id, decoded: ["1": .bool(false), "2": .string("custom"), "3": .number(2)])
         store.applyStatus(light.id, decoded: ["1": .bool(false), "2": .number(300), "3": .number(500)])
         store.applyStatus(light2.id, decoded: ["1": .bool(false), "2": .number(300)])
-        controller = DeviceController(store: store, config: ControlConfig(verifyTimeout: 0.2, confirmationDeviceThreshold: 2))
+        controller = DeviceController(store: store, config: ControlConfig(verifyTimeout: 0.2, confirmationDeviceThreshold: 2,
+                                                                         retry: WriteRetryPolicy(maxRetries: 1, backoff: 0.01, minRemaining: 0)))
     }
 
     private func setRequests() -> [[String: Any]] { bridge.requests.filter { $0["cmd"] as? String == "set" } }

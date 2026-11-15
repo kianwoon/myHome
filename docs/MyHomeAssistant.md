@@ -31,7 +31,8 @@ SwiftUI command bar, the Settings tab and the App Intents, which live in the app
 | `DeviceCommand.swift` | Semantic commands: `power`, `level` (percent), `color`, `colorTemperature` (percent warm→cool), `mode`, `fanSpeed` (gear), `cover` (open/close/stop); `SemanticCapability`; `Percent` scaling helpers. |
 | `CapabilityMap.swift` | `DeviceKind` + spec `Capability` codes + live `DeviceState` → which semantic capabilities a device has, and the exact write for a command (`WritePlan`: a Tuya dp value or Briturn arguments). Dp selection mirrors the dashboard views (fan speed key, curtain action/position keys, light dp 2/3, Briturn 0–100) and prefers the spec's declared ranges. A command is only offered when the device supports it. |
 | `DeviceResolver.swift` | Name / room / group / kind matching with content-agnostic scoring. Returns `single`, `set` (plural or "all", with a scope), `briturnGroup` (exact group membership → group write), or **`ambiguous`** with the candidates. Ambiguity is surfaced, never guessed. |
-| `DeviceController.swift` | `@MainActor` entry point: registry (`DeviceSummary`, `Sendable`), `resolve`, `check` (policy), `perform`. Multi-device requests above the confirmation threshold return `needsConfirmation` with a `pendingRequest` to re-issue. Writes run sequentially. |
+| `DeviceController.swift` | `@MainActor` entry point: registry (`DeviceSummary`, `Sendable`), `resolve`, `check` (policy), `perform`. Multi-device requests above the confirmation threshold return `needsConfirmation` with a `pendingRequest` to re-issue. Different devices are written concurrently, up to `controlParallelDevices` (default 3). Writes to the same device are serialized. Each device has its own budget (`controlPerDeviceBudgetSeconds`) inside `controlGlobalBudgetSeconds` (see `DeviceController+Execution.swift`). |
+| `WriteRetryPolicy.swift` | Retries only an unknown outcome (timeout, connection error) of an idempotent command. It backs off for `controlRetryBackoffSeconds` × the retry number and reads the device first. It sends at most `controlRetryMax` more writes, and only while `defaultControlRetryMinRemaining` of the device budget remains. A definite rejection, and play or resume, are never retried. |
 | `CommandPhrasing.swift` | Spoken / displayed summaries built from the structured result. |
 | `ControlSettings.swift` | `AppSettings` keys + defaults for every knob (verify timeout, confirmation threshold, resolver margins, voice, planner). |
 | `TextNormalizer.swift` | Shared folding / tokenising / singularising. |
@@ -119,7 +120,7 @@ Migration: a stored `plannerProvider = "jev"` from earlier builds is converted o
 **The model only proposes**: handles are mapped back to ids and validated against the
 registry, every step goes through `DeviceController` policy, and a model-authored plan is
 always shown and confirmed before anything runs. Planner and command awaits are bounded by
-`plannerTimeoutSeconds` / `assistantCommandTimeoutSeconds`; on timeout the command bar shows a
+`plannerTimeoutSeconds` / `assistantCommandTimeoutSeconds`. The command deadline is never shorter than the controller's own budget plus a grace, so per-device outcomes arrive first. On timeout the command bar shows a
 message, the spinner resets, and a Cancel button abandons a request in flight.
 
 ### Jev router & matcher — choice classifier (`MyHomeCore/Planner/JevClient.swift`, `JevCommandDecider.swift`, `Control/JevSettings.swift`, `MyHomeApp/JevSettingsView.swift`)

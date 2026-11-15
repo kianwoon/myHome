@@ -28,6 +28,57 @@ public extension AppSettings {
     static let defaultVerifySettle: TimeInterval = 0.8
     static let verifySettleRange: ClosedRange<TimeInterval> = 0.1...10
 
+    /// Extra writes after an UNKNOWN outcome (timeout / no reply) of an
+    /// idempotent command; a definite rejection is never retried.
+    static let controlRetryMaxKey = "controlRetryMax"
+    static let defaultControlRetryMax = 1
+    static let controlRetryMaxRange = 0...3
+    /// Pause before a retry (multiplied by the retry number).
+    static let controlRetryBackoffKey = "controlRetryBackoffSeconds"
+    static let defaultControlRetryBackoff: TimeInterval = 1.5
+    static let controlRetryBackoffRange: ClosedRange<TimeInterval> = 0...10
+    /// Different devices written at once by one command. The bridge runs
+    /// id-stamped requests on worker threads (8 max) and serializes each
+    /// device's socket with its own lock, so a small number is safe; writes
+    /// to the SAME device are always serialized here as well.
+    static let controlParallelDevicesKey = "controlParallelDevices"
+    static let defaultControlParallelDevices = 3
+    static let controlParallelDevicesRange = 1...6
+    /// Longest one device's pre-check + write(s) + read-back may take.
+    static let controlPerDeviceBudgetKey = "controlPerDeviceBudgetSeconds"
+    static let defaultControlPerDeviceBudget: TimeInterval = 20
+    static let controlPerDeviceBudgetRange: ClosedRange<TimeInterval> = 2...60
+    /// Longest one whole command may take across all its devices.
+    static let controlGlobalBudgetKey = "controlGlobalBudgetSeconds"
+    static let defaultControlGlobalBudget: TimeInterval = 40
+    static let controlGlobalBudgetRange: ClosedRange<TimeInterval> = 2...180
+    /// A retry is only started when at least this much of the device's
+    /// budget is left for the backoff, the re-read and the write.
+    static let defaultControlRetryMinRemaining: TimeInterval = 4
+    /// Slack the voice/text deadline keeps above the controller's own budget,
+    /// so the controller's per-device report arrives before the outer timeout.
+    static let defaultControlReplyGrace: TimeInterval = 1
+
+    static func controlRetryMax(from defaults: UserDefaults = .standard) -> Int {
+        clampedInt(defaults.object(forKey: controlRetryMaxKey) as? Int, defaultControlRetryMax, controlRetryMaxRange)
+    }
+
+    static func controlRetryBackoff(from defaults: UserDefaults = .standard) -> TimeInterval {
+        clamped(defaults.object(forKey: controlRetryBackoffKey) as? Double, defaultControlRetryBackoff, controlRetryBackoffRange)
+    }
+
+    static func controlParallelDevices(from defaults: UserDefaults = .standard) -> Int {
+        clampedInt(defaults.object(forKey: controlParallelDevicesKey) as? Int, defaultControlParallelDevices, controlParallelDevicesRange)
+    }
+
+    static func controlPerDeviceBudget(from defaults: UserDefaults = .standard) -> TimeInterval {
+        clamped(defaults.object(forKey: controlPerDeviceBudgetKey) as? Double, defaultControlPerDeviceBudget, controlPerDeviceBudgetRange)
+    }
+
+    static func controlGlobalBudget(from defaults: UserDefaults = .standard) -> TimeInterval {
+        clamped(defaults.object(forKey: controlGlobalBudgetKey) as? Double, defaultControlGlobalBudget, controlGlobalBudgetRange)
+    }
+
     static let resolverAmbiguityMarginKey = "resolverAmbiguityMargin"
     static let defaultResolverAmbiguityMargin = 0.1
     static let resolverMinCoverageKey = "resolverMinCoverage"
@@ -352,17 +403,41 @@ public struct ControlConfig: Equatable, Sendable {
     public var stateFreshness: TimeInterval
     /// Pause between read-back attempts.
     public var settleInterval: TimeInterval
+    /// Retry policy for writes with an unknown outcome (see WriteRetryPolicy).
+    public var retry: WriteRetryPolicy
+    /// Different devices written concurrently by one command.
+    public var parallelDevices: Int
+    /// Bound on one device's pre-check + write(s) + read-back.
+    public var perDeviceBudget: TimeInterval
+    /// Bound on a whole command across all its devices.
+    public var globalBudget: TimeInterval
 
     public init(verifyTimeout: TimeInterval = AppSettings.defaultCommandVerifyTimeout,
                 confirmationDeviceThreshold: Int = AppSettings.defaultConfirmDeviceCount,
                 levelTolerance: Int = AppSettings.defaultVerifyLevelTolerance,
                 stateFreshness: TimeInterval = AppSettings.defaultStateFreshness,
-                settleInterval: TimeInterval = AppSettings.defaultVerifySettle) {
+                settleInterval: TimeInterval = AppSettings.defaultVerifySettle,
+                retry: WriteRetryPolicy = WriteRetryPolicy(),
+                parallelDevices: Int = AppSettings.defaultControlParallelDevices,
+                perDeviceBudget: TimeInterval = AppSettings.defaultControlPerDeviceBudget,
+                globalBudget: TimeInterval = AppSettings.defaultControlGlobalBudget) {
         self.verifyTimeout = verifyTimeout
         self.confirmationDeviceThreshold = confirmationDeviceThreshold
         self.levelTolerance = levelTolerance
         self.stateFreshness = stateFreshness
         self.settleInterval = settleInterval
+        self.retry = retry
+        self.parallelDevices = max(parallelDevices, 1)
+        self.perDeviceBudget = perDeviceBudget
+        self.globalBudget = globalBudget
+    }
+
+    /// Worst case the controller itself takes for `count` devices: batches of
+    /// `parallelDevices`, each bounded by the per-device budget, all bounded
+    /// by the global budget.
+    public func executionBudget(forDevices count: Int) -> TimeInterval {
+        let batches = (max(count, 1) + parallelDevices - 1) / parallelDevices
+        return min(globalBudget, perDeviceBudget * Double(batches))
     }
 
     public static func fromDefaults(_ defaults: UserDefaults = .standard) -> ControlConfig {
@@ -370,7 +445,11 @@ public struct ControlConfig: Equatable, Sendable {
                       confirmationDeviceThreshold: AppSettings.confirmDeviceCount(from: defaults),
                       levelTolerance: AppSettings.verifyLevelTolerance(from: defaults),
                       stateFreshness: AppSettings.stateFreshness(from: defaults),
-                      settleInterval: AppSettings.verifySettle(from: defaults))
+                      settleInterval: AppSettings.verifySettle(from: defaults),
+                      retry: .fromDefaults(defaults),
+                      parallelDevices: AppSettings.controlParallelDevices(from: defaults),
+                      perDeviceBudget: AppSettings.controlPerDeviceBudget(from: defaults),
+                      globalBudget: AppSettings.controlGlobalBudget(from: defaults))
     }
 }
 

@@ -67,11 +67,14 @@ public final class HousekeeperAgent {
         // allow-hardcode: prompt section headings and the untrusted-data notice.
         // Notes are typed by the household and device names come from vendor apps:
         // both are delimited DATA, never instructions (prompt-injection guard).
-        return persona + "\n\n" + Self.languageRule(for: utterance) + "\n\n" + Self.untrustedNotice
+        return persona + "\n\n" + Self.multiActionRule + "\n\n" + Self.languageRule(for: utterance) + "\n\n" + Self.untrustedNotice
             + "\n\nHousehold notes:\n<household_notes>\n" + notes + "\n</household_notes>\n\nNow: " + nowText
             + "\n\nDevices (\(handles.devices.count)), one per line as: \(HousekeeperSnapshot.columns)\n<devices>\n" + snapshot + "\n</devices>"
     }
 
+    // allow-hardcode: model prompt text. Kept outside the persona so a customised persona still gets it.
+    /// One sentence can carry several requests, or imply a chain of actions: do them all.
+    static let multiActionRule = "Several requests: one message may hold any number of requests (\"turn off the fan and open the curtain\") or imply a series of actions (\"I'm going to bed\"). Work out every action it needs and carry out each one, in order, with its own tool call; never stop after the first. Speak naturally: infer what the household means rather than asking, and name everything you did or could not do in your reply."
     // allow-hardcode: model prompt text. Kept outside the persona so a customised persona still gets it.
     // The language is detected here, not left to the model: a model told only to "match the user"
     // answered English commands in Chinese.

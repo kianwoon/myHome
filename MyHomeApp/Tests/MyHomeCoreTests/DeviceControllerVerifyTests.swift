@@ -53,7 +53,8 @@ final class DeviceControllerVerifyTests: XCTestCase {
         store.applyStatus(lamp.id, decoded: ["1": .bool(false), "2": .number(300)])
         store.setBriturnStatus(bulb.id, lit(true))
         store.setBriturnStatus(bulb2.id, lit(true))
-        controller = DeviceController(store: store, config: ControlConfig(verifyTimeout: 1, confirmationDeviceThreshold: 10, settleInterval: 0.2))
+        controller = DeviceController(store: store, config: ControlConfig(verifyTimeout: 1, confirmationDeviceThreshold: 10, settleInterval: 0.2,
+                                                                         retry: WriteRetryPolicy(maxRetries: 1, backoff: 0.01, minRemaining: 0)))
     }
 
     private func attachBluetooth(live: Bool = true) -> BLESends {

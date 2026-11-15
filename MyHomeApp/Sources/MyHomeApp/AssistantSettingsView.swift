@@ -157,6 +157,8 @@ struct AssistantSettingsView: View {
     @AppStorage(AppSettings.confirmDeviceCountKey) private var confirmCount = AppSettings.defaultConfirmDeviceCount
     @AppStorage(AppSettings.commandVerifyTimeoutKey) private var verifyTimeout = AppSettings.defaultCommandVerifyTimeout
     @AppStorage(AppSettings.assistantCommandTimeoutKey) private var commandTimeout = AppSettings.defaultAssistantCommandTimeout
+    @AppStorage(AppSettings.controlRetryMaxKey) private var retryMax = AppSettings.defaultControlRetryMax
+    @AppStorage(AppSettings.controlParallelDevicesKey) private var parallelDevices = AppSettings.defaultControlParallelDevices
 
     private let services: AppServices
 
@@ -170,6 +172,10 @@ struct AssistantSettingsView: View {
                 Stepper("Ask before changing \(confirmCount) or more devices", value: $confirmCount, in: AppSettings.confirmDeviceCountRange)
                 Stepper(String(format: "Wait %.1fs for a device to confirm a change", verifyTimeout),
                         value: $verifyTimeout, in: AppSettings.commandVerifyTimeoutRange, step: 0.5)
+                Stepper("Retry a device that did not answer \(retryMax) time\(retryMax == 1 ? "" : "s")",
+                        value: $retryMax, in: AppSettings.controlRetryMaxRange)
+                Stepper("Change up to \(parallelDevices) device\(parallelDevices == 1 ? "" : "s") at once",
+                        value: $parallelDevices, in: AppSettings.controlParallelDevicesRange)
             } header: {
                 Text("Safety")
             } footer: {
@@ -182,5 +188,7 @@ struct AssistantSettingsView: View {
         .padding(.top, 4)
         .onChange(of: confirmCount) { _ in services.controller.config = .fromDefaults() }
         .onChange(of: verifyTimeout) { _ in services.controller.config = .fromDefaults() }
+        .onChange(of: retryMax) { _ in services.controller.config = .fromDefaults() }
+        .onChange(of: parallelDevices) { _ in services.controller.config = .fromDefaults() }
     }
 }

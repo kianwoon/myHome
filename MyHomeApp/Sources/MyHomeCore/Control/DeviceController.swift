@@ -10,8 +10,11 @@
 // read-back from the device showing the commanded value. A write with no
 // read-back (Bluetooth, a cloud that did not answer) is "unverified", and one
 // the device contradicts is "rejected"; nothing is painted into a success.
-// Reads are bounded and per target; writes run sequentially — consumer
-// firmware does not like bursts.
+// Reads are bounded and per target. Different devices are written
+// concurrently (capped by `parallelDevices`, each within its own budget);
+// writes to the SAME device are always serialized (DeviceWriteGate) —
+// consumer firmware does not like bursts. Only an unknown outcome of an
+// idempotent command is retried (WriteRetryPolicy).
 import Combine
 import Foundation
 
@@ -117,11 +120,16 @@ public enum OutcomeStatus: Equatable, Hashable, Sendable {
 public struct DeviceOutcome: Identifiable, Equatable, Sendable {
     public let device: DeviceSummary
     public let status: OutcomeStatus
+    /// Writes sent to the device as counted by the controller's run (more
+    /// than 1 after a retry, 0 when it sent nothing). Outcomes built
+    /// elsewhere default to 1; only values above 1 are ever reported.
+    public var attempts: Int
     public var id: String { device.id }
 
-    public init(device: DeviceSummary, status: OutcomeStatus) {
+    public init(device: DeviceSummary, status: OutcomeStatus, attempts: Int = 1) {
         self.device = device
         self.status = status
+        self.attempts = attempts
     }
 }
 
@@ -164,6 +172,8 @@ public final class DeviceController: ObservableObject {
     public var config: ControlConfig
     public var resolverConfig: ResolverConfig
     public var vocabulary: ResolverVocabulary
+    /// Serializes writes per device across every command (FIFO).
+    let writeGate = DeviceWriteGate()
 
     public init(store: DeviceStore, config: ControlConfig = .fromDefaults(),
                 resolverConfig: ResolverConfig = .fromDefaults(), vocabulary: ResolverVocabulary = .standard) {
@@ -270,6 +280,12 @@ public final class DeviceController: ObservableObject {
         if store.isBriturn(device), store.reachability(for: device) == .offline {
             return .denied(.denied("is offline (no live WiFi, cloud or Bluetooth path)"))
         }
+        // A Tuya write needs the bridge and an address; there is no Tuya
+        // Bluetooth write path, so a Bluetooth-only one is refused honestly.
+        if !store.isBriturn(device), !store.isKEF(device), !store.isCast(device), !device.hasAddress {
+            let missing = SetDpsResult.noAddress(bluetoothOnly: store.isBLEAvailable(for: device))
+            return .denied(.denied(missing.message ?? SetDpsResult.noAddressText))
+        }
         switch CapabilityMap.plan(command, for: profile(for: device)) {
         case .success(let plan):
             return .allowed(plan)
@@ -368,18 +384,7 @@ public final class DeviceController: ObservableObject {
 
         // One write per device over its own transport: a group write can drop
         // a member (no address, Bluetooth-only) without a word; this cannot.
-        var outcomes: [DeviceOutcome] = []
-        for (device, decision) in decisions {
-            switch decision {
-            case .denied(let status):
-                AppLog.control.notice("MyHome: verify pre id=\(device.id, privacy: .public) name=\(device.name, privacy: .public) refused=\(status.reason, privacy: .public)")
-                outcomes.append(DeviceOutcome(device: summary(for: device), status: status))
-            case .allowed(let plan):
-                await precheck(device)
-                let status = await execute(plan, on: device)
-                outcomes.append(DeviceOutcome(device: summary(for: device), status: status))
-            }
-        }
+        let outcomes = await runTargets(decisions, command: command)
         return CommandResult(disposition: .executed, command: command, scope: scope, outcomes: outcomes, pendingRequest: nil)
     }
 
@@ -395,7 +400,7 @@ public final class DeviceController: ObservableObject {
 
     /// A target whose reading is missing or older than the freshness window
     /// is read first (bounded), so the write starts from the real condition.
-    private func precheck(_ device: Device) async {
+    func precheck(_ device: Device) async {
         let stale = store.isStale(device, maxAge: config.stateFreshness)
         let reach = store.reachability(for: device)
         var via = "cached"
@@ -410,7 +415,9 @@ public final class DeviceController: ObservableObject {
 
     // MARK: - Execution
 
-    private func execute(_ plan: CapabilityMap.WritePlan, on device: Device) async -> OutcomeStatus {
+    /// One write attempt. `counter` counts writes actually handed to a
+    /// transport; `ambiguous` marks an unknown outcome (the only retry case).
+    func execute(_ plan: CapabilityMap.WritePlan, on device: Device, counter: WriteCounter) async -> WriteAttempt {
         let expectation = CapabilityMap.expectation(for: plan)
         let started = Date()
         switch plan {
@@ -419,56 +426,83 @@ public final class DeviceController: ObservableObject {
             // dashboard's toggles/pickers; continuous values rely on the
             // confirmed reply, like its sliders.
             let optimistic: [String: DPSValue] = Self.isDiscrete(value) ? [dpId: value] : [:]
-            let ok = await store.setDps(device, [dpId: Self.raw(value)], optimistic: optimistic)
-            let message = store.errorText ?? "set failed"
+            counter.sent += 1
+            // This call's own result: never the store's shared errorText,
+            // which a concurrent write may have overwritten.
+            let result = await store.setDpsReporting(device, [dpId: Self.raw(value)], optimistic: optimistic)
+            if case .noAddress = result {
+                counter.sent -= 1
+                return .definite(finish(device, expectation: expectation, result: .denied(result.message ?? SetDpsResult.noAddressText), evidence: "no address"))
+            }
             // The device's own reply (dps echo) is positive evidence.
-            if ok, let reply = store.lastSetReply[device.id], reply.at >= started,
-               let current = reply.dps[dpId], Self.equivalent(current, value) {
-                return finish(device, expectation: expectation, result: .confirmed, evidence: "reply dps \(dpId)=\(current)")
+            if case .applied(let echo) = result, let current = echo?[dpId], Self.equivalent(current, value) {
+                return .definite(finish(device, expectation: expectation, result: .confirmed, evidence: "reply dps \(dpId)=\(current)"))
             }
             let verified = await verifyByReadBack(expectation, device: device, since: started)
-            if ok || verified.isSuccess { return verified }
-            if case .rejected = verified { return verified }
+            if result.ok || verified.isSuccess { return .definite(verified) }
+            let message = result.message ?? "set failed"
+            var definite = false
+            if case .failed(_, let flag) = result { definite = flag && !WriteFailureClass.isAmbiguous(message: message) }
+            // A read-back that still shows the old value after an ambiguous
+            // error means the write did not land: retryable.
+            if case .rejected = verified { return WriteAttempt(status: verified, ambiguous: !definite) }
             // The write errored and nothing could be read back: a definite
             // rejection is reported as such, a transport error stays unknown.
-            if store.lastSetRejected.contains(device.id) { return finish(device, expectation: expectation, result: .rejected(message), evidence: "bridge rejected") }
-            return finish(device, expectation: expectation, result: .uncertain(message), evidence: "transport error, no read-back")
+            if definite { return .definite(finish(device, expectation: expectation, result: .rejected(message), evidence: "bridge rejected")) }
+            return WriteAttempt(status: finish(device, expectation: expectation, result: .uncertain(Self.noClearReply(message)), evidence: "transport error, no read-back"), ambiguous: true)
         case .kef(let action):
+            counter.sent += 1
             switch await store.kefWrite(device, action) {
             case .failed(let error):
-                return finish(device, expectation: expectation, result: .rejected(error.message), evidence: "kef write failed")
+                return transportFailure(device, expectation: expectation, message: error.message, ambiguous: WriteFailureClass.isAmbiguous(error), evidence: "kef write failed")
             case .superseded:
-                return finish(device, expectation: expectation, result: .unverified("replaced by a newer volume request"), evidence: "superseded")
+                return .definite(finish(device, expectation: expectation, result: .unverified("replaced by a newer volume request"), evidence: "superseded"))
             case .confirmed:
-                return finish(device, expectation: expectation, result: .confirmed, evidence: "kef readback")
+                return .definite(finish(device, expectation: expectation, result: .confirmed, evidence: "kef readback"))
             case .mismatch, .unconfirmed:
-                return await verifyByReadBack(expectation, device: device, since: started)
+                return .definite(await verifyByReadBack(expectation, device: device, since: started))
             }
         case .cast(let action):
+            counter.sent += 1
             switch await store.castWrite(device, action) {
             case .failed(let error):
-                return finish(device, expectation: expectation, result: .rejected(error.message), evidence: "cast write failed")
+                return transportFailure(device, expectation: expectation, message: error.message, ambiguous: WriteFailureClass.isAmbiguous(error), evidence: "cast write failed")
             case .superseded:
-                return finish(device, expectation: expectation, result: .unverified("replaced by a newer volume request"), evidence: "superseded")
+                return .definite(finish(device, expectation: expectation, result: .unverified("replaced by a newer volume request"), evidence: "superseded"))
             case .confirmed:
-                return finish(device, expectation: expectation, result: .confirmed, evidence: "cast readback")
+                return .definite(finish(device, expectation: expectation, result: .confirmed, evidence: "cast readback"))
             case .mismatch, .unconfirmed:
-                return await verifyByReadBack(expectation, device: device, since: started)
+                return .definite(await verifyByReadBack(expectation, device: device, since: started))
             }
         case .briturn(let on, let color, let brightness, let cct):
+            counter.sent += 1
             let ack = await store.setBriturn(device, on: on, color: color?.tuple, brightness: brightness, cct: cct)
             switch ack {
             case .failed(let message):
-                return finish(device, expectation: expectation, result: .rejected(message), evidence: "write failed")
+                return transportFailure(device, expectation: expectation, message: message, ambiguous: WriteFailureClass.isAmbiguous(message: message), evidence: "write failed")
             case .applied(let readback):
                 if let readback, case .match = compare(expectation, to: .briturn(readback, via: .wifi), since: started, device: device) {
-                    return finish(device, expectation: expectation, result: .confirmed, evidence: "bridge readback")
+                    return .definite(finish(device, expectation: expectation, result: .confirmed, evidence: "bridge readback"))
                 }
-                return await verifyByReadBack(expectation, device: device, since: started)
+                return .definite(await verifyByReadBack(expectation, device: device, since: started))
             case .sent:
-                return await verifyByReadBack(expectation, device: device, since: started)
+                return .definite(await verifyByReadBack(expectation, device: device, since: started))
             }
         }
+    }
+
+    /// A failed write: a timeout or connection error is an unknown outcome
+    /// (uncertain, retryable); anything else is a rejection.
+    private func transportFailure(_ device: Device, expectation: CapabilityMap.Expectation, message: String, ambiguous: Bool, evidence: String) -> WriteAttempt {
+        if ambiguous {
+            return WriteAttempt(status: finish(device, expectation: expectation, result: .uncertain(Self.noClearReply(message)), evidence: evidence + " (ambiguous)"), ambiguous: true)
+        }
+        return .definite(finish(device, expectation: expectation, result: .rejected(message), evidence: evidence))
+    }
+
+    // allow-hardcode: spoken UI copy.
+    static func noClearReply(_ message: String) -> String {
+        "got no clear reply (\(message)); it may not have changed"
     }
 
     // MARK: - Post-check
@@ -515,7 +549,7 @@ public final class DeviceController: ObservableObject {
         return finish(device, expectation: expectation, result: .unverified(lastProblem), evidence: "no read-back")
     }
 
-    private func finish(_ device: Device, expectation: CapabilityMap.Expectation, result: OutcomeStatus, evidence: String) -> OutcomeStatus {
+    func finish(_ device: Device, expectation: CapabilityMap.Expectation, result: OutcomeStatus, evidence: String) -> OutcomeStatus {
         AppLog.control.notice("MyHome: verify post id=\(device.id, privacy: .public) name=\(device.name, privacy: .public) expect=\(String(describing: expectation), privacy: .public) evidence=\(evidence, privacy: .public) result=\(result.label, privacy: .public) reason=\(result.reason, privacy: .public)")
         return result
     }

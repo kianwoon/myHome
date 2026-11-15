@@ -19,7 +19,7 @@ extension AssistantCoordinator {
         let requests = pending
         pending = []
         let tools = agent.tools
-        let seconds = timeouts.command(forDevices: tools.pendingDeviceCount)
+        let seconds = commandDeadline(forDevices: tools.pendingDeviceCount)
         let results = await Deadline.run(seconds: seconds) { @MainActor in await tools.applyConfirmed() }
             ?? requests.map { Self.uncertainResult($0, controller: controller, reason: Self.tookTooLongText) }
         let text = results.map(\.spokenSummary).joined(separator: " ")
@@ -56,9 +56,17 @@ extension AssistantCoordinator {
         // A new request supersedes anything still waiting for a yes.
         pending = []
         pendingChoice = nil
-        if housekeeperFastPath, !agent.hasPendingQuestion, let reply = await fastPathReply(intent, origin: origin) {
-            AppLog.assistant.info("fast path answered without the model")
-            return reply
+        if housekeeperFastPath, !agent.hasPendingQuestion {
+            if let reply = await compoundReply(utterance, origin: origin) {
+                AppLog.assistant.info("fast path ran a multi-command sentence without the model")
+                return reply
+            }
+            // A multi-command sentence the fast path cannot fully run goes to the
+            // agent whole; the single-command fast path would drop the other clauses.
+            if parser.splitCommands(utterance) == nil, let reply = await fastPathReply(intent, origin: origin) {
+                AppLog.assistant.info("fast path answered without the model")
+                return reply
+            }
         }
         return await runHousekeeper(utterance, intent: intent, origin: origin, agent: agent)
     }
@@ -93,6 +101,73 @@ extension AssistantCoordinator {
         default:
             return nil
         }
+    }
+
+    /// "turn off the fan and open the curtain": every clause must resolve to ONE
+    /// allowed device before any runs (else nil, nothing executed). Clauses on
+    /// DIFFERENT devices run concurrently (capped like the controller's own
+    /// parallelism); clauses on the same device run in the order spoken. One
+    /// reply reports them all, in the order spoken.
+    func compoundReply(_ utterance: String, origin: CommandOrigin) async -> AssistantReply? {
+        guard let commands = parser.splitCommands(utterance) else { return nil }
+        var requests: [CommandRequest] = []
+        for (query, command) in commands {
+            var scoped = query
+            scoped.preferControllable = true
+            scoped.requiredCapability = command.capability
+            guard case .single(let device) = controller.resolve(scoped), case .allowed = controller.check(command, on: device) else { return nil }
+            requests.append(CommandRequest(resolution: .single(device), command: command, origin: origin, confirmed: true))
+        }
+        pending = []
+        pendingChoice = nil
+        // Each clause has its own deadline: one slow device never starves the
+        // others. A clause that times out is reported as uncertain.
+        let results = await runClauses(requests)
+        if Task.isCancelled { return timeoutReply() }
+        let text = results.map(\.spokenSummary).joined(separator: " ")
+        return AssistantReply(kind: Self.kind(for: results), text: text, result: results.last, source: Self.grammarSource)
+    }
+
+    /// Per-device lanes (clause order kept inside a lane), lanes run
+    /// concurrently up to `parallelDevices`; results come back in clause order.
+    func runClauses(_ requests: [CommandRequest]) async -> [CommandResult] {
+        var lanes: [[Int]] = []
+        var laneByDevice: [String: Int] = [:]
+        for (index, request) in requests.enumerated() {
+            let key = request.resolution.devices.map(\.id).joined(separator: ",")
+            if let lane = laneByDevice[key] { lanes[lane].append(index) } else {
+                laneByDevice[key] = lanes.count
+                lanes.append([index])
+            }
+        }
+        var results = [CommandResult?](repeating: nil, count: requests.count)
+        let cap = max(controller.config.parallelDevices, 1)
+        await withTaskGroup(of: [(Int, CommandResult)].self) { group in
+            var pending = lanes.makeIterator()
+            var running = 0
+            while running < cap, let lane = pending.next() {
+                group.addTask { @MainActor in await self.runLane(lane, requests) }
+                running += 1
+            }
+            while let finished = await group.next() {
+                for (index, result) in finished { results[index] = result }
+                if let lane = pending.next() { group.addTask { @MainActor in await self.runLane(lane, requests) } }
+            }
+        }
+        return results.enumerated().map { index, result in
+            result ?? Self.uncertainResult(requests[index], controller: controller, reason: Self.tookTooLongText)
+        }
+    }
+
+    private func runLane(_ lane: [Int], _ requests: [CommandRequest]) async -> [(Int, CommandResult)] {
+        var done: [(Int, CommandResult)] = []
+        for index in lane {
+            if Task.isCancelled { break }
+            let result = await boundedPerform(requests[index])
+                ?? Self.uncertainResult(requests[index], controller: controller, reason: Self.tookTooLongText)
+            done.append((index, result))
+        }
+        return done
     }
 
     func runHousekeeper(_ utterance: String, intent: ParsedIntent, origin: CommandOrigin, agent: HousekeeperAgent) async -> AssistantReply {

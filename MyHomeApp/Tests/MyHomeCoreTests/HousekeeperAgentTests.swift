@@ -552,17 +552,20 @@ extension HousekeeperAgentTests {
         XCTAssertEqual(timeouts.command(forDevices: 4), 39)
     }
 
-    func testRunPendingKeepsOutcomesWhenOneStepIsTooSlow() async {
+    func testRunPendingReportsASlowStepPerDeviceAndStillRunsTheNext() async {
         // Three stale lights whose read-back never returns, then a socket.
         let slow = lights.filter { ["8e6d", "84f1", "89e3"].contains(where: $0.id.hasSuffix) }
         store.briturnLANReadHook = { _ in try? await Task.sleep(nanoseconds: 60_000_000_000); return nil }
+        // A too-short outer timeout no longer cuts the controller off: the
+        // outer deadline is at least the controller's own bounded budget, so
+        // the slow step reports per device and the next step still runs.
         assistant.timeouts = AssistantTimeouts(planner: 5, command: 0.2, perDevice: 0.05)
         assistant.pending = [CommandRequest(resolution: .set(slow, scope: .room("Study room")), command: .power(false), origin: .text),
                              CommandRequest(resolution: .single(computer), command: .power(false), origin: .text)]
         let reply = await assistant.confirmPending()
         XCTAssertNotNil(reply)
         XCTAssertFalse(reply?.text.contains("That took too long") ?? true, "outcomes are reported per device, not one blanket timeout")
-        XCTAssertTrue(reply?.text.contains("not attempted") ?? false, reply?.text ?? "")
-        XCTAssertEqual(store.power(for: computer), true, "the step after the slow one is not run")
+        XCTAssertTrue(reply?.text.contains("read-back timed out") ?? false, reply?.text ?? "")
+        XCTAssertEqual(store.power(for: computer), false, "the step after the slow one still runs")
     }
 }
