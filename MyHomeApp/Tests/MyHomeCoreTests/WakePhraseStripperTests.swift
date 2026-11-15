@@ -47,3 +47,21 @@ final class WakePhraseSettingTests: XCTestCase {
         XCTAssertNotNil(listener.setPhrase("   "))
     }
 }
+
+final class VoiceDismissTests: XCTestCase {
+    func testDismissWordsEndTheSession() {
+        for text in ["Ignore.", "dismiss!", "Never mind", "算了。", "取消", "Cancel"] {
+            XCTAssertTrue(VoiceDismiss.isDismissal(text), text)
+        }
+    }
+
+    func testCommandsContainingTheWordsAreNotDismissals() {
+        for text in ["Cancel the timer", "Ignore the hallway light and turn off the rest", "关灯", ""] {
+            XCTAssertFalse(VoiceDismiss.isDismissal(text), text)
+        }
+    }
+
+    func testWakeWaitIsTenSeconds() {
+        XCTAssertEqual(AppSettings.wakeNoSpeechTimeout(from: UserDefaults(suiteName: UUID().uuidString)!), 10)
+    }
+}

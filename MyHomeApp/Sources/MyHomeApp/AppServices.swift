@@ -81,6 +81,12 @@ final class AppServices {
                     return
                 }
             }
+            // "Ignore" / "dismiss" / "算了": the user closing the session (wake or hotkey).
+            if VoiceDismiss.isDismissal(text) {
+                AppLog.assistant.info("voice session dismissed by the user")
+                self.hud.abandon()
+                return
+            }
             self.hud.utteranceReceived()
             Task { @MainActor in await self.runVoice(text) }
         }
