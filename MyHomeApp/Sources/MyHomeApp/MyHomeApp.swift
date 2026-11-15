@@ -88,15 +88,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 /// opens the dashboard so a launch from /Applications visibly starts the app —
 /// except a launch at login, which stays silent in the menu bar.
 struct LaunchWarmup: View {
+    static let dashboardID = "dashboard"
+
     @ObservedObject var store: DeviceStore
+
+    private static func isDashboard(_ window: NSWindow) -> Bool {
+        window.frameAutosaveName == dashboardID
+            || (window.identifier?.rawValue.hasPrefix(dashboardID) ?? false)
+    }
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         Color.clear
             .frame(width: 0, height: 0)
             .task {
-                if !LaunchContext.launchedAsLoginItem {
-                    openWindow(id: "dashboard")
+                await LaunchContext.waitUntilResolved()
+                let login = LaunchContext.launchedAsLoginItem
+                // macOS window restoration can bring the dashboard back at
+                // login without openWindow; a login launch closes it.
+                let restored = NSApp.windows.filter(Self.isDashboard)
+                AppLog.store.notice("launch[warmup]: loginItem=\(login, privacy: .public) dashboardAlreadyOpen=\(!restored.isEmpty, privacy: .public)")
+                if login {
+                    restored.forEach { $0.close() }
+                } else {
+                    openWindow(id: Self.dashboardID)
                     NSApp.activate(ignoringOtherApps: true)
                 }
                 await store.refresh()

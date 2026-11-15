@@ -3,3 +3,4 @@ build    = MyHomeApp/scripts/build-standalone.sh
 artifact = MyHomeApp/build/standalone/MyHome.app
 verify   = test "$(defaults read "$PWD/MyHomeApp/build/standalone/MyHome.app/Contents/Info" MyHomeGitCommit)" = "$SHIP_COMMIT" && codesign --verify --deep --strict MyHomeApp/build/standalone/MyHome.app
 install  = /Applications/MyHome.app
+installed_commit = defaults read /Applications/MyHome.app/Contents/Info MyHomeGitCommit
