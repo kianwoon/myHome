@@ -37,6 +37,38 @@ PBS_FILE="cpython-${PBS_VERSION}+${PBS_TAG}-${PBS_ARCH}-install_only.tar.gz"
 PBS_URL="https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_TAG}/${PBS_FILE}"
 PBS_CACHE="$CACHE/python-${PBS_VERSION}-${PBS_ARCH}"
 
+# Ship guard: a bundle that will replace /Applications/MyHome.app must be built
+# from committed code that equals the release branch on origin. Building from
+# an uncommitted worktree, or one behind origin, silently dropped fixes before.
+# MYHOME_ALLOW_UNSHIPPED=1 allows a throwaway test build (stamped as such).
+RELEASE_REMOTE="${MYHOME_RELEASE_REMOTE:-origin}"
+RELEASE_BRANCH="${MYHOME_RELEASE_BRANCH:-master}"
+GIT_COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+GIT_DIRTY="$(git -C "$REPO_ROOT" status --porcelain --untracked-files=normal)"
+echo "==> ship guard ($RELEASE_REMOTE/$RELEASE_BRANCH)"
+git -C "$REPO_ROOT" fetch -q "$RELEASE_REMOTE" "$RELEASE_BRANCH" \
+  || { echo "ship guard: cannot fetch $RELEASE_REMOTE/$RELEASE_BRANCH" >&2; exit 1; }
+RELEASE_COMMIT="$(git -C "$REPO_ROOT" rev-parse "$RELEASE_REMOTE/$RELEASE_BRANCH")"
+GUARD_ERRORS=""
+[ -n "$GIT_DIRTY" ] && GUARD_ERRORS="${GUARD_ERRORS}  - uncommitted changes:
+$(echo "$GIT_DIRTY" | sed 's/^/      /')
+"
+[ "$GIT_COMMIT" != "$RELEASE_COMMIT" ] && GUARD_ERRORS="${GUARD_ERRORS}  - HEAD ${GIT_COMMIT:0:7} != $RELEASE_REMOTE/$RELEASE_BRANCH ${RELEASE_COMMIT:0:7} (commit, merge, push first)
+"
+SHIP_STATE="release"
+if [ -n "$GUARD_ERRORS" ]; then
+  if [ "${MYHOME_ALLOW_UNSHIPPED:-0}" = "1" ]; then
+    SHIP_STATE="unshipped-test-build"
+    echo "ship guard: OVERRIDDEN (MYHOME_ALLOW_UNSHIPPED=1) - do not install this build:" >&2
+    printf '%s' "$GUARD_ERRORS" >&2
+  else
+    echo "ship guard: refusing to build a bundle that would drop or hide fixes:" >&2
+    printf '%s' "$GUARD_ERRORS" >&2
+    echo "Set MYHOME_ALLOW_UNSHIPPED=1 only for a throwaway test build." >&2
+    exit 1
+  fi
+fi
+
 echo "==> swift build (release)"
 swift build -c release --package-path "$APP_DIR"
 BIN_DIR="$(swift build -c release --package-path "$APP_DIR" --show-bin-path)"
@@ -100,6 +132,11 @@ sed -e 's/\$(DEVELOPMENT_LANGUAGE)/en/' \
     "$INFO_PLIST" > "$STAGE/MyHome.app/Contents/Info.plist"
 # CFBundleIconFile is not in the Xcode plist (asset catalog there); add it.
 /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string AppIcon" \
+    "$STAGE/MyHome.app/Contents/Info.plist"
+# Provenance: which commit this bundle is, so an installed app can be checked
+# (defaults read /Applications/MyHome.app/Contents/Info MyHomeGitCommit).
+/usr/libexec/PlistBuddy -c "Add :MyHomeGitCommit string $GIT_COMMIT" \
+    -c "Add :MyHomeShipState string $SHIP_STATE" \
     "$STAGE/MyHome.app/Contents/Info.plist"
 plutil -lint "$STAGE/MyHome.app/Contents/Info.plist"
 if grep -q '\$(' "$STAGE/MyHome.app/Contents/Info.plist"; then
