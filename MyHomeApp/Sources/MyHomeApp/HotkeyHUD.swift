@@ -66,6 +66,22 @@ final class HotkeyHUD: ObservableObject {
         hide()
     }
 
+    /// The open mic is being closed on purpose (Yes / No clicked): its idle
+    /// status must not read as "nothing heard".
+    func stopAwaiting() {
+        awaitingUtterance = false
+    }
+
+    /// No answer to a spoken "Go ahead?": back to the question with Yes / No
+    /// instead of hiding a plan that is still waiting. False when there is none.
+    func returnToQuestion() -> Bool {
+        guard isActive, let question, assistant.hasPendingConfirmation else { return false }
+        awaitingUtterance = false
+        setPhase(.message(question, isError: false))
+        scheduleDismiss(confirming: true)
+        return true
+    }
+
     func utteranceReceived() {
         guard isActive else { return }
         awaitingUtterance = false
@@ -192,6 +208,7 @@ struct HotkeyHUDView: View {
                 if let notice = hud.outputNotice {
                     Label(notice, systemImage: "speaker.slash").font(.caption).foregroundStyle(.orange)
                 }
+                if hud.question != nil, assistant.hasPendingConfirmation { confirmButtons }
             case .working:
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
@@ -203,18 +220,20 @@ struct HotkeyHUDView: View {
                         .foregroundStyle(isError ? Color.red : Color.secondary)
                     Text(text).font(.callout).lineLimit(5).fixedSize(horizontal: false, vertical: true)
                 }
-                if assistant.hasPendingConfirmation {
-                    HStack {
-                        Spacer()
-                        Button("No") { hud.onDeny?() }
-                        Button("Yes") { hud.onConfirm?() }.buttonStyle(.borderedProminent)
-                    }
-                    .controlSize(.small)
-                }
+                if assistant.hasPendingConfirmation { confirmButtons }
             }
         }
         .padding(12)
         .frame(width: 380, alignment: .leading)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private var confirmButtons: some View {
+        HStack {
+            Spacer()
+            Button("No") { hud.onDeny?() }
+            Button("Yes") { hud.onConfirm?() }.buttonStyle(.borderedProminent)
+        }
+        .controlSize(.small)
     }
 }

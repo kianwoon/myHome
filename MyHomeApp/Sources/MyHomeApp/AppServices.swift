@@ -99,10 +99,11 @@ final class AppServices {
         }
         speech.onNothingHeard = { [weak self] in
             guard let self else { return }
-            // A false wake, or no answer to a spoken question: end silently.
+            // A false wake, or no answer to a spoken question: end silently
+            // (a plan still waiting for "Go ahead?" keeps its Yes / No on the HUD).
             if self.handsFreeSession {
                 self.handsFreeSession = false
-                self.hud.abandon()
+                if !self.hud.returnToQuestion() { self.hud.abandon() }
                 return
             }
             self.hud.show(self.assistant.noteNothingHeard())
@@ -179,7 +180,6 @@ final class AppServices {
 
     private func runVoice(_ utterance: String) async {
         wake.setPaused(.assistant, true)
-        defer { wake.setPaused(.assistant, false) }
         let reply = await assistant.handle(utterance, origin: .voice)
         outputGate.settle()   // the spoken reply must be audible
         let listen = VoiceFollowUp.shouldListen(after: reply.kind, enabled: AppSettings.voiceFollowUpEnabled(),
@@ -191,6 +191,9 @@ final class AppServices {
         if !listen { followUpTurns = 0 }
         responder.speak(reply.text)
         hud.show(reply)
+        // An armed follow-up keeps the wake mic paused until the answer's
+        // session starts (or is disarmed): no re-arm in the gap between.
+        if !listen { wake.setPaused(.assistant, false) }
         // Spoken replies off (or nothing to say): no speech end will come.
         if listen, !responder.isSpeaking { scheduleFollowUp() }
     }
@@ -215,22 +218,40 @@ final class AppServices {
             guard let self, !Task.isCancelled, let question = self.followUpQuestion else { return }
             self.followUpQuestion = nil
             self.followUpTask = nil
+            defer { self.wake.setPaused(.assistant, false) }   // the recogniser holds it from here
+            // Another session took the mic meanwhile (command-bar mic button).
+            guard !self.speech.isListening, !Self.speechBusy(self.speech.status) else {
+                AppLog.assistant.info("follow-up dropped: the recogniser is already in use")
+                return
+            }
             self.followUpTurns += 1
             AppLog.assistant.info("follow-up listening (turn \(self.followUpTurns, privacy: .public))")
             self.startHandsFree(question: question, source: "follow-up")
         }
     }
 
+    /// Yes / No clicked while the question plays or the mic waits for the
+    /// answer: the result is spoken next, never into an open mic.
+    private func closeFollowUpMic() {
+        disarmFollowUp()
+        guard handsFreeSession else { return }
+        handsFreeSession = false
+        hud.stopAwaiting()
+        speech.cancel()
+    }
+
     /// Call before anything that stops the reply (`responder.stop()` drops
     /// `isSpeaking`, which would otherwise open the mic).
     private func disarmFollowUp() {
+        let armed = followUpQuestion != nil || followUpTask != nil
         followUpQuestion = nil
         followUpTask?.cancel()
         followUpTask = nil
+        if armed { wake.setPaused(.assistant, false) }
     }
 
     func confirmPending() async {
-        disarmFollowUp()   // answered on the HUD instead
+        closeFollowUpMic()   // answered on the HUD instead
         if let reply = await assistant.confirmPending() {
             outputGate.settle()
             responder.speak(reply.text)
@@ -239,7 +260,7 @@ final class AppServices {
     }
 
     func denyPending() {
-        disarmFollowUp()
+        closeFollowUpMic()
         let reply = assistant.cancelPending()
         hud.show(reply)
     }
