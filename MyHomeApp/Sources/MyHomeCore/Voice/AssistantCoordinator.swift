@@ -121,6 +121,23 @@ public final class AssistantCoordinator: ObservableObject {
         return reply
     }
 
+    /// Anything still waiting on the user: a plan, a device choice or the
+    /// housekeeper's question.
+    public var hasOpenQuestion: Bool {
+        hasPendingConfirmation || pendingChoice != nil || housekeeper?.hasPendingQuestion == true
+    }
+
+    /// The user dismissed the session ("never mind", "算了") while a question
+    /// was open: drop it silently, so a later "yes" can't run a stale plan.
+    public func withdrawOpenQuestion() {
+        guard hasOpenQuestion else { return }
+        AppLog.assistant.info("open question withdrawn by a voice dismissal")
+        housekeeper?.tools.clearPendingConfirmation()
+        housekeeper?.clearPendingQuestion()
+        pending = []
+        pendingChoice = nil
+    }
+
     /// The user picked one of the ambiguous candidates.
     @discardableResult
     public func choose(deviceID: String, origin: CommandOrigin) async -> AssistantReply? {

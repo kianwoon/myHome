@@ -17,6 +17,8 @@ final class HotkeyHUD: ObservableObject {
     @Published private(set) var phase: Phase = .hidden
     /// Set when the speakers could not be muted for this session.
     @Published var outputNotice: String?
+    /// The spoken question this listening phase is waiting to hear answered.
+    @Published private(set) var question: String?
 
     /// Set by AppServices (they run the same confirm path as the command bar).
     var onConfirm: (() -> Void)?
@@ -47,8 +49,9 @@ final class HotkeyHUD: ObservableObject {
 
     var isActive: Bool { phase != .hidden }
 
-    func begin() {
+    func begin(question: String? = nil) {
         awaitingUtterance = true
+        self.question = question
         setPhase(.listening)
     }
 
@@ -176,6 +179,9 @@ struct HotkeyHUDView: View {
             case .hidden:
                 EmptyView()
             case .listening:
+                if let question = hud.question {
+                    Text(question).font(.callout).lineLimit(5).fixedSize(horizontal: false, vertical: true)
+                }
                 HStack(spacing: 8) {
                     Image(systemName: "mic.fill").foregroundStyle(Color.accentColor)
                     Text(speech.isListening ? "Listening…" : "Getting ready…").font(.headline)

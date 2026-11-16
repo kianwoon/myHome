@@ -30,8 +30,14 @@ final class AppServices {
     private var outputHeld = false
     private var outputCancellables = Set<AnyCancellable>()
     private var wakeCancellables = Set<AnyCancellable>()
-    /// The current recogniser session was started by the wake word.
-    private var wakeSession = false
+    /// The current recogniser session is hands-free (the wake word, or a
+    /// follow-up answer): strip a leading wake phrase, end silently when empty.
+    private var handsFreeSession = false
+    /// A spoken question is playing; the mic opens for the answer when it ends.
+    private var followUpQuestion: String?
+    /// Follow-ups opened since the user last pressed the hotkey / woke it.
+    private var followUpTurns = 0
+    private var followUpTask: Task<Void, Never>?
 
     private init() {
         // Before anything reads the provider: a pre-split "jev" provider
@@ -71,8 +77,8 @@ final class AppServices {
         speech.onUtterance = { [weak self] utterance in
             guard let self else { return }
             var text = utterance
-            if self.wakeSession {
-                self.wakeSession = false
+            if self.handsFreeSession {
+                self.handsFreeSession = false
                 text = WakePhraseStripper.command(from: utterance, spellings: self.wakeSpellings)
                 // Only the wake phrase again (or a false wake): nothing to run, say nothing.
                 guard !text.isEmpty else {
@@ -84,6 +90,7 @@ final class AppServices {
             // "Ignore" / "dismiss" / "算了": the user closing the session (wake or hotkey).
             if VoiceDismiss.isDismissal(text) {
                 AppLog.assistant.info("voice session dismissed by the user")
+                self.assistant.withdrawOpenQuestion()
                 self.hud.abandon()
                 return
             }
@@ -92,9 +99,9 @@ final class AppServices {
         }
         speech.onNothingHeard = { [weak self] in
             guard let self else { return }
-            // A wake with no command after it is most likely a false wake: end silently.
-            if self.wakeSession {
-                self.wakeSession = false
+            // A false wake, or no answer to a spoken question: end silently.
+            if self.handsFreeSession {
+                self.handsFreeSession = false
                 self.hud.abandon()
                 return
             }
@@ -107,6 +114,7 @@ final class AppServices {
         wake.onWake = { [weak self] in self?.wakeDetected() }
         bindOutputGate()
         bindWakeWord()
+        bindFollowUp()
         reloadHousekeeper()
     }
 
@@ -156,6 +164,7 @@ final class AppServices {
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.wake.setPaused(.sleep, true)
+                self?.disarmFollowUp()
                 self?.hotkey.cancelHeld()
                 self?.speech.cancel()
                 self?.restoreAudioOutput()
@@ -173,11 +182,55 @@ final class AppServices {
         defer { wake.setPaused(.assistant, false) }
         let reply = await assistant.handle(utterance, origin: .voice)
         outputGate.settle()   // the spoken reply must be audible
+        let listen = VoiceFollowUp.shouldListen(after: reply.kind, enabled: AppSettings.voiceFollowUpEnabled(),
+                                                turnsSoFar: followUpTurns, maxTurns: AppSettings.voiceFollowUpMaxTurns())
+        if VoiceFollowUp.asksForAnswer(reply.kind), !listen {
+            AppLog.assistant.info("follow-up not opened (off or \(self.followUpTurns, privacy: .public) already)")
+        }
+        followUpQuestion = listen ? reply.text : nil
+        if !listen { followUpTurns = 0 }
         responder.speak(reply.text)
         hud.show(reply)
+        // Spoken replies off (or nothing to say): no speech end will come.
+        if listen, !responder.isSpeaking { scheduleFollowUp() }
+    }
+
+    // MARK: Follow-up answer ("Which fan?" → "the living room one")
+
+    private func bindFollowUp() {
+        responder.$isSpeaking
+            .sink { [weak self] speaking in
+                guard let self, !speaking, self.followUpQuestion != nil else { return }
+                self.scheduleFollowUp()
+            }
+            .store(in: &wakeCancellables)
+    }
+
+    /// After the echo delay, open the mic hands-free for the answer.
+    private func scheduleFollowUp() {
+        followUpTask?.cancel()
+        let delay = AppSettings.voiceFollowUpDelay()
+        followUpTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard let self, !Task.isCancelled, let question = self.followUpQuestion else { return }
+            self.followUpQuestion = nil
+            self.followUpTask = nil
+            self.followUpTurns += 1
+            AppLog.assistant.info("follow-up listening (turn \(self.followUpTurns, privacy: .public))")
+            self.startHandsFree(question: question, source: "follow-up")
+        }
+    }
+
+    /// Call before anything that stops the reply (`responder.stop()` drops
+    /// `isSpeaking`, which would otherwise open the mic).
+    private func disarmFollowUp() {
+        followUpQuestion = nil
+        followUpTask?.cancel()
+        followUpTask = nil
     }
 
     func confirmPending() async {
+        disarmFollowUp()   // answered on the HUD instead
         if let reply = await assistant.confirmPending() {
             outputGate.settle()
             responder.speak(reply.text)
@@ -186,6 +239,7 @@ final class AppServices {
     }
 
     func denyPending() {
+        disarmFollowUp()
         let reply = assistant.cancelPending()
         hud.show(reply)
     }
@@ -194,7 +248,9 @@ final class AppServices {
 
     /// Press only starts listening; policy checks and confirmations are unchanged.
     private func hotkeyPressed() {
-        wakeSession = false
+        disarmFollowUp()
+        followUpTurns = 0
+        handsFreeSession = false
         responder.stop()
         hud.begin()
         speech.startListening(heldByUser: true)
@@ -249,18 +305,27 @@ final class AppServices {
     /// Same path as a hotkey press, but the recogniser ends the utterance on
     /// its own endpointer (no key release). The chime tells the user to speak.
     private func wakeDetected() {
+        disarmFollowUp()
+        followUpTurns = 0
         responder.stop()
         let chime = AppSettings.wakeWordChime()
         if !chime.isEmpty { NSSound(named: NSSound.Name(chime))?.play() }
-        hud.begin()
-        wakeSession = true
+        startHandsFree(question: nil, source: "wake")
+    }
+
+    /// Listening with no key held: the recogniser's endpointer ends the
+    /// utterance (wake word, or the answer to a spoken question).
+    private func startHandsFree(question: String?, source: String) {
+        hud.begin(question: question)
+        handsFreeSession = true
         speech.startListening(heldByUser: false, noSpeechTimeout: AppSettings.wakeNoSpeechTimeout(),
                              hangover: AppSettings.wakeHangover())
         // The recogniser refused to start (no model, busy): re-arm now.
         // An unavailable status stays on the HUD (it says why); anything else hides it.
         if !speech.isListening && !Self.speechBusy(speech.status) {
+            AppLog.assistant.info("\(source, privacy: .public) listening refused status=\(String(describing: self.speech.status), privacy: .public)")
             if case .unavailable = speech.status {} else { hud.abandon() }
-            wakeSession = false
+            handsFreeSession = false
             wake.setPaused(.recognizer, false)
         }
     }

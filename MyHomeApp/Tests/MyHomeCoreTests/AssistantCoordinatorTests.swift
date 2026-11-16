@@ -110,6 +110,18 @@ final class AssistantCoordinatorTests: XCTestCase {
         XCTAssertEqual(store.power(for: lamp2), false)
     }
 
+    func testVoiceDismissalWithdrawsTheOpenChoice() async {
+        assistant = AssistantCoordinator(controller: controller, planner: nil) // grammar-only: a planner escalates ambiguity
+        _ = await assistant.handle("turn on the lamp", origin: .voice)
+        XCTAssertTrue(assistant.hasOpenQuestion)
+        assistant.withdrawOpenQuestion()
+        XCTAssertFalse(assistant.hasOpenQuestion)
+        XCTAssertNil(assistant.pendingChoice)
+        let reply = await assistant.handle("the desk one", origin: .voice)
+        XCTAssertNotEqual(reply.kind, .executed, "a withdrawn choice must not be answered later")
+        XCTAssertEqual(store.power(for: lamp2), false)
+    }
+
     func testOpenChoiceIgnoresACommandNamingAnotherDevice() async {
         assistant = AssistantCoordinator(controller: controller, planner: nil) // grammar-only: a planner escalates ambiguity
         // Open choice: Desk Lamp / Floor Lamp. "the fan" is a clear match to a
