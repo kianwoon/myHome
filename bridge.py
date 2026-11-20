@@ -98,6 +98,11 @@ try:
 except Exception:  # pragma: no cover - import must never break the bridge
     tuya_probe = None
 
+try:
+    import local_health
+except Exception:  # pragma: no cover - import must never break the bridge
+    local_health = None
+
 def _default_base_dir(script_dir=None):
     """Pick the writable data directory.
 
@@ -380,6 +385,21 @@ def _probe_ok(device_id):
         tuya_probe.note_success(device_id)
 
 
+def _health_skip(device_id):
+    """True while local_health says this device's local server is wedged."""
+    return local_health is not None and local_health.should_skip(device_id)
+
+
+def _health_failed(device_id, exc):
+    if local_health is not None:
+        local_health.note_failure(device_id, getattr(exc, "code", None))
+
+
+def _health_ok(device_id):
+    if local_health is not None:
+        local_health.note_success(device_id)
+
+
 def _probe_kick(config, failed, cloud_online):
     """Queue the device and start the background port probe; never raises."""
     if not failed or tuya_probe is None:
@@ -503,6 +523,15 @@ def handle_status(device_id):
         return {"ok": False, "error": "unknown device id"}
     if not config.get("ip"):
         return {"ok": False, "error": "device has no known ip"}
+    if _health_skip(device_id):
+        # Wedged local server: ask the cloud first, never touching the device
+        # (a failed handshake stalls its cloud reporting). A cloud miss falls
+        # through to the normal local-first flow below.
+        try:
+            dps, source = cloud_status_dps(config)
+            return {"ok": True, "dps": dps, "via": source}
+        except Exception:
+            pass
     probe = False
     try:
         # One shared Device socket: serialize against sets and other polls.
@@ -511,6 +540,7 @@ def handle_status(device_id):
             try:
                 dps = read_status(make_device(config))
             except LocalExchangeError as exc:
+                _health_failed(device_id, exc)
                 # The address may have moved (DHCP): re-locate by MAC and
                 # retry once at the new address, else keep this error.
                 moved = _recover_after(config, exc, started)
@@ -520,6 +550,7 @@ def handle_status(device_id):
                 config = moved
                 dps = read_status(make_device(config))
         _probe_ok(device_id)
+        _health_ok(device_id)
         return {"ok": True, "dps": dps}
     except Exception as exc:  # network failures must stay on the wire path
         local_error = str(exc) or "status failed"
@@ -569,6 +600,15 @@ def handle_set(device_id, dps):
         return {"ok": False, "error": "device has no known ip"}
     if not isinstance(dps, dict) or not dps:
         return {"ok": False, "error": "dps must be a non-empty object"}
+    if _health_skip(device_id):
+        # Wedged local server: cloud only, device untouched. Nothing sent or
+        # a cloud miss falls through to the normal local-first flow below.
+        try:
+            reply = cloud_set_dps(config, dps)
+            if reply.get("ok") is not False:
+                return reply
+        except Exception:
+            pass
     local_error = "set failed"
     probe = False
     try:
@@ -577,6 +617,7 @@ def handle_set(device_id, dps):
             try:
                 reply = _local_set(config, dps)
             except LocalExchangeError as exc:
+                _health_failed(device_id, exc)
                 # Retry only at a DIFFERENT address (a 901 can follow a sent
                 # write, so never re-send to the same one): recovery returns
                 # an entry only when the MAC moved.
@@ -587,6 +628,7 @@ def handle_set(device_id, dps):
                 config = moved
                 reply = _local_set(config, dps)
         _probe_ok(device_id)
+        _health_ok(device_id)
         return reply
     except Exception as exc:
         local_error = str(exc) or "set failed"

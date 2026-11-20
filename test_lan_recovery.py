@@ -136,6 +136,8 @@ class BridgeRecovery(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
         self.sweep = lan_recovery.start_sweep
+        bridge.local_health.reset()  # a 914 test arms the skip; keep it per-test
+        self.addCleanup(bridge.local_health.reset)
         bridge._device_cache.clear()
         bridge._devices = bridge.load_devices()
         self.addCleanup(bridge._device_cache.clear)

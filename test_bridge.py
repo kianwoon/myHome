@@ -289,5 +289,68 @@ class BriturnE0TimerTests(unittest.TestCase):
         self.assertFalse(reply["ok"])
 
 
+class LocalSkipRouting(unittest.TestCase):
+    """A wedged local server (914) routes status/set cloud-first."""
+
+    def setUp(self):
+        self.cfg = {"id": "fan-1", "ip": "192.0.2.9", "key": "0123456789abcdef"}
+        self.make_device = mock.Mock(name="make_device")
+        self.cloud_status = mock.Mock(return_value=({"1": True}, "cloud"))
+        self.cloud_set = mock.Mock(return_value={"ok": True, "via": "cloud"})
+        patches = [
+            mock.patch.object(bridge, "find_device", return_value=self.cfg),
+            mock.patch.object(bridge, "make_device", self.make_device),
+            mock.patch.object(bridge, "cloud_status_dps", self.cloud_status),
+            mock.patch.object(bridge, "cloud_set_dps", self.cloud_set),
+            mock.patch.object(bridge, "_recover_after", return_value=None),
+        ]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        bridge.local_health.reset()
+        self.addCleanup(bridge.local_health.reset)
+
+    def _arm(self):
+        bridge.local_health.note_failure("fan-1", "914")
+        self.assertTrue(bridge.local_health.should_skip("fan-1"))
+
+    def test_status_during_skip_uses_cloud_and_skips_device(self):
+        self._arm()
+        reply = bridge.handle_status("fan-1")
+        self.assertEqual(reply, {"ok": True, "dps": {"1": True}, "via": "cloud"})
+        self.make_device.assert_not_called()
+
+    def test_status_during_skip_cloud_failure_falls_back_to_local(self):
+        self._arm()
+        self.cloud_status.side_effect = bridge._FallbackMiss("cloud status failed", None)
+        with mock.patch.object(bridge, "read_status", return_value={"1": False}):
+            reply = bridge.handle_status("fan-1")
+        self.assertEqual(reply, {"ok": True, "dps": {"1": False}})
+        self.make_device.assert_called_once()
+        self.assertFalse(bridge.local_health.should_skip("fan-1"))
+
+    def test_local_914_in_status_arms_skip(self):
+        err = bridge.LocalExchangeError("Check device key or version", "914")
+        self.cloud_status.side_effect = bridge._FallbackMiss("cloud status failed", None)
+        with mock.patch.object(bridge, "read_status", side_effect=err):
+            reply = bridge.handle_status("fan-1")
+        self.assertFalse(reply["ok"])
+        self.assertTrue(bridge.local_health.should_skip("fan-1"))
+
+    def test_local_non_trigger_error_does_not_arm_skip(self):
+        err = bridge.LocalExchangeError("unreachable", "905")
+        self.cloud_status.side_effect = bridge._FallbackMiss("cloud status failed", None)
+        with mock.patch.object(bridge, "read_status", side_effect=err):
+            bridge.handle_status("fan-1")
+        self.assertFalse(bridge.local_health.should_skip("fan-1"))
+
+    def test_set_during_skip_goes_to_cloud_only(self):
+        self._arm()
+        reply = bridge.handle_set("fan-1", {"1": True})
+        self.assertEqual(reply, {"ok": True, "via": "cloud"})
+        self.cloud_set.assert_called_once_with(self.cfg, {"1": True})
+        self.make_device.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
