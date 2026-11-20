@@ -348,7 +348,12 @@ def _identify(ip, config):
             connection_retry_limit=1, connection_retry_delay=0)
         device.set_socketTimeout(timeout)
         result = device.status()
-        return isinstance(result, dict) and isinstance(result.get("dps"), dict)
+        if not isinstance(result, dict) or not isinstance(result.get("dps"), dict):
+            return False
+        # Unencrypted (v3.1) replies name their sender: another device at
+        # this host must not be mistaken for the one being looked for.
+        sender = result.get("devId")
+        return not sender or sender == config.get("id")
     except Exception:
         return False
     finally:
