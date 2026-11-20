@@ -130,6 +130,7 @@ class BridgeRecovery(unittest.TestCase):
             mock.patch.object(bridge, "cloud_status_dps", side_effect=RuntimeError("no cloud")),
             mock.patch.object(bridge, "cloud_set_dps", side_effect=RuntimeError("no cloud")),
             mock.patch.object(lan_recovery, "start_sweep"),
+            mock.patch.object(bridge.tuya_probe, "start"),
         ]
         for patcher in patches:
             patcher.start()

@@ -93,6 +93,11 @@ try:
 except Exception:  # pragma: no cover - import must never break the bridge
     lan_recovery = None
 
+try:
+    import tuya_probe
+except Exception:  # pragma: no cover - import must never break the bridge
+    tuya_probe = None
+
 def _default_base_dir(script_dir=None):
     """Pick the writable data directory.
 
@@ -328,6 +333,60 @@ def _recover_after(config, exc, started):
         config, getattr(exc, "code", None), started, _persist_ip)
 
 
+def _identify(ip, config):
+    """True when the device answers a fresh status() with a dps dict at ip."""
+    timeout = tuya_probe.CONFIG["identify_timeout"]
+    device = None
+    try:
+        try:
+            version = float(config.get("version", 3.1))
+        except (TypeError, ValueError):
+            version = 3.1
+        device = tinytuya.Device(
+            config.get("id"), ip, config.get("key", ""), version=version,
+            connection_timeout=timeout, persist=False,
+            connection_retry_limit=1, connection_retry_delay=0)
+        device.set_socketTimeout(timeout)
+        result = device.status()
+        return isinstance(result, dict) and isinstance(result.get("dps"), dict)
+    except Exception:
+        return False
+    finally:
+        if device is not None:
+            try:
+                device.close()
+            except Exception:
+                pass
+
+
+def _probe_failed(config, exc):
+    """Count a connect failure for the port probe; True when it was one."""
+    if tuya_probe is None or lan_recovery is None:
+        return False
+    if not lan_recovery.is_connect_failure(getattr(exc, "code", None)):
+        return False
+    tuya_probe.note_failure(config)
+    return True
+
+
+def _probe_ok(device_id):
+    if tuya_probe is not None:
+        tuya_probe.note_success(device_id)
+
+
+def _probe_kick(config, failed, cloud_online):
+    """Queue the device and start the background port probe; never raises."""
+    if not failed or tuya_probe is None:
+        return
+    try:
+        tuya_probe.request(config, cloud_online=cloud_online)
+        roster_ips = [d.get("ip") for d in _devices
+                      if d.get("id") != config.get("id") and d.get("ip")]
+        tuya_probe.start(config.get("ip"), _identify, _persist_ip, roster_ips)
+    except Exception:
+        pass
+
+
 def cloud_status_dps(config):
     """Return dps fetched over the Tuya cloud, shaped like a local reply.
 
@@ -438,6 +497,7 @@ def handle_status(device_id):
         return {"ok": False, "error": "unknown device id"}
     if not config.get("ip"):
         return {"ok": False, "error": "device has no known ip"}
+    probe = False
     try:
         # One shared Device socket: serialize against sets and other polls.
         with device_lock(device_id):
@@ -449,9 +509,11 @@ def handle_status(device_id):
                 # retry once at the new address, else keep this error.
                 moved = _recover_after(config, exc, started)
                 if moved is None:
+                    probe = _probe_failed(config, exc)
                     raise
                 config = moved
                 dps = read_status(make_device(config))
+        _probe_ok(device_id)
         return {"ok": True, "dps": dps}
     except Exception as exc:  # network failures must stay on the wire path
         local_error = str(exc) or "status failed"
@@ -460,13 +522,16 @@ def handle_status(device_id):
     # also fails, the ORIGINAL local error is what the caller sees.
     try:
         dps, source = cloud_status_dps(config)
+        _probe_kick(config, probe, True)
         return {"ok": True, "dps": dps, "via": source}
     except _FallbackMiss as exc:
+        _probe_kick(config, probe, False)
         reply = {"ok": False, "error": local_error}
         if exc.hint:
             reply["appapi"] = exc.hint
         return reply
     except Exception:
+        _probe_kick(config, probe, False)
         return {"ok": False, "error": local_error}
 
 
@@ -499,20 +564,24 @@ def handle_set(device_id, dps):
     if not isinstance(dps, dict) or not dps:
         return {"ok": False, "error": "dps must be a non-empty object"}
     local_error = "set failed"
+    probe = False
     try:
         with device_lock(device_id):
             started = time.monotonic()
             try:
-                return _local_set(config, dps)
+                reply = _local_set(config, dps)
             except LocalExchangeError as exc:
                 # Retry only at a DIFFERENT address (a 901 can follow a sent
                 # write, so never re-send to the same one): recovery returns
                 # an entry only when the MAC moved.
                 moved = _recover_after(config, exc, started)
                 if moved is None:
+                    probe = _probe_failed(config, exc)
                     raise
                 config = moved
-                return _local_set(config, dps)
+                reply = _local_set(config, dps)
+        _probe_ok(device_id)
+        return reply
     except Exception as exc:
         local_error = str(exc) or "set failed"
     # General rule: the local exchange failed, so retry through the cloud (the
@@ -520,17 +589,20 @@ def handle_set(device_id, dps):
     # upstream; if the cloud is unavailable the ORIGINAL local error is kept.
     try:
         reply = cloud_set_dps(config, dps)
+        _probe_kick(config, probe, reply.get("ok") is not False)
         if reply.get("ok") is False:
             # Nothing went upstream: the LOCAL error decides whether the
             # outcome is unknown (timeout) or a rejection, so it leads.
             reply["error"] = local_error + " (" + str(reply.get("error")) + ")"
         return reply
     except _FallbackMiss as exc:
+        _probe_kick(config, probe, False)
         reply = {"ok": False, "error": local_error}
         if exc.hint:
             reply["appapi"] = exc.hint
         return reply
     except Exception:
+        _probe_kick(config, probe, False)
         return {"ok": False, "error": local_error}
 
 
