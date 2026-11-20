@@ -70,6 +70,9 @@ CONFIG = {
     # Consecutive connect failures before a device qualifies without a cloud
     # signal that it is online.
     "failure_threshold": _env_number("MYHOME_TUYAPROBE_FAILURE_THRESHOLD", 3, int),
+    # Off by default: the probe has not passed a live test yet, and failed
+    # handshakes can wedge this firmware. MYHOME_TUYAPROBE_ENABLED=1 turns it on.
+    "enabled": _env_number("MYHOME_TUYAPROBE_ENABLED", 0, int) == 1,
 }
 
 _lock = threading.Lock()
@@ -225,6 +228,8 @@ def _worker(target_ip, identify, persist, exclude_ips):
 
 def start(target_ip, identify, persist, exclude_ips=(), now=None):
     """Spawn one background probe when devices are pending and none ran lately."""
+    if not CONFIG["enabled"]:
+        return False
     now = time.monotonic() if now is None else now
     with _lock:
         last = _state["last"]

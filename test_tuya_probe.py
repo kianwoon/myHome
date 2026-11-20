@@ -152,8 +152,16 @@ class Gating(unittest.TestCase):
         self.assertFalse(tuya_probe.request(cfg(), cloud_online=True, now=100.0 + backoff - 1))
         self.assertTrue(tuya_probe.request(cfg(), cloud_online=True, now=100.0 + backoff + 1))
 
+    def test_start_is_off_by_default(self):
+        tuya_probe.request(cfg(), cloud_online=True)
+        with mock.patch.dict(tuya_probe.CONFIG, {"enabled": False}), \
+                mock.patch.object(tuya_probe.threading, "Thread") as thread:
+            self.assertFalse(tuya_probe.start(OLD_IP, mock.Mock(), mock.Mock(), now=0.0))
+        thread.assert_not_called()
+
     def test_start_requires_pending_and_honours_cooldown(self):
-        with mock.patch.object(tuya_probe.threading, "Thread") as thread:
+        with mock.patch.dict(tuya_probe.CONFIG, {"enabled": True}), \
+                mock.patch.object(tuya_probe.threading, "Thread") as thread:
             self.assertFalse(tuya_probe.start(OLD_IP, mock.Mock(), mock.Mock(), now=0.0))
             tuya_probe.request(cfg(), cloud_online=True)
             self.assertTrue(tuya_probe.start(OLD_IP, mock.Mock(), mock.Mock(), now=0.0))
