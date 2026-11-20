@@ -88,6 +88,11 @@ try:
 except Exception:  # pragma: no cover - import must never break the bridge
     appapi = None
 
+try:
+    import lan_recovery
+except Exception:  # pragma: no cover - import must never break the bridge
+    lan_recovery = None
+
 def _default_base_dir(script_dir=None):
     """Pick the writable data directory.
 
@@ -283,12 +288,44 @@ def error_text(result):
     return ": ".join(parts) if parts else "device did not respond"
 
 
+class LocalExchangeError(ValueError):
+    """A failed local exchange; `code` is tinytuya's Err (e.g. "901")."""
+
+    def __init__(self, message, code=None):
+        super().__init__(message)
+        self.code = code
+
+
+def _local_error(result):
+    code = result.get("Err") if isinstance(result, dict) else None
+    return LocalExchangeError(error_text(result), code)
+
+
 def read_status(device):
-    """Return dps dict from a status() result, or raise ValueError."""
+    """Return dps dict from a status() result, or raise LocalExchangeError."""
     result = device.status()
     if isinstance(result, dict) and isinstance(result.get("dps"), dict):
         return result["dps"]
-    raise ValueError(error_text(result))
+    raise _local_error(result)
+
+
+def _persist_ip(device_id, new_ip):
+    """Write a recovered address, drop the old socket, return the live entry."""
+    def merge(fresh):
+        for entry in fresh:
+            if entry.get("id") == device_id:
+                entry["ip"] = new_ip
+    apply_to_disk(merge)
+    _device_cache.pop(device_id, None)
+    return find_device(device_id)
+
+
+def _recover_after(config, exc, started):
+    """Roster entry to retry locally after a 901/905, or None (lan_recovery)."""
+    if lan_recovery is None:
+        return None
+    return lan_recovery.recover_after(
+        config, getattr(exc, "code", None), started, _persist_ip)
 
 
 def cloud_status_dps(config):
@@ -404,7 +441,17 @@ def handle_status(device_id):
     try:
         # One shared Device socket: serialize against sets and other polls.
         with device_lock(device_id):
-            dps = read_status(make_device(config))
+            started = time.monotonic()
+            try:
+                dps = read_status(make_device(config))
+            except LocalExchangeError as exc:
+                # The address may have moved (DHCP): re-locate by MAC and
+                # retry once at the new address, else keep this error.
+                moved = _recover_after(config, exc, started)
+                if moved is None:
+                    raise
+                config = moved
+                dps = read_status(make_device(config))
         return {"ok": True, "dps": dps}
     except Exception as exc:  # network failures must stay on the wire path
         local_error = str(exc) or "status failed"
@@ -423,6 +470,26 @@ def handle_status(device_id):
         return {"ok": False, "error": local_error}
 
 
+def _local_set(config, dps):
+    """One local write; caller holds device_lock. Raises LocalExchangeError."""
+    device = make_device(config)
+    result = device.set_multiple_values(dps)
+    if isinstance(result, dict) and (result.get("Error") or result.get("Err")):
+        raise _local_error(result)
+    # tinytuya echoes the applied dps on the command reply; that echo is
+    # itself the device's confirmation and costs no second exchange.
+    echo = result.get("dps") if isinstance(result, dict) else None
+    if isinstance(echo, dict):
+        return {"ok": True, "dps": echo, "confirmed": True}
+    # No echo: fall back to a status read, but a failed readback is an
+    # UNKNOWN outcome, not a failed set -- the command already reached
+    # the wire, so never report ok:false for a missing confirmation.
+    try:
+        return {"ok": True, "dps": read_status(device), "confirmed": True}
+    except Exception:
+        return {"ok": True, "confirmed": False}
+
+
 def handle_set(device_id, dps):
     config = find_device(device_id)
     if config is None:
@@ -434,22 +501,18 @@ def handle_set(device_id, dps):
     local_error = "set failed"
     try:
         with device_lock(device_id):
-            device = make_device(config)
-            result = device.set_multiple_values(dps)
-            if isinstance(result, dict) and (result.get("Error") or result.get("Err")):
-                raise ValueError(error_text(result))
-            # tinytuya echoes the applied dps on the command reply; that echo is
-            # itself the device's confirmation and costs no second exchange.
-            echo = result.get("dps") if isinstance(result, dict) else None
-            if isinstance(echo, dict):
-                return {"ok": True, "dps": echo, "confirmed": True}
-            # No echo: fall back to a status read, but a failed readback is an
-            # UNKNOWN outcome, not a failed set -- the command already reached
-            # the wire, so never report ok:false for a missing confirmation.
+            started = time.monotonic()
             try:
-                return {"ok": True, "dps": read_status(device), "confirmed": True}
-            except Exception:
-                return {"ok": True, "confirmed": False}
+                return _local_set(config, dps)
+            except LocalExchangeError as exc:
+                # Retry only at a DIFFERENT address (a 901 can follow a sent
+                # write, so never re-send to the same one): recovery returns
+                # an entry only when the MAC moved.
+                moved = _recover_after(config, exc, started)
+                if moved is None:
+                    raise
+                config = moved
+                return _local_set(config, dps)
     except Exception as exc:
         local_error = str(exc) or "set failed"
     # General rule: the local exchange failed, so retry through the cloud (the
@@ -670,13 +733,22 @@ def handle_rescan(request=None):
             source = None
             log.warning("rescan cloud merge skipped: %s", type(exc).__name__)
 
-    scan = tinytuya.deviceScan(poll=False, color=False, maxretry=window)
+    # byID: the merge below matches roster entries by device id (the default
+    # keys the result by IP, which never matched and left addresses stale).
+    scan = tinytuya.deviceScan(poll=False, color=False, maxretry=window, byID=True)
     if not isinstance(scan, dict):
         scan = {}
 
     # General rule: shared mutable state — never dump _devices; merge only the
     # scan delta into a fresh read via apply_to_disk.
     merged = 0
+    # Devices the broadcast scan missed are re-located by MAC (ARP table).
+    arp_entries = None
+    if lan_recovery is not None:
+        try:
+            arp_entries = lan_recovery.scan_entries(load_devices(), set(scan))
+        except Exception as exc:
+            log.warning("rescan arp refresh skipped: %s", type(exc).__name__)
 
     def merge(fresh):
         nonlocal merged
@@ -694,6 +766,8 @@ def handle_rescan(request=None):
                 changed = True
             if changed:
                 merged += 1
+        if arp_entries is not None:
+            merged += lan_recovery.refresh_roster(fresh, set(scan), arp_entries)
 
     try:
         apply_to_disk(merge)
@@ -2154,6 +2228,13 @@ def autoheal(cloud):
         scan = {}
     if not isinstance(scan, dict):
         scan = {}
+    # Devices the broadcast scan missed are re-located by MAC (ARP table).
+    arp_entries = None
+    if lan_recovery is not None:
+        try:
+            arp_entries = lan_recovery.scan_entries(roster, set(scan))
+        except Exception:
+            arp_entries = None
 
     def merge(fresh):
         nonlocal found
@@ -2171,6 +2252,8 @@ def autoheal(cloud):
                 changed = True
             if changed:
                 found += 1
+        if arp_entries is not None:
+            found += lan_recovery.refresh_roster(fresh, set(scan), arp_entries)
 
     try:
         apply_to_disk(merge)
