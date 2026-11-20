@@ -97,6 +97,19 @@ enum WriteFailureClass {
         "901", "905", "unable to connect", "did not reply", "power command failed", "color command failed"
     ]
 
+    /// tinytuya's socket-connect failures (901 connect error, 905 connect
+    /// timeout): no socket was opened, so the write never reached the device.
+    // allow-hardcode: tinytuya error_helper texts for ERR_CONNECT / ERR_OFFLINE.
+    static let unreachablePhrases = [
+        "network error: unable to connect", "network error: device unreachable"
+    ]
+
+    /// True when the message proves the device could not be reached at all.
+    static func isUnreachable(message: String) -> Bool {
+        let text = message.lowercased()
+        return unreachablePhrases.contains { text.contains($0) }
+    }
+
     /// Briturn and the Tuya bridge only report text: transport-class words
     /// (the store's list plus `transportPhrases`) → ambiguous.
     static func isAmbiguous(message: String) -> Bool {

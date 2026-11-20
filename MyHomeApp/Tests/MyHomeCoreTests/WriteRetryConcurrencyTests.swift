@@ -189,6 +189,18 @@ final class WriteRetryConcurrencyTests: XCTestCase {
         }
     }
 
+    func testConnectFailureIsReportedAsOffline() {
+        for text in ["Network Error: Unable to Connect: 901", "Network Error: Device Unreachable: 905"] {
+            XCTAssertTrue(WriteFailureClass.isUnreachable(message: text), text)
+            XCTAssertEqual(DeviceController.noClearReply(text), DeviceController.offlineReply, text)
+        }
+        for text in ["Timeout Waiting for Device: 902", BridgeError.timeout.localizedDescription,
+                     "device unreachable for brightness read", "power command failed"] {
+            XCTAssertFalse(WriteFailureClass.isUnreachable(message: text), text)
+            XCTAssertTrue(DeviceController.noClearReply(text).hasPrefix("got no clear reply"), text)
+        }
+    }
+
     // MARK: No address
 
     func testNoAddressIsAnExplicitResultNotASilentFalse() async {

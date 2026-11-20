@@ -501,8 +501,14 @@ public final class DeviceController: ObservableObject {
     }
 
     // allow-hardcode: spoken UI copy.
+    static let offlineReply = "isn't reachable on the network — it looks offline, so nothing changed"
+
+    /// Reply for an unknown-outcome write. A connect failure means the write
+    /// never left the Mac, so it is reported as offline, not as "no clear reply".
+    // allow-hardcode: spoken UI copy.
     static func noClearReply(_ message: String) -> String {
-        "got no clear reply (\(message)); it may not have changed"
+        if WriteFailureClass.isUnreachable(message: message) { return offlineReply }
+        return "got no clear reply (\(message)); it may not have changed"
     }
 
     // MARK: - Post-check
