@@ -97,14 +97,15 @@ enum WriteFailureClass {
         "901", "905", "unable to connect", "did not reply", "power command failed", "color command failed"
     ]
 
-    /// tinytuya's socket-connect failures (901 connect error, 905 connect
-    /// timeout): no socket was opened, so the write never reached the device.
+    /// tinytuya's connection failures (901 connect error, 905 connect
+    /// timeout): the device could not be reached. 901 can also follow a send
+    /// whose reply failed, so this does not prove the write never landed.
     // allow-hardcode: tinytuya error_helper texts for ERR_CONNECT / ERR_OFFLINE.
     static let unreachablePhrases = [
         "network error: unable to connect", "network error: device unreachable"
     ]
 
-    /// True when the message proves the device could not be reached at all.
+    /// True when the message is a tinytuya "could not reach the device" error.
     static func isUnreachable(message: String) -> Bool {
         let text = message.lowercased()
         return unreachablePhrases.contains { text.contains($0) }

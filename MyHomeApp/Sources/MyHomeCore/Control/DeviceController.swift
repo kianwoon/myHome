@@ -501,10 +501,11 @@ public final class DeviceController: ObservableObject {
     }
 
     // allow-hardcode: spoken UI copy.
-    static let offlineReply = "isn't reachable on the network — it looks offline, so nothing changed"
+    static let offlineReply = "looks offline (couldn't connect); it may not have changed"
 
-    /// Reply for an unknown-outcome write. A connect failure means the write
-    /// never left the Mac, so it is reported as offline, not as "no clear reply".
+    /// Reply for an unknown-outcome write. A tinytuya connect failure is
+    /// reported as offline, not as "no clear reply". It stays hedged: 901 is
+    /// also returned after a send whose reply failed, so the write may have landed.
     // allow-hardcode: spoken UI copy.
     static func noClearReply(_ message: String) -> String {
         if WriteFailureClass.isUnreachable(message: message) { return offlineReply }
