@@ -43,6 +43,11 @@ public final class DeviceStore: ObservableObject {
     /// the same slow cycle as cloudsync, never on the 10s status cycle.
     public static let cloudStatusPollCycles = cloudSyncInterval
 
+    /// General rule: a red "offline" cloud badge is re-verified fast (seconds
+    /// between re-checks, not poll cycles) because a stale "offline" misleads
+    /// the user; green/pending badges stay on the slow cloudStatusPollCycles.
+    public static let cloudOfflineRecheckInterval: TimeInterval = 60
+
     /// Bridge roster (Tuya + WiFi briturn devices).
     @Published public private(set) var roster: [Device] = [] {
         didSet { invalidateDerivedCaches(roster: true) }
@@ -193,6 +198,8 @@ public final class DeviceStore: ObservableObject {
     var noticeTask: Task<Void, Never>?
     private var pollObservers = 0
     private var cyclesSinceCloudSync = 0
+    /// Start time of the last refreshCloudStatus() attempt (any trigger).
+    var lastCloudStatusRefresh: Date?
     private var isCloudSyncing = false
     private var specsFetched = false
     private var specsFetching = false
@@ -1827,6 +1834,7 @@ public final class DeviceStore: ObservableObject {
                 await cloudSync()
                 await refreshCloudStatus()
             }
+            if needsOfflineRecheckNow() { await refreshCloudStatus() }
             do {
                 try await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
             } catch {
@@ -1927,6 +1935,9 @@ public final class DeviceStore: ObservableObject {
     /// Slow-cycle companion to cloudSync: refreshes the cloud connect map that
     /// the card and detail badges read. Failures leave prior values intact.
     public func refreshCloudStatus() async {
+        // Stamped at the start so a failing or slow bridge call is still
+        // throttled to one attempt per recheck interval.
+        lastCloudStatusRefresh = Date()
         do {
             let reply = try await bridge.request(["cmd": "cloudstatus"], timeout: 90)
             if reply["ok"] as? Bool == true {
