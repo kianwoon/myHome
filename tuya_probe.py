@@ -45,12 +45,14 @@ def _env_number(name, default, cast=float):
 CONFIG = {
     # TCP port Tuya devices listen on for local control.
     "port": _env_number("MYHOME_TUYAPROBE_PORT", 6668, int),
-    # Seconds a connect-only attempt may take.
-    "connect_timeout": _env_number("MYHOME_TUYAPROBE_CONNECT_TIMEOUT", 0.3),
+    # Seconds a connect-only attempt may take. WiFi devices in power-save
+    # answer slowly (a fan measured 0.6 s average, 1.4 s peak ping RTT), so
+    # this must cover a sleepy radio, not a wired host.
+    "connect_timeout": _env_number("MYHOME_TUYAPROBE_CONNECT_TIMEOUT", 1.5),
     # Parallel connect attempts during the scan.
-    "concurrency": _env_number("MYHOME_TUYAPROBE_CONCURRENCY", 32, int),
+    "concurrency": _env_number("MYHOME_TUYAPROBE_CONCURRENCY", 64, int),
     # Seconds one identification (status call) may take.
-    "identify_timeout": _env_number("MYHOME_TUYAPROBE_IDENTIFY_TIMEOUT", 2.0),
+    "identify_timeout": _env_number("MYHOME_TUYAPROBE_IDENTIFY_TIMEOUT", 5.0),
     # Minimum seconds between two probes in one bridge process.
     "cooldown": _env_number("MYHOME_TUYAPROBE_COOLDOWN", 300.0),
     # Seconds a device the probe failed to find is not probed again.
