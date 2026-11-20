@@ -1811,9 +1811,16 @@ public final class DeviceStore: ObservableObject {
 
     private func pollLoop() async {
         let single = ProcessInfo.processInfo.environment["MYHOME_SINGLEPOLL"] == "1"
+        // The cloud badge map is otherwise first fetched a full cloud-sync
+        // interval after launch, leaving every card at "☁ …" until then.
+        var cloudStatusFetched = false
         while !Task.isCancelled {
             await pollCycle()
             if single { return }
+            if !cloudStatusFetched {
+                cloudStatusFetched = true
+                await refreshCloudStatus()
+            }
             cyclesSinceCloudSync += 1
             if cyclesSinceCloudSync >= Self.cloudStatusPollCycles {
                 cyclesSinceCloudSync = 0
