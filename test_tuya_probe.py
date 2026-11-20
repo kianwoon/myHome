@@ -29,65 +29,81 @@ def cfg(device_id=DEVICE_ID, ip=OLD_IP):
     return {"id": device_id, "key": FAKE_KEY, "ip": ip, "version": "3.4"}
 
 
-class OpenHosts(unittest.TestCase):
-    def test_returns_sorted_open_hosts_and_skips_own_address(self):
+class NoBareConnect(unittest.TestCase):
+    def test_connect_only_scan_is_gone(self):
+        # A bare connect-and-close wedges a Tuya device's local server.
+        self.assertFalse(hasattr(tuya_probe, "open_hosts"))
+        self.assertFalse(hasattr(tuya_probe, "_tcp_connect"))
+        self.assertFalse(hasattr(tuya_probe, "socket"))
+        with open(tuya_probe.__file__, encoding="utf-8") as handle:
+            source = handle.read()
+        self.assertNotIn("create_connection", source.split('"""', 2)[2])
+
+
+class Candidates(unittest.TestCase):
+    def test_excludes_own_stored_and_roster_ips(self):
         network = ipaddress.IPv4Network("10.0.0.0/28")
-        seen = []
-
-        def connector(ip, port, timeout):
-            seen.append((ip, port, timeout))
-            return ip in ("10.0.0.10", "10.0.0.9", "10.0.0.2")
-
-        found = tuya_probe.open_hosts(network, own_address="10.0.0.2", connector=connector)
-        self.assertEqual(found, ["10.0.0.9", "10.0.0.10"])
-        self.assertNotIn("10.0.0.2", [ip for ip, _, _ in seen])
-        self.assertEqual({(port, timeout) for _, port, timeout in seen},
-                         {(tuya_probe.CONFIG["port"], tuya_probe.CONFIG["connect_timeout"])})
+        hosts = tuya_probe.candidates(
+            network, own_address="10.0.0.2", exclude_ips=[OLD_IP, "10.0.0.5", "10.0.0.9"])
+        self.assertNotIn("10.0.0.2", hosts)
+        self.assertNotIn("10.0.0.5", hosts)
+        self.assertNotIn("10.0.0.9", hosts)
+        self.assertEqual(hosts, [str(h) for h in network.hosts()
+                                 if str(h) not in ("10.0.0.2", "10.0.0.5", "10.0.0.9")])
 
     def test_refuses_oversized_subnet(self):
-        connector = mock.Mock(return_value=True)
         with mock.patch.dict(tuya_probe.CONFIG, {"max_hosts": 254}):
-            found = tuya_probe.open_hosts(ipaddress.IPv4Network("10.0.0.0/22"), connector=connector)
-        self.assertEqual(found, [])
-        connector.assert_not_called()
+            self.assertEqual(tuya_probe.candidates(ipaddress.IPv4Network("10.0.0.0/22")), [])
+
+    def test_default_limit_covers_a_slash_22(self):
+        self.assertEqual(len(tuya_probe.candidates(ipaddress.IPv4Network("10.0.0.0/22"))), 1022)
 
     def test_missing_network_is_empty(self):
-        self.assertEqual(tuya_probe.open_hosts(None, connector=mock.Mock()), [])
+        self.assertEqual(tuya_probe.candidates(None), [])
 
 
 class Locate(unittest.TestCase):
-    def test_finds_moved_device_preferring_non_roster_hosts(self):
+    def test_finds_moved_device(self):
+        found = tuya_probe.locate([cfg()], ["10.0.4.5", NEW_IP], lambda ip, config: ip == NEW_IP)
+        self.assertEqual(found, {DEVICE_ID: NEW_IP})
+
+    def test_stops_after_first_match(self):
         tried = []
+        hosts = ["10.0.4.%d" % n for n in range(1, 11)]
 
         def identify(ip, config):
             tried.append(ip)
-            return ip == NEW_IP
+            return ip == "10.0.4.3"
 
-        hosts = ["10.0.4.5", "10.0.4.9", NEW_IP]
-        found = tuya_probe.locate([cfg()], hosts, identify, skip_ips=["10.0.4.5", "10.0.4.9"])
-        self.assertEqual(found, {DEVICE_ID: NEW_IP})
-        self.assertEqual(tried, [NEW_IP])
+        with mock.patch.dict(tuya_probe.CONFIG, {"concurrency": 1}):
+            found = tuya_probe.locate([cfg()], hosts, identify)
+        self.assertEqual(found, {DEVICE_ID: "10.0.4.3"})
+        self.assertEqual(tried, hosts[:3])
 
-    def test_roster_hosts_are_tried_last_not_never(self):
+    def test_no_match_tries_every_host(self):
         tried = []
-        found = tuya_probe.locate(
-            [cfg()], ["10.0.4.5", "10.0.4.30"],
-            lambda ip, config: tried.append(ip) or ip == "10.0.4.5", skip_ips=["10.0.4.5"])
-        self.assertEqual(tried, ["10.0.4.30", "10.0.4.5"])
-        self.assertEqual(found, {DEVICE_ID: "10.0.4.5"})
+        hosts = ["10.0.4.%d" % n for n in range(1, 11)]
+        found = tuya_probe.locate([cfg()], hosts, lambda ip, config: tried.append(ip) and False)
+        self.assertEqual(found, {})
+        self.assertEqual(sorted(tried), sorted(hosts))
 
     def test_never_assigns_one_host_to_two_devices(self):
         found = tuya_probe.locate(
             [cfg(DEVICE_ID), cfg(OTHER_ID)], ["10.0.4.7"], lambda ip, config: True)
         self.assertEqual(found, {DEVICE_ID: "10.0.4.7"})
 
-    def test_respects_max_candidates(self):
-        tried = []
-        hosts = ["10.0.4.%d" % n for n in range(1, 11)]
-        with mock.patch.dict(tuya_probe.CONFIG, {"max_candidates": 3}):
-            found = tuya_probe.locate([cfg()], hosts, lambda ip, config: tried.append(ip) and False)
-        self.assertEqual(found, {})
-        self.assertEqual(tried, hosts[:3])
+    def test_matched_host_is_not_offered_to_next_device(self):
+        offered = []
+
+        def identify(ip, config):
+            offered.append((config["id"], ip))
+            return True
+
+        with mock.patch.dict(tuya_probe.CONFIG, {"concurrency": 1}):
+            found = tuya_probe.locate(
+                [cfg(DEVICE_ID), cfg(OTHER_ID)], ["10.0.4.7", "10.0.4.8"], identify)
+        self.assertEqual(found, {DEVICE_ID: "10.0.4.7", OTHER_ID: "10.0.4.8"})
+        self.assertEqual(offered, [(DEVICE_ID, "10.0.4.7"), (OTHER_ID, "10.0.4.8")])
 
     def test_identify_exception_is_skipped(self):
         def identify(ip, config):
@@ -131,8 +147,7 @@ class Gating(unittest.TestCase):
     def test_backoff_blocks_request_until_it_expires(self):
         tuya_probe.request(cfg(), cloud_online=True, now=100.0)
         tuya_probe.drain(OLD_IP, lambda ip, config: False, mock.Mock(),
-                         network=ipaddress.IPv4Network("10.0.4.0/30"),
-                         connector=lambda *a: False, now=100.0)
+                         network=ipaddress.IPv4Network("10.0.4.0/30"), now=100.0)
         backoff = tuya_probe.CONFIG["device_backoff"]
         self.assertFalse(tuya_probe.request(cfg(), cloud_online=True, now=100.0 + backoff - 1))
         self.assertTrue(tuya_probe.request(cfg(), cloud_online=True, now=100.0 + backoff + 1))
@@ -161,13 +176,17 @@ class Drain(unittest.TestCase):
         tuya_probe.request(cfg(OTHER_ID, "10.0.5.99"), cloud_online=True)
         persist = mock.Mock()
 
+        tried = []
+
         def identify(ip, config):
+            tried.append(ip)
             return config["id"] == DEVICE_ID and ip == NEW_IP
 
         persisted = tuya_probe.drain(
-            OLD_IP, identify, persist, roster_ips=["10.0.4.5"],
-            network=ipaddress.IPv4Network("10.0.4.0/27"),
-            connector=lambda ip, port, timeout: ip in (NEW_IP, "10.0.4.5"), now=50.0)
+            OLD_IP, identify, persist, exclude_ips=["10.0.4.5"],
+            network=ipaddress.IPv4Network("10.0.4.0/27"), now=50.0)
+        self.assertNotIn("10.0.4.5", tried)
+        self.assertNotIn(OLD_IP, tried)
         self.assertEqual(persisted, {DEVICE_ID: NEW_IP})
         persist.assert_called_once_with(DEVICE_ID, NEW_IP)
         self.assertFalse(tuya_probe.request(cfg(OTHER_ID), cloud_online=True, now=51.0))
@@ -177,16 +196,16 @@ class Drain(unittest.TestCase):
         tuya_probe.request(cfg(), cloud_online=True)
         persisted = tuya_probe.drain(
             OLD_IP, lambda ip, config: True, mock.Mock(side_effect=OSError("disk")),
-            network=ipaddress.IPv4Network("10.0.4.0/30"), connector=lambda *a: True, now=0.0)
+            network=ipaddress.IPv4Network("10.0.4.0/30"), now=0.0)
         self.assertEqual(persisted, {})
         self.assertFalse(tuya_probe.request(cfg(), cloud_online=True, now=1.0))
 
     def test_empty_pending_does_nothing(self):
-        connector = mock.Mock()
+        identify = mock.Mock()
         self.assertEqual(tuya_probe.drain(
-            OLD_IP, mock.Mock(), mock.Mock(),
-            network=ipaddress.IPv4Network("10.0.4.0/30"), connector=connector), {})
-        connector.assert_not_called()
+            OLD_IP, identify, mock.Mock(),
+            network=ipaddress.IPv4Network("10.0.4.0/30")), {})
+        identify.assert_not_called()
 
 
 class BridgeWiring(unittest.TestCase):
@@ -270,7 +289,9 @@ class BridgeWiring(unittest.TestCase):
             self.assertTrue(bridge._identify(NEW_IP, cfg()))
         args, kwargs = factory.call_args
         self.assertEqual(args, (DEVICE_ID, NEW_IP, FAKE_KEY))
-        self.assertEqual(kwargs["connection_timeout"], tuya_probe.CONFIG["identify_timeout"])
+        self.assertEqual(kwargs["connection_timeout"], tuya_probe.CONFIG["connect_timeout"])
+        self.assertEqual(kwargs["connection_retry_limit"], 1)
+        self.assertEqual(kwargs["connection_retry_delay"], 0)
         self.assertIs(kwargs["persist"], False)
         device.set_socketTimeout.assert_called_once_with(tuya_probe.CONFIG["identify_timeout"])
         device.close.assert_called_once_with()

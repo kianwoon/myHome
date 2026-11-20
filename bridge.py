@@ -335,6 +335,7 @@ def _recover_after(config, exc, started):
 
 def _identify(ip, config):
     """True when the device answers a fresh status() with a dps dict at ip."""
+    connect_timeout = tuya_probe.CONFIG["connect_timeout"]
     timeout = tuya_probe.CONFIG["identify_timeout"]
     device = None
     try:
@@ -344,7 +345,7 @@ def _identify(ip, config):
             version = 3.1
         device = tinytuya.Device(
             config.get("id"), ip, config.get("key", ""), version=version,
-            connection_timeout=timeout, persist=False,
+            connection_timeout=connect_timeout, persist=False,
             connection_retry_limit=1, connection_retry_delay=0)
         device.set_socketTimeout(timeout)
         result = device.status()

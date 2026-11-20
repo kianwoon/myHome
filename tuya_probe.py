@@ -3,17 +3,28 @@
 General rule: a Tuya device listens on TCP 6668. When a device stops
 answering at its stored address (tinytuya 901/905) and the ARP table is not
 readable (macOS hides it from some process trees), the bridge asks this
-module to look for the device on the local subnet instead:
+module to look for the device on the local subnet instead: every candidate
+host gets a fresh status() call using the device's own id/key, and the host
+that answers with a dps dict is the device.
 
-  1. connect-only scan of the Tuya port over the subnet (no bytes are sent);
-  2. try each open host with a fresh status() call using the device's own
-     id/key; the host that answers with a dps dict is the device.
+Hard rules:
+  * No bare connects. Nothing here opens a TCP connection to the Tuya port
+    without immediately doing the tinytuya handshake. A connect-and-close
+    wedges a Tuya v3.4 device's local server for 2+ minutes (measured: a
+    status() answered in 0.33 s when quiet, then returned 914 for 80+ s right
+    after one connect-close), so a connect-only scan made the target
+    unidentifiable and knocked every other device off local control.
+  * Roster IPs are never touched. Every other roster device's address, the
+    device's own stored address and this host's address are excluded from the
+    candidates. Hosts with no listener fail fast (refused) or after
+    connect_timeout; that is the scan.
 
-The scan runs in one background thread, at most once per cooldown, and never
-blocks a request. A device the probe failed to find is left alone for a long
-backoff so flaky firmware is not hammered. A device qualifies for a probe
-when the cloud says it is online (so the local address is the problem) or
-after several consecutive connect failures.
+Identification runs in parallel with early exit: once a host matches, the
+remaining candidates are skipped. It runs in one background thread, at most
+once per cooldown, and never blocks a request. A device the probe failed to
+find is left alone for a long backoff so flaky firmware is not hammered. A
+device qualifies for a probe when the cloud says it is online (so the local
+address is the problem) or after several consecutive connect failures.
 
 This module never imports bridge; the bridge passes identify/persist in.
 Logs carry counts, device ids and IPs only, never keys.
@@ -23,7 +34,6 @@ Tunables come from the environment (MYHOME_TUYAPROBE_*), see CONFIG.
 import concurrent.futures
 import logging
 import os
-import socket
 import threading
 import time
 
@@ -43,13 +53,11 @@ def _env_number(name, default, cast=float):
 
 
 CONFIG = {
-    # TCP port Tuya devices listen on for local control.
-    "port": _env_number("MYHOME_TUYAPROBE_PORT", 6668, int),
-    # Seconds a connect-only attempt may take. WiFi devices in power-save
-    # answer slowly (a fan measured 0.6 s average, 1.4 s peak ping RTT), so
-    # this must cover a sleepy radio, not a wired host.
+    # Seconds the tinytuya connect of one identification may take. WiFi
+    # devices in power-save answer slowly (a fan measured 0.6 s average, 1.4 s
+    # peak ping RTT), so this must cover a sleepy radio, not a wired host.
     "connect_timeout": _env_number("MYHOME_TUYAPROBE_CONNECT_TIMEOUT", 1.5),
-    # Parallel connect attempts during the scan.
+    # Parallel identification attempts.
     "concurrency": _env_number("MYHOME_TUYAPROBE_CONCURRENCY", 64, int),
     # Seconds one identification (status call) may take.
     "identify_timeout": _env_number("MYHOME_TUYAPROBE_IDENTIFY_TIMEOUT", 5.0),
@@ -57,10 +65,8 @@ CONFIG = {
     "cooldown": _env_number("MYHOME_TUYAPROBE_COOLDOWN", 300.0),
     # Seconds a device the probe failed to find is not probed again.
     "device_backoff": _env_number("MYHOME_TUYAPROBE_DEVICE_BACKOFF", 1800.0),
-    # A subnet with more usable hosts than this is never scanned.
+    # A subnet with more usable hosts than this is never probed (a /22 fits).
     "max_hosts": _env_number("MYHOME_TUYAPROBE_MAX_HOSTS", 1024, int),
-    # Most open hosts tried for identification, per device.
-    "max_candidates": _env_number("MYHOME_TUYAPROBE_MAX_CANDIDATES", 64, int),
     # Consecutive connect failures before a device qualifies without a cloud
     # signal that it is online.
     "failure_threshold": _env_number("MYHOME_TUYAPROBE_FAILURE_THRESHOLD", 3, int),
@@ -76,61 +82,68 @@ def reset():
         _state.update(failures={}, pending={}, backoff={}, running=False, last=None)
 
 
-def _tcp_connect(ip, port, timeout):
-    """True when a TCP connection opens; closed at once, nothing is sent."""
-    try:
-        sock = socket.create_connection((ip, port), timeout=timeout)
-    except OSError:
-        return False
-    sock.close()
-    return True
+def candidates(network, own_address=None, exclude_ips=()):
+    """Hosts of `network` that may be probed, in address order.
 
-
-def open_hosts(network, own_address=None, connector=None):
-    """Sorted IPs on `network` with the Tuya port open.
-
-    `connector(ip, port, timeout)` returns True for an open port. A missing
-    network or one with more than max_hosts usable hosts is refused ([]).
+    Excludes own_address and every exclude_ips entry (the device's stored
+    address and every other roster device). A missing network or one with
+    more than max_hosts usable hosts is refused ([]).
     """
     if network is None or network.num_addresses - 2 > CONFIG["max_hosts"]:
         return []
-    connector = connector or _tcp_connect
-    hosts = [str(host) for host in network.hosts() if str(host) != own_address]
-    if not hosts:
-        return []
-    port, timeout = CONFIG["port"], CONFIG["connect_timeout"]
+    skip = set(exclude_ips)
+    skip.add(own_address)
+    return [str(host) for host in network.hosts() if str(host) not in skip]
+
+
+def _locate_one(config, hosts, identify):
+    """First host that identify() accepts for this device, or None.
+
+    Every host is queued, but each attempt checks the stop flag first, so
+    after a match the rest return at once without touching the network.
+    """
+    stop = threading.Event()
+    lock = threading.Lock()
+    result = []
+
+    def attempt(ip):
+        if stop.is_set():
+            return
+        try:
+            matched = identify(ip, config)
+        except Exception as exc:  # one bad host must not stop the probe
+            log.warning("tuya probe identify failed: %s", type(exc).__name__)
+            return
+        if matched:
+            with lock:
+                if not stop.is_set():
+                    result.append(ip)
+                    stop.set()
+
     workers = max(1, min(CONFIG["concurrency"], len(hosts)))
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-        results = list(pool.map(lambda ip: bool(connector(ip, port, timeout)), hosts))
-    return sorted((ip for ip, is_open in zip(hosts, results) if is_open),
-                  key=lambda ip: tuple(int(part) for part in ip.split(".")))
+        for ip in hosts:
+            pool.submit(attempt, ip)
+    return result[0] if result else None
 
 
-def locate(pending, hosts, identify, skip_ips=()):
+def locate(pending, hosts, identify):
     """Match pending device configs to hosts; returns {device_id: ip}.
 
-    Hosts outside skip_ips (other roster devices' addresses) are tried first.
-    A host matched to one device is never tried for another, and a device's
-    own stored address is not retried (it just failed).
+    Hosts are tried in parallel and the search for a device stops at the first
+    match. A host matched to one device is never tried for another, and a
+    device's own stored address is not retried (it just failed).
     """
-    skip = set(skip_ips)
-    ordered = [ip for ip in hosts if ip not in skip] + [ip for ip in hosts if ip in skip]
     taken = set()
     found = {}
     for config in pending:
-        device_id = config.get("id")
-        candidates = [ip for ip in ordered
-                      if ip not in taken and ip != config.get("ip")]
-        for ip in candidates[:CONFIG["max_candidates"]]:
-            try:
-                matched = identify(ip, config)
-            except Exception as exc:  # one bad host must not stop the probe
-                log.warning("tuya probe identify failed: %s", type(exc).__name__)
-                matched = False
-            if matched:
-                found[device_id] = ip
-                taken.add(ip)
-                break
+        pool = [ip for ip in hosts if ip not in taken and ip != config.get("ip")]
+        if not pool:
+            continue
+        ip = _locate_one(config, pool, identify)
+        if ip is not None:
+            found[config.get("id")] = ip
+            taken.add(ip)
     return found
 
 
@@ -161,12 +174,12 @@ def request(config, cloud_online=False, now=None):
         return True
 
 
-def drain(target_ip, identify, persist, roster_ips=(), network=None,
-          connector=None, now=None):
+def drain(target_ip, identify, persist, exclude_ips=(), network=None, now=None):
     """Probe for every pending device; returns {device_id: ip} persisted.
 
     Runs synchronously (the background thread calls it). Matched devices go
-    through persist(id, ip); the rest enter device_backoff.
+    through persist(id, ip); the rest enter device_backoff. exclude_ips are
+    the other roster devices' addresses and are never probed.
     """
     with _lock:
         pending = list(_state["pending"].values())
@@ -177,8 +190,9 @@ def drain(target_ip, identify, persist, roster_ips=(), network=None,
     if network is None:
         own = lan_recovery.source_address(target_ip) if target_ip else None
         network = lan_recovery.local_network(target_ip, source=own)
-    hosts = open_hosts(network, own_address=own, connector=connector)
-    found = locate(pending, hosts, identify, skip_ips=roster_ips)
+    hosts = candidates(network, own_address=own,
+                       exclude_ips=set(exclude_ips) | {target_ip})
+    found = locate(pending, hosts, identify)
     persisted = {}
     for device_id, ip in found.items():
         try:
@@ -194,14 +208,14 @@ def drain(target_ip, identify, persist, roster_ips=(), network=None,
         for config in pending:
             if config.get("id") not in persisted:
                 _state["backoff"][config.get("id")] = until
-    log.info("tuya probe: %d open hosts, %d of %d devices found",
+    log.info("tuya probe: %d candidate hosts, %d of %d devices found",
              len(hosts), len(persisted), len(pending))
     return persisted
 
 
-def _worker(target_ip, identify, persist, roster_ips):
+def _worker(target_ip, identify, persist, exclude_ips):
     try:
-        drain(target_ip, identify, persist, roster_ips)
+        drain(target_ip, identify, persist, exclude_ips)
     except Exception as exc:  # a probe must never break the bridge
         log.warning("tuya probe failed: %s", type(exc).__name__)
     finally:
@@ -209,7 +223,7 @@ def _worker(target_ip, identify, persist, roster_ips):
             _state["running"] = False
 
 
-def start(target_ip, identify, persist, roster_ips=(), now=None):
+def start(target_ip, identify, persist, exclude_ips=(), now=None):
     """Spawn one background probe when devices are pending and none ran lately."""
     now = time.monotonic() if now is None else now
     with _lock:
@@ -219,6 +233,6 @@ def start(target_ip, identify, persist, roster_ips=(), now=None):
             return False
         _state["running"] = True
         _state["last"] = now
-    threading.Thread(target=_worker, args=(target_ip, identify, persist, tuple(roster_ips)),
+    threading.Thread(target=_worker, args=(target_ip, identify, persist, tuple(exclude_ips)),
                      name="tuya-probe", daemon=True).start()
     return True
